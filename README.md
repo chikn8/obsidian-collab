@@ -24,6 +24,8 @@ namespaced set of rooms plus a manifest.
 - [Using it](#using-it)
 - [Building & testing](#building--testing)
 - [Operations & recovery](#operations--recovery)
+- [Mobile + plugin updates](docs/RELEASES_AND_MOBILE.md)
+- [Collaboration research notes](docs/COLLAB_RESEARCH_NOTES.md)
 - [Project status](#project-status)
 
 ---

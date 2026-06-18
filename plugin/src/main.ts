@@ -11,12 +11,14 @@ import { CommentSession } from "./collab/CommentLayer";
 import { PresenceController } from "./collab/Presence";
 import { selfSelectionExtension } from "./collab/SelfSelection";
 import { CommentsView, COMMENTS_VIEW_TYPE } from "./ui/CommentsView";
+import { CommentInboxView, COMMENT_INBOX_VIEW_TYPE, type CommentInboxItem } from "./ui/CommentInboxView";
 import { promptModal } from "./ui/modals";
 import { configureDiagnostics, exportDiagnosticBundle, log, err, setDiagnosticLogging, startDiagnosticTrace, trace } from "./utils/log";
 import { getJson, postJson } from "./utils/http";
 import { ensureIdentityKeys } from "./utils/identity";
 import { findMentionedUsers } from "./utils/mentions";
 import { buildThreadAuthorNotification, type CommentEventKind } from "./utils/commentNotifications";
+import { isThreadUnread, latestCommentActivity } from "./utils/commentActivity";
 import {
   encodeShareCode,
   decodeShareCode,
@@ -36,6 +38,7 @@ export default class CollabPlugin extends Plugin {
   private syncManagers: Map<string, SyncManager> = new Map();
   private modifyDebounceMap: Map<string, ReturnType<typeof debounce>> = new Map();
   private debouncedRestart = debounce(() => this.restartShares(), 800, false);
+  private debouncedPersistReadMarkers = debounce(() => { void this.persist(); }, 500, false);
 
   // Active editor binding state
   private boundView: EditorView | null = null;
@@ -61,8 +64,11 @@ export default class CollabPlugin extends Plugin {
 
     // Comments sidebar (first ItemView in the plugin)
     this.registerView(COMMENTS_VIEW_TYPE, (leaf) => new CommentsView(leaf));
+    this.registerView(COMMENT_INBOX_VIEW_TYPE, (leaf) => new CommentInboxView(leaf));
     this.addRibbonIcon("message-square", "Collab comments", () => this.openCommentsPanel());
+    this.addRibbonIcon("inbox", "Unread collab comments", () => this.openCommentInbox());
     this.addCommand({ id: "open-comments", name: "Open comments panel", callback: () => this.openCommentsPanel() });
+    this.addCommand({ id: "open-comment-inbox", name: "Open unread comments inbox", callback: () => this.openCommentInbox() });
     this.addCommand({
       id: "add-comment-to-selection",
       name: "Add comment to selection",
@@ -463,6 +469,7 @@ export default class CollabPlugin extends Plugin {
         notifyFromText: (text) => this.notifyMentionsInText(text, fileName, this.boundPath || ""),
         notifyThreadEvent: (thread, kind, text, alreadyNotified) =>
           this.notifyCommentThreadEvent(thread, kind, text, fileName, this.boundPath || "", alreadyNotified),
+        markRead: (thread) => this.markCommentThreadRead(this.boundPath || "", thread),
       });
     } else {
       view.setContext(null);
@@ -472,6 +479,91 @@ export default class CollabPlugin extends Plugin {
   private openThread(threadId: string): void {
     this.boundSession?.reveal(threadId);
     this.openCommentsPanel();
+  }
+
+  private getCommentInboxView(): CommentInboxView | null {
+    return (this.app.workspace.getLeavesOfType(COMMENT_INBOX_VIEW_TYPE)[0]?.view as CommentInboxView) ?? null;
+  }
+
+  private async openCommentInbox(): Promise<void> {
+    let leaf = this.app.workspace.getLeavesOfType(COMMENT_INBOX_VIEW_TYPE)[0];
+    if (!leaf) {
+      leaf = this.app.workspace.getRightLeaf(false)!;
+      await leaf.setViewState({ type: COMMENT_INBOX_VIEW_TYPE, active: true });
+    }
+    this.app.workspace.revealLeaf(leaf);
+    this.getCommentInboxView()?.setContext({
+      items: () => this.buildCommentInboxItems(),
+      open: (item) => this.openCommentInboxItem(item),
+      markAllRead: () => this.markAllInboxRead(),
+      now: () => Date.now(),
+    });
+  }
+
+  private buildCommentInboxItems(): CommentInboxItem[] {
+    const items: CommentInboxItem[] = [];
+    for (const m of this.syncManagers.values()) {
+      m.eachFileProvider((relPath, fp) => {
+        const fullPath = m.toFull(relPath);
+        const store = new CommentStore(fp.getDoc());
+        for (const thread of store.list()) {
+          const key = commentReadKey(m.shareId, relPath, thread.id);
+          const lastReadAt = this.settings.commentReadAt?.[key] || 0;
+          if (!isThreadUnread(thread, this.settings.uid, lastReadAt)) continue;
+          const latest = latestCommentActivity(thread);
+          items.push({
+            key,
+            filePath: fullPath,
+            fileName: fullPath.split("/").pop() || fullPath,
+            threadId: thread.id,
+            authorName: latest.byName || thread.authorName,
+            quote: thread.quote,
+            text: latest.text,
+            lastAt: latest.at,
+          });
+        }
+      });
+    }
+    return items.sort((a, b) => b.lastAt - a.lastAt || a.filePath.localeCompare(b.filePath));
+  }
+
+  private async openCommentInboxItem(item: CommentInboxItem): Promise<void> {
+    this.markCommentReadKey(item.key, item.lastAt);
+    const file = this.app.vault.getAbstractFileByPath(item.filePath);
+    if (!(file instanceof TFile)) {
+      new Notice("That comment's file is not available locally yet.");
+      return;
+    }
+    await this.app.workspace.getLeaf(false).openFile(file);
+    await this.bindActiveEditor(file, 0);
+    await this.openCommentsPanel();
+    this.boundSession?.reveal(item.threadId);
+    this.getCommentInboxView()?.setContext({
+      items: () => this.buildCommentInboxItems(),
+      open: (next) => this.openCommentInboxItem(next),
+      markAllRead: () => this.markAllInboxRead(),
+      now: () => Date.now(),
+    });
+  }
+
+  private markAllInboxRead(): void {
+    for (const item of this.buildCommentInboxItems()) this.markCommentReadKey(item.key, item.lastAt);
+    void this.persist();
+  }
+
+  private markCommentThreadRead(filePath: string, thread: ThreadView): void {
+    const m = this.managerOwning(filePath);
+    if (!m) return;
+    const latest = latestCommentActivity(thread);
+    this.markCommentReadKey(commentReadKey(m.shareId, m.toRel(filePath), thread.id), latest.at);
+  }
+
+  private markCommentReadKey(key: string, at: number): void {
+    if (!key || !at) return;
+    const current = this.settings.commentReadAt?.[key] || 0;
+    if (current >= at) return;
+    this.settings.commentReadAt = { ...(this.settings.commentReadAt || {}), [key]: at };
+    this.debouncedPersistReadMarkers();
   }
 
   private managerOwning(path: string): SyncManager | null {
@@ -1027,6 +1119,7 @@ export default class CollabPlugin extends Plugin {
         ntfyTopic: raw.ntfyTopic ?? "",
         debugLogging: raw.debugLogging ?? DEFAULT_SETTINGS.debugLogging,
         diagnosticLogging: raw.diagnosticLogging ?? DEFAULT_SETTINGS.diagnosticLogging,
+        commentReadAt: raw.commentReadAt ?? {},
         shares: raw.linkedFolder
           ? [{ id: LEGACY_SHARE_ID, key: "", label: "Synced Obsidian", localFolder: raw.linkedFolder, legacy: true }]
           : [],
@@ -1084,4 +1177,8 @@ function safeFolderSegment(value: string): string {
     .trim()
     .slice(0, 60);
   return clean || "Collab share";
+}
+
+function commentReadKey(shareId: string, relPath: string, threadId: string): string {
+  return `${shareId}\t${relPath}\t${threadId}`;
 }

@@ -17,6 +17,7 @@ export interface CommentContext {
   /** Scan text for @mentions of collaborators and push them a notification. */
   notifyFromText: (text: string) => Set<string>;
   notifyThreadEvent: (thread: ThreadView, kind: CommentEventKind, text: string, alreadyNotified: Set<string>) => void;
+  markRead: (thread: ThreadView) => void;
 }
 
 const REACTIONS = ["👍", "❤️", "🎉", "😄", "👀"];
@@ -68,6 +69,7 @@ export class CommentsView extends ItemView {
 
     const threads = this.ctx.store.list();
     const visible = threads.filter((t) => this.showResolved || !t.resolved);
+    for (const t of visible) this.ctx.markRead(t);
     if (visible.length === 0) {
       root.createEl("p", { text: "No comments yet. Select text, then run Add comment to selection.", cls: "collab-comments-empty" });
       return;

@@ -37,7 +37,7 @@ namespaced set of rooms plus a manifest.
 | **Roles** | `editor` / `commenter` / `viewer`, enforced server-side; signed per-recipient invites + revoke-all |
 | **Presence** | Top-of-editor facepile, file-explorer avatars (desktop), click-to-jump, per-device identity |
 | **Attachments** | Images/PDF/audio/video sync as content-addressed blobs referenced from the manifest |
-| **Comments** | Threaded, anchored to text, replies + emoji reactions; survive edits; `@mention` → phone push |
+| **Comments** | Threaded, anchored to text, replies + emoji reactions, unread inbox; mention/thread pushes |
 | **History** | Server-side git snapshots per file; browse, diff, restore whole versions or individual changes |
 | **Recovery** | Deleted-file list with one-click restore; local `trash/` + `backups/`; off-box server backups |
 | **Offline** | Edits persist locally (IndexedDB) and merge on reconnect; "N changes pending" indicator |

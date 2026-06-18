@@ -39,7 +39,7 @@ __export(main_exports, {
   default: () => CollabPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian10 = require("obsidian");
+var import_obsidian11 = require("obsidian");
 
 // src/collab/SyncManager.ts
 var import_obsidian4 = require("obsidian");
@@ -10706,6 +10706,7 @@ var DEFAULT_SETTINGS = {
   ntfyTopic: "",
   debugLogging: false,
   diagnosticLogging: false,
+  commentReadAt: {},
   shares: []
 };
 var LEGACY_SHARE_ID = "__legacy__";
@@ -14829,6 +14830,7 @@ var CommentsView = class extends import_obsidian8.ItemView {
     }
     const threads = this.ctx.store.list();
     const visible = threads.filter((t) => this.showResolved || !t.resolved);
+    for (const t of visible) this.ctx.markRead(t);
     if (visible.length === 0) {
       root.createEl("p", { text: "No comments yet. Select text, then run Add comment to selection.", cls: "collab-comments-empty" });
       return;
@@ -14913,6 +14915,79 @@ var CommentsView = class extends import_obsidian8.ItemView {
   }
 };
 function timeAgo(now, then) {
+  const s = Math.max(0, Math.floor((now - then) / 1e3));
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+// src/ui/CommentInboxView.ts
+var import_obsidian9 = require("obsidian");
+var COMMENT_INBOX_VIEW_TYPE = "collab-comment-inbox";
+var CommentInboxView = class extends import_obsidian9.ItemView {
+  constructor(leaf) {
+    super(leaf);
+    this.ctx = null;
+  }
+  getViewType() {
+    return COMMENT_INBOX_VIEW_TYPE;
+  }
+  getDisplayText() {
+    return "Comment inbox";
+  }
+  getIcon() {
+    return "inbox";
+  }
+  async onOpen() {
+    this.render();
+  }
+  setContext(ctx) {
+    this.ctx = ctx;
+    this.render();
+  }
+  render() {
+    const root = this.contentEl;
+    root.empty();
+    root.addClass("collab-history-view");
+    const header = root.createDiv({ cls: "collab-comments-header" });
+    header.createEl("div", { text: "Unread comments", cls: "collab-history-title" });
+    if (this.ctx) {
+      const mark = header.createEl("button", { cls: "collab-comment-btn" });
+      (0, import_obsidian9.setIcon)(mark, "check-check");
+      mark.appendText(" Mark all read");
+      mark.onclick = () => {
+        var _a2;
+        (_a2 = this.ctx) == null ? void 0 : _a2.markAllRead();
+        this.render();
+      };
+    }
+    if (!this.ctx) {
+      root.createEl("p", { text: "Open a synced vault to collect comment activity.", cls: "collab-comments-empty" });
+      return;
+    }
+    const items = this.ctx.items();
+    if (items.length === 0) {
+      root.createEl("p", { text: "No unread comments.", cls: "collab-comments-empty" });
+      return;
+    }
+    const list = root.createDiv({ cls: "collab-history-list" });
+    for (const item of items) {
+      const row = list.createDiv({ cls: "collab-history-row" });
+      const main = row.createDiv({ cls: "collab-history-main" });
+      main.createSpan({ text: item.fileName, cls: "collab-history-when" });
+      main.createSpan({ text: ` \xB7 ${item.authorName || "unknown"} \xB7 ${timeAgo2(this.ctx.now(), item.lastAt)}`, cls: "collab-history-author" });
+      row.createDiv({ text: item.text || item.quote, cls: "collab-comment-text" });
+      row.onclick = () => {
+        var _a2;
+        return void ((_a2 = this.ctx) == null ? void 0 : _a2.open(item));
+      };
+    }
+  }
+};
+function timeAgo2(now, then) {
   const s = Math.max(0, Math.floor((now - then) / 1e3));
   if (s < 60) return "just now";
   const m = Math.floor(s / 60);
@@ -15027,8 +15102,26 @@ function buildThreadAuthorNotification(args2) {
   };
 }
 
+// src/utils/commentActivity.ts
+function latestCommentActivity(thread) {
+  const latest = thread.replies.reduce((best, reply) => {
+    if (best && best.at >= reply.at) return best;
+    return { at: reply.at || 0, byUid: reply.byUid || "", byName: reply.byName || "", text: reply.text || "" };
+  }, null);
+  return latest || {
+    at: thread.createdAt || 0,
+    byUid: thread.authorUid || "",
+    byName: thread.authorName || "",
+    text: thread.quote || ""
+  };
+}
+function isThreadUnread(thread, myUid, lastReadAt) {
+  const latest = latestCommentActivity(thread);
+  return !thread.resolved && latest.byUid !== myUid && latest.at > lastReadAt;
+}
+
 // src/ui/HistoryView.ts
-var import_obsidian9 = require("obsidian");
+var import_obsidian10 = require("obsidian");
 
 // src/utils/lineDiff.ts
 function splitLines(text2) {
@@ -15216,7 +15309,7 @@ function applyRestoreHunk(currentText, hunk) {
 
 // src/ui/HistoryView.ts
 var HISTORY_VIEW_TYPE = "collab-history";
-var HistoryView = class extends import_obsidian9.ItemView {
+var HistoryView = class extends import_obsidian10.ItemView {
   constructor(leaf) {
     super(leaf);
     this.ctx = null;
@@ -15277,7 +15370,7 @@ var HistoryView = class extends import_obsidian9.ItemView {
           e.stopPropagation();
           const content = await this.ctx.load(v.hash);
           if (content == null) {
-            new import_obsidian9.Notice("Couldn't load this version.");
+            new import_obsidian10.Notice("Couldn't load this version.");
             return;
           }
           this.showPreview(root, v, content);
@@ -15287,7 +15380,7 @@ var HistoryView = class extends import_obsidian9.ItemView {
           e.stopPropagation();
           const content = await this.ctx.load(v.hash);
           if (content == null) {
-            new import_obsidian9.Notice("Couldn't load this version.");
+            new import_obsidian10.Notice("Couldn't load this version.");
             return;
           }
           this.showDiff(root, v, content, "inline");
@@ -15297,23 +15390,23 @@ var HistoryView = class extends import_obsidian9.ItemView {
           e.stopPropagation();
           const content = await this.ctx.load(v.hash);
           if (content == null) {
-            new import_obsidian9.Notice("Couldn't load this version.");
+            new import_obsidian10.Notice("Couldn't load this version.");
             return;
           }
           this.showDiff(root, v, content, "side");
         };
         const restore = actions.createEl("button", { cls: "collab-comment-btn" });
-        (0, import_obsidian9.setIcon)(restore, "rotate-ccw");
+        (0, import_obsidian10.setIcon)(restore, "rotate-ccw");
         restore.appendText(" Restore");
         restore.onclick = async (e) => {
           e.stopPropagation();
           const content = await this.ctx.load(v.hash);
           if (content == null) {
-            new import_obsidian9.Notice("Couldn't load this version.");
+            new import_obsidian10.Notice("Couldn't load this version.");
             return;
           }
           await this.ctx.restore(content);
-          new import_obsidian9.Notice("Restored. A pre-restore backup was saved.");
+          new import_obsidian10.Notice("Restored. A pre-restore backup was saved.");
         };
       }
     }
@@ -15334,13 +15427,13 @@ var HistoryView = class extends import_obsidian9.ItemView {
       const meta = [d.deletedBy ? `by ${d.deletedBy}` : "", d.deletedAt ? relTime(new Date(d.deletedAt).toISOString()) : ""].filter(Boolean).join(" \xB7 ");
       if (meta) main.createSpan({ text: " \xB7 " + meta, cls: "collab-history-author" });
       const restore = row.createEl("button", { cls: "collab-comment-btn" });
-      (0, import_obsidian9.setIcon)(restore, "rotate-ccw");
+      (0, import_obsidian10.setIcon)(restore, "rotate-ccw");
       restore.appendText(" Restore");
       restore.onclick = async (e) => {
         e.stopPropagation();
         restore.disabled = true;
         const ok = await ctx.restoreDeleted(d.relPath);
-        new import_obsidian9.Notice(ok ? `Restoring "${name}"\u2026` : "Couldn't restore this file.");
+        new import_obsidian10.Notice(ok ? `Restoring "${name}"\u2026` : "Couldn't restore this file.");
         if (ok) setTimeout(() => this.render(), 1200);
         else restore.disabled = false;
       };
@@ -15384,17 +15477,17 @@ var HistoryView = class extends import_obsidian9.ItemView {
     const actions = box.createDiv({ cls: "collab-history-hunks" });
     for (const hunk of hunks) {
       const btn = actions.createEl("button", { cls: "collab-comment-btn" });
-      (0, import_obsidian9.setIcon)(btn, "rotate-ccw");
+      (0, import_obsidian10.setIcon)(btn, "rotate-ccw");
       btn.appendText(` Restore change ${hunk.id + 1} (+${hunk.added}/-${hunk.removed})`);
       btn.onclick = async () => {
         if (!this.ctx) return;
         if (this.ctx.currentText() !== baselineCurrent) {
-          new import_obsidian9.Notice("Note changed since this diff loaded. Reopen the diff and try again.");
+          new import_obsidian10.Notice("Note changed since this diff loaded. Reopen the diff and try again.");
           return;
         }
         btn.disabled = true;
         await this.ctx.restore(applyRestoreHunk(baselineCurrent, hunk));
-        new import_obsidian9.Notice("Restored that change. A pre-restore backup was saved.");
+        new import_obsidian10.Notice("Restored that change. A pre-restore backup was saved.");
       };
     }
   }
@@ -15458,14 +15551,17 @@ function relTime(iso) {
 }
 
 // src/main.ts
-var CollabPlugin = class extends import_obsidian10.Plugin {
+var CollabPlugin = class extends import_obsidian11.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
     this.instanceWatch = null;
     this.syncManagers = /* @__PURE__ */ new Map();
     this.modifyDebounceMap = /* @__PURE__ */ new Map();
-    this.debouncedRestart = (0, import_obsidian10.debounce)(() => this.restartShares(), 800, false);
+    this.debouncedRestart = (0, import_obsidian11.debounce)(() => this.restartShares(), 800, false);
+    this.debouncedPersistReadMarkers = (0, import_obsidian11.debounce)(() => {
+      void this.persist();
+    }, 500, false);
     // Active editor binding state
     this.boundView = null;
     this.boundProvider = null;
@@ -15488,8 +15584,11 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     this.statusBar = new StatusBarWidget(this.addStatusBarItem());
     this.addSettingTab(new CollabSettingsTab(this.app, this));
     this.registerView(COMMENTS_VIEW_TYPE, (leaf) => new CommentsView(leaf));
+    this.registerView(COMMENT_INBOX_VIEW_TYPE, (leaf) => new CommentInboxView(leaf));
     this.addRibbonIcon("message-square", "Collab comments", () => this.openCommentsPanel());
+    this.addRibbonIcon("inbox", "Unread collab comments", () => this.openCommentInbox());
     this.addCommand({ id: "open-comments", name: "Open comments panel", callback: () => this.openCommentsPanel() });
+    this.addCommand({ id: "open-comment-inbox", name: "Open unread comments inbox", callback: () => this.openCommentInbox() });
     this.addCommand({
       id: "add-comment-to-selection",
       name: "Add comment to selection",
@@ -15500,7 +15599,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
         if (checking) return canComment;
         if (!canComment || !file) return false;
         trace("comment", "add-command", { path: file.path });
-        void this.addCommentForSelection(file, (_a3 = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView)) != null ? _a3 : {});
+        void this.addCommentForSelection(file, (_a3 = this.app.workspace.getActiveViewOfType(import_obsidian11.MarkdownView)) != null ? _a3 : {});
         return true;
       }
     });
@@ -15516,18 +15615,18 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     void this.handleActiveLeafChange();
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        trace("vault", "create", { path: file.path, kind: file instanceof import_obsidian10.TFile ? "file" : file instanceof import_obsidian10.TFolder ? "folder" : "other" });
-        if (file instanceof import_obsidian10.TFile) this.eachManager((m) => m.onFileCreate(file));
+        trace("vault", "create", { path: file.path, kind: file instanceof import_obsidian11.TFile ? "file" : file instanceof import_obsidian11.TFolder ? "folder" : "other" });
+        if (file instanceof import_obsidian11.TFile) this.eachManager((m) => m.onFileCreate(file));
       })
     );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
         var _a3, _b2;
-        if (!(file instanceof import_obsidian10.TFile)) return;
+        if (!(file instanceof import_obsidian11.TFile)) return;
         trace("vault", "modify", { path: file.path, size: (_a3 = file.stat) == null ? void 0 : _a3.size, mtime: (_b2 = file.stat) == null ? void 0 : _b2.mtime });
         let fn = this.modifyDebounceMap.get(file.path);
         if (!fn) {
-          fn = (0, import_obsidian10.debounce)((f) => this.eachManager((m) => m.onFileModify(f)), 50, true);
+          fn = (0, import_obsidian11.debounce)((f) => this.eachManager((m) => m.onFileModify(f)), 50, true);
           this.modifyDebounceMap.set(file.path, fn);
         }
         fn(file);
@@ -15535,17 +15634,17 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        trace("vault", "delete", { path: file.path, kind: file instanceof import_obsidian10.TFile ? "file" : file instanceof import_obsidian10.TFolder ? "folder" : "other" });
-        if (file instanceof import_obsidian10.TFile) this.eachManager((m) => m.onFileDelete(file));
-        else if (file instanceof import_obsidian10.TFolder) this.eachManager((m) => m.onFolderDelete(file.path));
+        trace("vault", "delete", { path: file.path, kind: file instanceof import_obsidian11.TFile ? "file" : file instanceof import_obsidian11.TFolder ? "folder" : "other" });
+        if (file instanceof import_obsidian11.TFile) this.eachManager((m) => m.onFileDelete(file));
+        else if (file instanceof import_obsidian11.TFolder) this.eachManager((m) => m.onFolderDelete(file.path));
         this.modifyDebounceMap.delete(file.path);
       })
     );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        trace("vault", "rename", { oldPath, newPath: file.path, kind: file instanceof import_obsidian10.TFile ? "file" : file instanceof import_obsidian10.TFolder ? "folder" : "other" });
-        if (file instanceof import_obsidian10.TFile) this.eachManager((m) => m.onFileRename(file, oldPath));
-        else if (file instanceof import_obsidian10.TFolder) this.eachManager((m) => m.onFolderRename(file, oldPath));
+        trace("vault", "rename", { oldPath, newPath: file.path, kind: file instanceof import_obsidian11.TFile ? "file" : file instanceof import_obsidian11.TFolder ? "folder" : "other" });
+        if (file instanceof import_obsidian11.TFile) this.eachManager((m) => m.onFileRename(file, oldPath));
+        else if (file instanceof import_obsidian11.TFolder) this.eachManager((m) => m.onFolderRename(file, oldPath));
         this.modifyDebounceMap.delete(oldPath);
       })
     );
@@ -15557,11 +15656,11 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     );
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (file instanceof import_obsidian10.TFolder) {
+        if (file instanceof import_obsidian11.TFolder) {
           menu.addItem(
             (item) => item.setTitle("Share this folder (collab)").setIcon("users").onClick(() => this.shareFolderInteractive(file.path))
           );
-        } else if (file instanceof import_obsidian10.TFile && this.managerOwning(file.path)) {
+        } else if (file instanceof import_obsidian11.TFile && this.managerOwning(file.path)) {
           menu.addItem(
             (item) => item.setTitle("Version history (collab)").setIcon("history").onClick(() => this.openHistoryPanel())
           );
@@ -15604,7 +15703,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       name: "Reconnect now (all folders)",
       callback: () => {
         this.eachManager((m) => m.reconnect());
-        new import_obsidian10.Notice("Reconnecting\u2026");
+        new import_obsidian11.Notice("Reconnecting\u2026");
         log("reconnect", "manual reconnect of", this.syncManagers.size, "shares");
       }
     });
@@ -15623,15 +15722,15 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
   // ── Share lifecycle ────────────────────────────────────────────
   startDiagnosticTraceInteractive() {
     const path = startDiagnosticTrace(2 * 6e4);
-    new import_obsidian10.Notice(`Collab diagnostic trace started: ${path}`, 8e3);
+    new import_obsidian11.Notice(`Collab diagnostic trace started: ${path}`, 8e3);
   }
   async exportDiagnosticBundleInteractive() {
     try {
       const path = await exportDiagnosticBundle();
-      new import_obsidian10.Notice(`Collab diagnostic bundle written: ${path}`, 1e4);
+      new import_obsidian11.Notice(`Collab diagnostic bundle written: ${path}`, 1e4);
     } catch (e) {
       err("diag", e);
-      new import_obsidian10.Notice("Could not export collab diagnostic bundle.");
+      new import_obsidian11.Notice("Could not export collab diagnostic bundle.");
     }
   }
   diagnosticContext() {
@@ -15647,14 +15746,14 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
         version: this.manifest.version
       },
       platform: {
-        mobile: import_obsidian10.Platform.isMobile,
-        desktop: import_obsidian10.Platform.isDesktop,
-        mobileApp: import_obsidian10.Platform.isMobileApp,
-        desktopApp: import_obsidian10.Platform.isDesktopApp,
-        ios: import_obsidian10.Platform.isIosApp,
-        android: import_obsidian10.Platform.isAndroidApp,
-        phone: import_obsidian10.Platform.isPhone,
-        tablet: import_obsidian10.Platform.isTablet
+        mobile: import_obsidian11.Platform.isMobile,
+        desktop: import_obsidian11.Platform.isDesktop,
+        mobileApp: import_obsidian11.Platform.isMobileApp,
+        desktopApp: import_obsidian11.Platform.isDesktopApp,
+        ios: import_obsidian11.Platform.isIosApp,
+        android: import_obsidian11.Platform.isAndroidApp,
+        phone: import_obsidian11.Platform.isPhone,
+        tablet: import_obsidian11.Platform.isTablet
       },
       settings: {
         shareCount: this.settings.shares.length,
@@ -15718,12 +15817,12 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
   activeFocusedFile() {
     var _a2;
     const activeView = (_a2 = this.app.workspace.activeLeaf) == null ? void 0 : _a2.view;
-    return (activeView == null ? void 0 : activeView.file) instanceof import_obsidian10.TFile ? activeView.file : null;
+    return (activeView == null ? void 0 : activeView.file) instanceof import_obsidian11.TFile ? activeView.file : null;
   }
   async handleActiveLeafChange() {
     var _a2, _b2;
     const activeFile = this.activeFocusedFile();
-    const markdownView = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
+    const markdownView = this.app.workspace.getActiveViewOfType(import_obsidian11.MarkdownView);
     const markdownFile = (_a2 = markdownView == null ? void 0 : markdownView.file) != null ? _a2 : null;
     this.eachManager((m) => m.setPresence(activeFile));
     await this.bindActiveEditor(markdownFile, 0);
@@ -15734,7 +15833,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     if (attempt > 0 && ((_b2 = (_a2 = this.app.workspace.getActiveFile()) == null ? void 0 : _a2.path) != null ? _b2 : null) !== ((_c = activeFile == null ? void 0 : activeFile.path) != null ? _c : null)) {
       return;
     }
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian11.MarkdownView);
     const ev = view ? getEditorView(view) : null;
     const path = (_d = activeFile == null ? void 0 : activeFile.path) != null ? _d : null;
     trace("bind", "active-leaf", { path, attempt, hasEditorView: !!ev });
@@ -15786,7 +15885,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     const role = (manager == null ? void 0 : manager.role) || "editor";
     const selfColor = this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName);
     const extras = [session.extension(), selfSelectionExtension({ name: this.settings.displayName || "You", color: selfColor })];
-    if (presence) extras.push(presence.extension(import_obsidian10.Platform.isMobile));
+    if (presence) extras.push(presence.extension(import_obsidian11.Platform.isMobile));
     if (role !== "editor") extras.push(readOnlyExtension());
     await provider.setEditorBound(true);
     bindEditor(ev, ytext, awareness, extras);
@@ -15833,7 +15932,8 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
           return (_b2 = (_a2 = this.managerOwning(this.boundPath || "")) == null ? void 0 : _a2.roster()) != null ? _b2 : [];
         },
         notifyFromText: (text2) => this.notifyMentionsInText(text2, fileName, this.boundPath || ""),
-        notifyThreadEvent: (thread, kind, text2, alreadyNotified) => this.notifyCommentThreadEvent(thread, kind, text2, fileName, this.boundPath || "", alreadyNotified)
+        notifyThreadEvent: (thread, kind, text2, alreadyNotified) => this.notifyCommentThreadEvent(thread, kind, text2, fileName, this.boundPath || "", alreadyNotified),
+        markRead: (thread) => this.markCommentThreadRead(this.boundPath || "", thread)
       });
     } else {
       view.setContext(null);
@@ -15843,6 +15943,89 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     var _a2;
     (_a2 = this.boundSession) == null ? void 0 : _a2.reveal(threadId);
     this.openCommentsPanel();
+  }
+  getCommentInboxView() {
+    var _a2, _b2;
+    return (_b2 = (_a2 = this.app.workspace.getLeavesOfType(COMMENT_INBOX_VIEW_TYPE)[0]) == null ? void 0 : _a2.view) != null ? _b2 : null;
+  }
+  async openCommentInbox() {
+    var _a2;
+    let leaf = this.app.workspace.getLeavesOfType(COMMENT_INBOX_VIEW_TYPE)[0];
+    if (!leaf) {
+      leaf = this.app.workspace.getRightLeaf(false);
+      await leaf.setViewState({ type: COMMENT_INBOX_VIEW_TYPE, active: true });
+    }
+    this.app.workspace.revealLeaf(leaf);
+    (_a2 = this.getCommentInboxView()) == null ? void 0 : _a2.setContext({
+      items: () => this.buildCommentInboxItems(),
+      open: (item) => this.openCommentInboxItem(item),
+      markAllRead: () => this.markAllInboxRead(),
+      now: () => Date.now()
+    });
+  }
+  buildCommentInboxItems() {
+    const items = [];
+    for (const m of this.syncManagers.values()) {
+      m.eachFileProvider((relPath, fp) => {
+        var _a2;
+        const fullPath = m.toFull(relPath);
+        const store = new CommentStore(fp.getDoc());
+        for (const thread of store.list()) {
+          const key = commentReadKey(m.shareId, relPath, thread.id);
+          const lastReadAt = ((_a2 = this.settings.commentReadAt) == null ? void 0 : _a2[key]) || 0;
+          if (!isThreadUnread(thread, this.settings.uid, lastReadAt)) continue;
+          const latest = latestCommentActivity(thread);
+          items.push({
+            key,
+            filePath: fullPath,
+            fileName: fullPath.split("/").pop() || fullPath,
+            threadId: thread.id,
+            authorName: latest.byName || thread.authorName,
+            quote: thread.quote,
+            text: latest.text,
+            lastAt: latest.at
+          });
+        }
+      });
+    }
+    return items.sort((a, b) => b.lastAt - a.lastAt || a.filePath.localeCompare(b.filePath));
+  }
+  async openCommentInboxItem(item) {
+    var _a2, _b2;
+    this.markCommentReadKey(item.key, item.lastAt);
+    const file = this.app.vault.getAbstractFileByPath(item.filePath);
+    if (!(file instanceof import_obsidian11.TFile)) {
+      new import_obsidian11.Notice("That comment's file is not available locally yet.");
+      return;
+    }
+    await this.app.workspace.getLeaf(false).openFile(file);
+    await this.bindActiveEditor(file, 0);
+    await this.openCommentsPanel();
+    (_a2 = this.boundSession) == null ? void 0 : _a2.reveal(item.threadId);
+    (_b2 = this.getCommentInboxView()) == null ? void 0 : _b2.setContext({
+      items: () => this.buildCommentInboxItems(),
+      open: (next) => this.openCommentInboxItem(next),
+      markAllRead: () => this.markAllInboxRead(),
+      now: () => Date.now()
+    });
+  }
+  markAllInboxRead() {
+    for (const item of this.buildCommentInboxItems()) this.markCommentReadKey(item.key, item.lastAt);
+    void this.persist();
+  }
+  markCommentThreadRead(filePath, thread) {
+    const m = this.managerOwning(filePath);
+    if (!m) return;
+    const latest = latestCommentActivity(thread);
+    this.markCommentReadKey(commentReadKey(m.shareId, m.toRel(filePath), thread.id), latest.at);
+  }
+  markCommentReadKey(key, at) {
+    var _a2;
+    if (!key || !at) return;
+    const current = ((_a2 = this.settings.commentReadAt) == null ? void 0 : _a2[key]) || 0;
+    if (current >= at) return;
+    this.settings.commentReadAt = { ...this.settings.commentReadAt || {}, [key]: at };
+    this.debouncedPersistReadMarkers();
   }
   managerOwning(path) {
     for (const m of this.syncManagers.values()) if (m.isInLinkedFolder(path)) return m;
@@ -15937,12 +16120,12 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       },
       restore: async (text2) => {
         if (m.role !== "editor") {
-          new import_obsidian10.Notice("This share is read-only on this device.");
+          new import_obsidian11.Notice("This share is read-only on this device.");
           return;
         }
         const fp = m.getFileProvider(file.path);
         if (fp) await fp.restoreFromText(text2);
-        else new import_obsidian10.Notice("Open the note before restoring.");
+        else new import_obsidian11.Notice("Open the note before restoring.");
       },
       currentText: () => {
         var _a3, _b2;
@@ -15957,23 +16140,23 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     const m = this.managerOwning(file.path);
     const fp = m == null ? void 0 : m.getFileProvider(file.path);
     if (m && m.role !== "editor") {
-      new import_obsidian10.Notice("This share is read-only on this device.");
+      new import_obsidian11.Notice("This share is read-only on this device.");
       return;
     }
     if (!fp || !fp.isReady()) {
-      new import_obsidian10.Notice("This note is still syncing \u2014 try again in a moment.");
+      new import_obsidian11.Notice("This note is still syncing \u2014 try again in a moment.");
       return;
     }
     const ev = getEditorView(info) || (this.boundPath === file.path ? this.boundView : null);
     if (!ev) {
-      new import_obsidian10.Notice("Open the note in the editor to comment.");
+      new import_obsidian11.Notice("Open the note in the editor to comment.");
       return;
     }
     const sel = ev.state.selection.main;
     const from2 = Math.min(sel.from, sel.to);
     const to = Math.max(sel.from, sel.to);
     if (to <= from2) {
-      new import_obsidian10.Notice("Select some text to comment on.");
+      new import_obsidian11.Notice("Select some text to comment on.");
       return;
     }
     const quote = ev.state.doc.sliceString(from2, to).slice(0, 200);
@@ -16023,24 +16206,24 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       } catch (e) {
         err("share", "server link mint failed", e);
       }
-      new import_obsidian10.Notice("Could not create that share link on the server.");
+      new import_obsidian11.Notice("Could not create that share link on the server.");
       return null;
     }
     if (this.settings.serverSecret) {
       const key = await deriveRoleKey(this.settings.serverSecret, share.id, role, epoch);
       return encodeShareCode(this.settings.serverUrl, share.id, key, role, epoch, void 0, void 0, share.label);
     }
-    new import_obsidian10.Notice("This device does not have owner access for that share.");
+    new import_obsidian11.Notice("This device does not have owner access for that share.");
     return null;
   }
   async generateShareInviteCode(share, role, recipient, expiresAt) {
     var _a2, _b2;
     if (share.legacy) {
-      new import_obsidian10.Notice("Invite links require a non-legacy share.");
+      new import_obsidian11.Notice("Invite links require a non-legacy share.");
       return null;
     }
     if (!share.ownerKey) {
-      new import_obsidian10.Notice("This device does not have owner access for that share.");
+      new import_obsidian11.Notice("This device does not have owner access for that share.");
       return null;
     }
     const epoch = (_a2 = share.epoch) != null ? _a2 : 1;
@@ -16051,7 +16234,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
         bearerHeaders(share.ownerKey)
       );
       if (!res.ok || !((_b2 = res.body) == null ? void 0 : _b2.key) || !res.body.inviteId) {
-        new import_obsidian10.Notice("Could not create that invite on the server.");
+        new import_obsidian11.Notice("Could not create that invite on the server.");
         return null;
       }
       const invite = {
@@ -16076,14 +16259,14 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       );
     } catch (e) {
       err("share", "server invite mint failed", e);
-      new import_obsidian10.Notice("Invite request failed.");
+      new import_obsidian11.Notice("Invite request failed.");
       return null;
     }
   }
   async revokeShareInvite(share, invite) {
     var _a2, _b2, _c;
     if (!share.ownerKey) {
-      new import_obsidian10.Notice("This device does not have owner access for that share.");
+      new import_obsidian11.Notice("This device does not have owner access for that share.");
       return false;
     }
     try {
@@ -16093,16 +16276,16 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
         bearerHeaders(share.ownerKey)
       );
       if (!res.ok) {
-        new import_obsidian10.Notice("Could not revoke that invite.");
+        new import_obsidian11.Notice("Could not revoke that invite.");
         return false;
       }
       invite.revokedAt = ((_b2 = res.body) == null ? void 0 : _b2.revokedAt) || Date.now();
       await this.persist();
-      new import_obsidian10.Notice(`Invite revoked${((_c = res.body) == null ? void 0 : _c.closedConnections) ? `; closed ${res.body.closedConnections} connection(s)` : ""}.`);
+      new import_obsidian11.Notice(`Invite revoked${((_c = res.body) == null ? void 0 : _c.closedConnections) ? `; closed ${res.body.closedConnections} connection(s)` : ""}.`);
       return true;
     } catch (e) {
       err("revoke", e);
-      new import_obsidian10.Notice("Invite revoke request failed.");
+      new import_obsidian11.Notice("Invite revoke request failed.");
       return false;
     }
   }
@@ -16110,7 +16293,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
   async revokeShareAccess(share) {
     var _a2, _b2, _c, _d;
     if (share.legacy) {
-      new import_obsidian10.Notice("Can't revoke legacy shares.");
+      new import_obsidian11.Notice("Can't revoke legacy shares.");
       return false;
     }
     if (share.ownerKey) {
@@ -16121,7 +16304,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
           bearerHeaders(share.ownerKey)
         );
         if (!res.ok || !((_b2 = res.body) == null ? void 0 : _b2.key) || !res.body.ownerKey) {
-          new import_obsidian10.Notice("Revoke failed on the server.");
+          new import_obsidian11.Notice("Revoke failed on the server.");
           return false;
         }
         share.epoch = res.body.epoch;
@@ -16136,16 +16319,16 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
         await this.stopShare(share.id);
         await this.startShare(share);
         log("revoke", "share", share.id, "-> epoch", share.epoch, "closed=", (_c = res.body.closedConnections) != null ? _c : 0);
-        new import_obsidian10.Notice("Access revoked. Old links no longer work \u2014 re-share to invite again.");
+        new import_obsidian11.Notice("Access revoked. Old links no longer work \u2014 re-share to invite again.");
         return true;
       } catch (e) {
         err("revoke", e);
-        new import_obsidian10.Notice("Revoke request failed.");
+        new import_obsidian11.Notice("Revoke request failed.");
         return false;
       }
     }
     if (!this.settings.serverSecret) {
-      new import_obsidian10.Notice("Can't revoke this share from this device.");
+      new import_obsidian11.Notice("Can't revoke this share from this device.");
       return false;
     }
     const newEpoch = ((_d = share.epoch) != null ? _d : 1) + 1;
@@ -16153,12 +16336,12 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     try {
       const res = await postJson(`${httpBase(this.settings.serverUrl)}/admin/revoke?share=${encodeURIComponent(share.id)}&epoch=${newEpoch}&token=${encodeURIComponent(token)}`);
       if (!res.ok) {
-        new import_obsidian10.Notice("Revoke failed on the server.");
+        new import_obsidian11.Notice("Revoke failed on the server.");
         return false;
       }
     } catch (e) {
       err("revoke", e);
-      new import_obsidian10.Notice("Revoke request failed.");
+      new import_obsidian11.Notice("Revoke request failed.");
       return false;
     }
     share.epoch = newEpoch;
@@ -16172,7 +16355,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     await this.stopShare(share.id);
     await this.startShare(share);
     log("revoke", "share", share.id, "-> epoch", newEpoch);
-    new import_obsidian10.Notice("Access revoked. Old links no longer work \u2014 re-share to invite again.");
+    new import_obsidian11.Notice("Access revoked. Old links no longer work \u2014 re-share to invite again.");
     return true;
   }
   folderOverlaps(path) {
@@ -16184,7 +16367,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
   }
   async shareFolderInteractive(presetFolder) {
     if (!this.settings.shareMintToken && !this.settings.serverSecret) {
-      new import_obsidian10.Notice("Set the Share admin token in settings first \u2014 it's needed to create shares.");
+      new import_obsidian11.Notice("Set the Share admin token in settings first \u2014 it's needed to create shares.");
       return;
     }
     const res = await promptModal(this.app, {
@@ -16199,7 +16382,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     const folder = res.folder.trim().replace(/\/+$/, "");
     const overlap = this.folderOverlaps(folder);
     if (overlap) {
-      new import_obsidian10.Notice(`That folder overlaps an existing share ("${overlap.label}").`);
+      new import_obsidian11.Notice(`That folder overlaps an existing share ("${overlap.label}").`);
       return;
     }
     await this.ensureFolder(folder);
@@ -16226,7 +16409,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       } catch (e) {
       }
     }
-    new import_obsidian10.Notice(copied ? `Share created \u2014 editor link copied. For a view-only link, use \u201CCopy link\u201D in settings.` : `Share created. Copy the editor link from settings (clipboard unavailable here).`);
+    new import_obsidian11.Notice(copied ? `Share created \u2014 editor link copied. For a view-only link, use \u201CCopy link\u201D in settings.` : `Share created. Copy the editor link from settings (clipboard unavailable here).`);
   }
   async mintShare() {
     var _a2, _b2;
@@ -16245,10 +16428,10 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
             ownerKey: res.body.ownerKey
           };
         }
-        new import_obsidian10.Notice("Share creation was rejected by the server.");
+        new import_obsidian11.Notice("Share creation was rejected by the server.");
       } catch (e) {
         err("share", "server mint failed", e);
-        new import_obsidian10.Notice("Share creation request failed.");
+        new import_obsidian11.Notice("Share creation request failed.");
       }
       if (!this.settings.serverSecret) return null;
     }
@@ -16280,11 +16463,11 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     var _a2;
     const decoded = decodeShareCode(code);
     if (!decoded) {
-      new import_obsidian10.Notice("Invalid share code.");
+      new import_obsidian11.Notice("Invalid share code.");
       return;
     }
     if (this.settings.shares.some((s) => s.id === decoded.id)) {
-      new import_obsidian10.Notice("You already have this shared folder.");
+      new import_obsidian11.Notice("You already have this shared folder.");
       return;
     }
     if (!this.settings.serverUrl || this.settings.serverUrl === DEFAULT_SETTINGS.serverUrl) {
@@ -16293,7 +16476,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     const folder = ((localFolder == null ? void 0 : localFolder.trim()) || this.suggestJoinFolder(decoded.l, decoded.id)).replace(/\/+$/, "");
     const overlap = this.folderOverlaps(folder);
     if (overlap) {
-      new import_obsidian10.Notice(`That folder overlaps an existing share ("${overlap.label}").`);
+      new import_obsidian11.Notice(`That folder overlaps an existing share ("${overlap.label}").`);
       return;
     }
     await this.ensureFolder(folder);
@@ -16311,7 +16494,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     await this.persist();
     await this.startShare(share);
     log("share", "joined", share.id, "role=", share.role || "editor");
-    new import_obsidian10.Notice(`Joined shared folder \u2192 ${folder}${share.role && share.role !== "editor" ? ` (${share.role})` : ""}`);
+    new import_obsidian11.Notice(`Joined shared folder \u2192 ${folder}${share.role && share.role !== "editor" ? ` (${share.role})` : ""}`);
   }
   suggestJoinFolder(label, id2) {
     const baseName = safeFolderSegment(label || "Collab share");
@@ -16336,7 +16519,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     for (const part of parts) {
       cur = cur ? `${cur}/${part}` : part;
       const existing = this.app.vault.getAbstractFileByPath(cur);
-      if (existing instanceof import_obsidian10.TFolder) continue;
+      if (existing instanceof import_obsidian11.TFolder) continue;
       if (existing) throw new Error(`Cannot create folder "${cur}"; a file exists there.`);
       await this.app.vault.createFolder(cur).catch((e) => {
         if (!this.app.vault.getAbstractFileByPath(cur)) throw e;
@@ -16360,7 +16543,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
   }
   // ── Settings (with migration) ──────────────────────────────────
   async loadSettings() {
-    var _a2, _b2, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n;
+    var _a2, _b2, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o;
     const raw = await this.loadData() || {};
     if (raw.shares === void 0 && (raw.linkedFolder !== void 0 || raw.password !== void 0)) {
       this.settings = {
@@ -16377,6 +16560,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
         ntfyTopic: (_j = raw.ntfyTopic) != null ? _j : "",
         debugLogging: (_k = raw.debugLogging) != null ? _k : DEFAULT_SETTINGS.debugLogging,
         diagnosticLogging: (_l = raw.diagnosticLogging) != null ? _l : DEFAULT_SETTINGS.diagnosticLogging,
+        commentReadAt: (_m = raw.commentReadAt) != null ? _m : {},
         shares: raw.linkedFolder ? [{ id: LEGACY_SHARE_ID, key: "", label: "Synced Obsidian", localFolder: raw.linkedFolder, legacy: true }] : []
       };
       await this.persist();
@@ -16384,7 +16568,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       this.settings = Object.assign({}, DEFAULT_SETTINGS, raw);
     }
     if (!this.settings.uid) {
-      this.settings.uid = ((_n = (_m = globalThis.crypto) == null ? void 0 : _m.randomUUID) == null ? void 0 : _n.call(_m)) || generateShareId(24);
+      this.settings.uid = ((_o = (_n = globalThis.crypto) == null ? void 0 : _n.randomUUID) == null ? void 0 : _o.call(_n)) || generateShareId(24);
       await this.persist();
     }
     const identity = await ensureIdentityKeys({
@@ -16421,4 +16605,7 @@ function bearerHeaders(token) {
 function safeFolderSegment(value) {
   const clean2 = value.replace(/[\\/:*?"<>|#[\]^]/g, " ").replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
   return clean2 || "Collab share";
+}
+function commentReadKey(shareId, relPath, threadId) {
+  return `${shareId}	${relPath}	${threadId}`;
 }

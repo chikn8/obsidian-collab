@@ -52,6 +52,18 @@ export function roleKey(secret: string, shareId: string, role: Role, epoch: numb
   return hmac(secret, `${shareId}:${role}:${epoch}`);
 }
 
+/** Per-recipient invite key. Adds invite id + expiry to the role-scoped HMAC. */
+export function inviteKey(
+  secret: string,
+  shareId: string,
+  role: Role,
+  epoch: number,
+  inviteId: string,
+  expiresAt?: number
+): string {
+  return hmac(secret, `${shareId}:${role}:${epoch}:invite:${inviteId}:${expiresAt || 0}`);
+}
+
 /** Admin token proving server-secret knowledge for a control action (e.g. revoke). */
 export function adminToken(secret: string, shareId: string, epoch: number): string {
   return hmac(secret, `admin:${shareId}:${epoch}`);
@@ -97,4 +109,23 @@ export function verifyShareAccess(
   // Plain capability key (existing shares) → full editor.
   if (timingSafeEqualStr(token, hmac(secret, shareId))) return "editor";
   return null;
+}
+
+export function verifyInviteAccess(
+  secret: string,
+  shareId: string,
+  token: string,
+  role: Role | undefined,
+  epoch: number | undefined,
+  inviteId: string | undefined,
+  expiresAt: number | undefined,
+  minEpoch: number,
+  now = Date.now()
+): Role | null {
+  if (!role || epoch === undefined || !Number.isFinite(epoch)) return null;
+  if (!inviteId || !/^[1-9A-HJ-NP-Za-km-z]{8,64}$/.test(inviteId)) return null;
+  if (epoch < minEpoch) return null;
+  if (!ROLES.includes(role)) return null;
+  if (expiresAt !== undefined && (!Number.isFinite(expiresAt) || expiresAt <= now)) return null;
+  return timingSafeEqualStr(token, inviteKey(secret, shareId, role, epoch, inviteId, expiresAt)) ? role : null;
 }

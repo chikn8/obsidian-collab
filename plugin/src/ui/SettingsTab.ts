@@ -1,5 +1,8 @@
 import { App, PluginSettingTab, Setting, Notice } from "obsidian";
 import type CollabPlugin from "../main";
+import type { Role } from "../types";
+import { encodeShareCode } from "../utils/roomName";
+import { promptModal } from "./modals";
 
 export class CollabSettingsTab extends PluginSettingTab {
   plugin: CollabPlugin;
@@ -196,6 +199,35 @@ export class CollabSettingsTab extends PluginSettingTab {
           })
         );
         s.addButton((b) =>
+          b.setButtonText("Invite…").onClick(async () => {
+            const res = await promptModal(this.app, {
+              title: "Create invite",
+              cta: "Create",
+              fields: [
+                { key: "recipient", label: "Recipient label", placeholder: "e.g. Mira laptop" },
+                { key: "role", label: "Role", placeholder: "viewer, commenter, or editor", value: "editor" },
+                { key: "expiresHours", label: "Expires in hours", placeholder: "Leave blank for no expiry" },
+              ],
+            });
+            if (!res) return;
+            const role = parseRole(res.role);
+            if (!role) {
+              new Notice("Role must be viewer, commenter, or editor.");
+              return;
+            }
+            const hoursRaw = res.expiresHours.trim();
+            const hours = hoursRaw ? Number(hoursRaw) : 0;
+            if (hoursRaw && (!Number.isFinite(hours) || hours <= 0)) {
+              new Notice("Expiry must be a positive number of hours.");
+              return;
+            }
+            const expiresAt = hours > 0 ? Date.now() + hours * 60 * 60_000 : undefined;
+            const code = await this.plugin.generateShareInviteCode(share, role, res.recipient.trim(), expiresAt);
+            if (code) await copyToClipboard(code, "Invite link copied");
+            this.display();
+          })
+        );
+        s.addButton((b) =>
           b.setButtonText("Revoke all").setWarning().onClick(async () => {
             await this.plugin.revokeShareAccess(share);
             this.display();
@@ -212,8 +244,50 @@ export class CollabSettingsTab extends PluginSettingTab {
             this.display();
           })
       );
+
+      const invites = (share.invites || []).filter((i) => i.id);
+      for (const invite of invites) {
+        const label = invite.recipient || invite.id;
+        const meta = [
+          invite.role,
+          invite.expiresAt ? `expires ${new Date(invite.expiresAt).toLocaleString()}` : "no expiry",
+          invite.revokedAt ? `revoked ${new Date(invite.revokedAt).toLocaleString()}` : null,
+        ].filter(Boolean).join(" · ");
+        const row = new Setting(containerEl)
+          .setName(`Invite: ${label}`)
+          .setDesc(meta);
+        if (!invite.revokedAt && invite.key) {
+          row.addButton((b) =>
+            b.setButtonText("Copy").onClick(async () => {
+              const code = encodeShareCode(
+                this.plugin.settings.serverUrl,
+                share.id,
+                invite.key!,
+                invite.role,
+                share.epoch ?? 1,
+                invite.id,
+                invite.expiresAt
+              );
+              await copyToClipboard(code, "Invite link copied");
+            })
+          );
+        }
+        if (!invite.revokedAt && share.ownerKey) {
+          row.addButton((b) =>
+            b.setButtonText("Revoke").setWarning().onClick(async () => {
+              await this.plugin.revokeShareInvite(share, invite);
+              this.display();
+            })
+          );
+        }
+      }
     }
   }
+}
+
+function parseRole(value: string): Role | null {
+  const v = value.trim().toLowerCase();
+  return v === "viewer" || v === "commenter" || v === "editor" ? v : null;
 }
 
 /** Copy text to the clipboard with a mobile-safe fallback (shows the code to copy by hand). */

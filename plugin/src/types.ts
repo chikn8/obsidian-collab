@@ -21,6 +21,21 @@ export interface Share {
   epoch?: number;
   /** Scoped creator token for this share only. Never included in share codes. */
   ownerKey?: string;
+  /** Invite metadata when this device joined via a per-recipient invite. */
+  inviteId?: string;
+  expiresAt?: number;
+  /** Creator-local list of invites minted from this device. */
+  invites?: ShareInvite[];
+}
+
+export interface ShareInvite {
+  id: string;
+  role: Role;
+  key?: string;
+  recipient?: string;
+  createdAt?: number;
+  expiresAt?: number;
+  revokedAt?: number;
 }
 
 /**

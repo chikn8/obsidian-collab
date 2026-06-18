@@ -1,11 +1,23 @@
 import http from "http";
 import { randomBytes } from "crypto";
 import { WebSocketServer } from "ws";
-import { setupWSConnection, getMetrics, saveAllDocs, closeRevokedConnections } from "./rooms.js";
-import { authenticate, timingSafeEqualStr, verifyShareAccess, adminToken, ownerKey, roleKey, verifyOwnerAccess, ROLES, type Role } from "./auth.js";
+import { setupWSConnection, getMetrics, saveAllDocs, closeRevokedConnections, closeInviteConnections } from "./rooms.js";
+import {
+  authenticate,
+  timingSafeEqualStr,
+  verifyShareAccess,
+  verifyInviteAccess,
+  adminToken,
+  ownerKey,
+  roleKey,
+  inviteKey,
+  verifyOwnerAccess,
+  ROLES,
+  type Role,
+} from "./auth.js";
 import { startSnapshots, stopSnapshots, commitSnapshotsNow, getSnapshotsHealth } from "./snapshots.js";
 import { listVersions, getVersion, listShareFiles } from "./history.js";
-import { getMinEpoch, setMinEpoch, getShareStateHealth } from "./shareState.js";
+import { getInvite, getMinEpoch, putInvite, revokeInvite, setMinEpoch, getShareStateHealth } from "./shareState.js";
 import { getPersistenceHealth } from "./persistence.js";
 import { startBackups, stopBackups, getBackupHealth } from "./backups.js";
 import { auditEvent } from "./audit.js";
@@ -70,8 +82,54 @@ function remoteAddress(req: http.IncomingMessage): string {
   return req.socket.remoteAddress || "";
 }
 
+async function readJsonBody(req: http.IncomingMessage, maxBytes = 8192): Promise<any> {
+  let raw = "";
+  for await (const chunk of req) {
+    raw += chunk.toString("utf-8");
+    if (raw.length > maxBytes) throw new Error("request body too large");
+  }
+  if (!raw.trim()) return {};
+  return JSON.parse(raw);
+}
+
 function isRole(value: string | null): value is Role {
   return !!value && (ROLES as string[]).includes(value);
+}
+
+function inviteExpiresAt(url: URL): number | undefined {
+  const raw = url.searchParams.get("exp");
+  return raw != null && raw !== "" ? Number(raw) : undefined;
+}
+
+async function verifyNamespacedAccess(args: {
+  shareId: string;
+  token: string;
+  role?: Role;
+  epoch?: number;
+  inviteId?: string;
+  expiresAt?: number;
+}): Promise<Role | null> {
+  const min = await getMinEpoch(args.shareId);
+  if (args.inviteId) {
+    const granted = verifyInviteAccess(
+      SERVER_SECRET,
+      args.shareId,
+      args.token,
+      args.role,
+      args.epoch,
+      args.inviteId,
+      args.expiresAt,
+      min
+    );
+    if (!granted) return null;
+    const invite = await getInvite(args.shareId, args.inviteId);
+    if (!invite || invite.revokedAt) return null;
+    if (invite.role !== args.role || invite.epoch !== args.epoch) return null;
+    if ((invite.expiresAt || 0) !== (args.expiresAt || 0)) return null;
+    if (invite.expiresAt && Date.now() > invite.expiresAt) return null;
+    return granted;
+  }
+  return verifyShareAccess(SERVER_SECRET, args.shareId, args.token, args.role, args.epoch, min);
 }
 
 const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
@@ -171,6 +229,68 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (p === "/share/invite" && req.method === "POST") {
+      const shareId = url.searchParams.get("share") || "";
+      const role = url.searchParams.get("role");
+      const epoch = url.searchParams.get("epoch") != null ? Number(url.searchParams.get("epoch")) : undefined;
+      const token = bearerOrQueryToken(req, url);
+      if (!shareId || !isRole(role) || epoch === undefined || !Number.isFinite(epoch)) return json(400, { error: "bad request" });
+      const min = await getMinEpoch(shareId);
+      if (!verifyOwnerAccess(SHARE_OWNER_SECRET, shareId, token, epoch, min)) {
+        void auditEvent("share.invite.rejected", { shareId, role, epoch, remote: remoteAddress(req), reason: "owner-auth" });
+        return json(401, { error: "unauthorized" });
+      }
+      const body = await readJsonBody(req);
+      const recipient = typeof body?.recipient === "string"
+        ? body.recipient.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 80)
+        : "";
+      const expiresAt = body?.expiresAt === undefined || body?.expiresAt === null || body?.expiresAt === ""
+        ? undefined
+        : Number(body.expiresAt);
+      if (expiresAt !== undefined && (!Number.isFinite(expiresAt) || expiresAt <= Date.now())) {
+        return json(400, { error: "bad expiry" });
+      }
+      const inviteId = generateShareId(12);
+      const createdAt = Date.now();
+      await putInvite(shareId, {
+        id: inviteId,
+        role,
+        epoch,
+        createdAt,
+        recipient: recipient || undefined,
+        expiresAt,
+      });
+      void auditEvent("share.invite.created", { shareId, inviteId, role, epoch, recipient: recipient || undefined, expiresAt, remote: remoteAddress(req) });
+      return json(200, {
+        id: shareId,
+        inviteId,
+        role,
+        epoch,
+        recipient: recipient || undefined,
+        expiresAt,
+        createdAt,
+        key: inviteKey(SERVER_SECRET, shareId, role, epoch, inviteId, expiresAt),
+      });
+    }
+
+    if (p === "/share/invite/revoke" && req.method === "POST") {
+      const shareId = url.searchParams.get("share") || "";
+      const inviteId = url.searchParams.get("invite") || "";
+      const epoch = url.searchParams.get("epoch") != null ? Number(url.searchParams.get("epoch")) : undefined;
+      const token = bearerOrQueryToken(req, url);
+      if (!shareId || !inviteId || epoch === undefined || !Number.isFinite(epoch)) return json(400, { error: "bad request" });
+      const min = await getMinEpoch(shareId);
+      if (!verifyOwnerAccess(SHARE_OWNER_SECRET, shareId, token, epoch, min)) {
+        void auditEvent("share.invite.revoke_rejected", { shareId, inviteId, epoch, remote: remoteAddress(req), reason: "owner-auth" });
+        return json(401, { error: "unauthorized" });
+      }
+      const invite = await revokeInvite(shareId, inviteId);
+      if (!invite) return json(404, { error: "not found" });
+      const closedConnections = closeInviteConnections(shareId, inviteId);
+      void auditEvent("share.invite.revoked", { shareId, inviteId, role: invite.role, epoch: invite.epoch, closedConnections, remote: remoteAddress(req) });
+      return json(200, { ok: true, shareId, inviteId, closedConnections, revokedAt: invite.revokedAt });
+    }
+
     if (p === "/share/revoke" && req.method === "POST") {
       const shareId = url.searchParams.get("share") || "";
       const epoch = url.searchParams.get("epoch") != null ? Number(url.searchParams.get("epoch")) : undefined;
@@ -202,12 +322,13 @@ const server = http.createServer(async (req, res) => {
       const token = url.searchParams.get("token") || "";
       const role = (url.searchParams.get("role") as Role | null) || undefined;
       const epoch = url.searchParams.get("epoch") != null ? Number(url.searchParams.get("epoch")) : undefined;
-      const min = await getMinEpoch(shareId);
+      const inviteId = url.searchParams.get("invite") || undefined;
+      const expiresAt = inviteExpiresAt(url);
       const granted =
         shareId === "legacy" && !DISABLE_LEGACY_ROOMS && authenticate(token, AUTH_TOKEN)
           ? "editor"
           : shareId
-            ? verifyShareAccess(SERVER_SECRET, shareId, token, role, epoch, min)
+            ? await verifyNamespacedAccess({ shareId, token, role, epoch, inviteId, expiresAt })
             : null;
       if (!granted) return json(401, { error: "unauthorized" });
 
@@ -254,6 +375,8 @@ server.on("upgrade", async (request, socket, head) => {
   const room = decodeURIComponent(url.pathname.slice(1).split("?")[0]);
   const roleParam = (url.searchParams.get("role") as Role | null) || undefined;
   const epochParam = url.searchParams.get("epoch") != null ? Number(url.searchParams.get("epoch")) : undefined;
+  const inviteParam = url.searchParams.get("invite") || undefined;
+  const expParam = inviteExpiresAt(url);
 
   // Authenticate. Namespaced share rooms ("@<shareId>:...") validate against a
   // per-share capability token (role+epoch folded into the HMAC, with a legacy
@@ -262,8 +385,14 @@ server.on("upgrade", async (request, socket, head) => {
   let ok: boolean;
   const shareId = shareIdOf(room);
   if (shareId) {
-    const min = await getMinEpoch(shareId);
-    const role = verifyShareAccess(SERVER_SECRET, shareId, token, roleParam, epochParam, min);
+    const role = await verifyNamespacedAccess({
+      shareId,
+      token,
+      role: roleParam,
+      epoch: epochParam,
+      inviteId: inviteParam,
+      expiresAt: expParam,
+    });
     ok = role !== null;
     if (role) grantedRole = role;
   } else {
@@ -277,6 +406,7 @@ server.on("upgrade", async (request, socket, head) => {
       shareId,
       role: roleParam,
       epoch: epochParam,
+      inviteId: inviteParam,
       remote: request.socket.remoteAddress || "",
       reason: "token",
     });
@@ -289,6 +419,7 @@ server.on("upgrade", async (request, socket, head) => {
   (request as any).collabRole = grantedRole;
   (request as any).collabShareId = shareId;
   (request as any).collabEpoch = epochParam ?? 0;
+  (request as any).collabInviteId = inviteParam ?? null;
   wss.handleUpgrade(request, socket, head, (ws) => {
     wss.emit("connection", ws, request);
   });

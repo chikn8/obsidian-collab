@@ -34,7 +34,7 @@ createFileProvider in-flight reservation · comment-anchor quote-verify + re-mat
 real-server WebSocket e2e for convergence, viewer write rejection, restart durability, and revocation.
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
-(ops, not code) · per-recipient signed identities · socket multiplexing / scale ceiling
+(ops, not code) · signed user identities · socket multiplexing / scale ceiling
 (Tier 3.1) · binary/attachment sync (Tier 4.1) · hunk-level version restore · human device-matrix test.
 
 ---
@@ -298,10 +298,12 @@ with a per-room dirty-flag **global sweep**.
 ### 3.2 — Server-side share minting / per-share key isolation (implemented foundation; follow-ups remain)
 **Status.** Implemented the foundation: `/share/create` mints new shares with `SHARE_MINT_TOKEN`, returns
 only a scoped editor key plus per-share `ownerKey`, and keeps `SERVER_SECRET` on the server. `/share/link`
-and `/share/revoke` require the owner key, so a leaked client config can mint/revoke only that share. The
-old client-side HMAC path remains as a legacy fallback for old servers.
-**Remaining.** Add key-rotation windows and per-recipient/expiring invites (see 3.5).
-**Verify.** Server auth tests cover role/owner key separation and revoked-owner rejection.
+and `/share/revoke` require the owner key, so a leaked client config can mint/revoke only that share.
+`/share/invite` adds per-recipient invite ids + optional expiry; `/share/invite/revoke` revokes one invite
+and closes only its live sockets. The old client-side HMAC path remains as a legacy fallback for old servers.
+**Remaining.** Add key-rotation windows and signed user identities.
+**Verify.** Server auth/share-state tests and real-server e2e cover role/owner/invite separation, expiry,
+revoked-owner rejection, and live invite revocation.
 
 ### 3.3 — Memory-pressure room eviction + process tuning (L)
 **Fix.** LRU room eviction under a memory ceiling (persist + drop idle rooms); `--max-old-space-size`;
@@ -311,9 +313,10 @@ Railway `restartPolicy` tuning; replace `closeConn`'s O(rooms) scan with a per-c
 **Fix.** Postgres / y-redis backing so stateless replicas can run behind Railway (HA + zero-downtime deploys);
 a shared relay (Redis/NATS) for cross-instance fan-out. Unlocks horizontal scale beyond one box.
 
-### 3.5 — Per-recipient revocable invites + expiring codes (M)
-**Fix.** Fold `exp` into the HMAC for expiring share codes; per-recipient invites that revoke individually
-(not just epoch-bump-everyone). A persisted audit log of joins/revokes/security rejections now exists.
+### 3.5 — Per-recipient revocable invites + expiring codes (implemented)
+**Status.** Invite codes include role, epoch, invite id, and optional expiry in the HMAC. The server stores
+invite state, rejects expired/revoked invites, and can revoke one invite without epoch-bumping everyone.
+A persisted audit log of joins/revokes/security rejections also exists.
 
 ---
 

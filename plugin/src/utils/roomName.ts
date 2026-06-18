@@ -40,7 +40,10 @@ export function shareToken(share: Share, serverPassword: string): string {
 /** Extra WS query params carrying the role+epoch for a role-scoped share. */
 export function shareAuthParams(share: Share): Record<string, string> {
   if (share.legacy || !share.role || share.epoch == null) return {};
-  return { role: share.role, epoch: String(share.epoch) };
+  const params: Record<string, string> = { role: share.role, epoch: String(share.epoch) };
+  if (share.inviteId) params.invite = share.inviteId;
+  if (share.expiresAt) params.exp = String(share.expiresAt);
+  return params;
 }
 
 /** ws(s):// -> http(s):// base for the HTTP history/admin API. */
@@ -56,13 +59,25 @@ export interface ShareCode {
   k: string; // key
   r?: Role; // role
   e?: number; // epoch
+  i?: string; // invite id
+  x?: number; // expiresAt ms epoch
 }
 
 /** Encode a share into a compact copy-paste code (optionally role-scoped). */
-export function encodeShareCode(serverUrl: string, id: string, key: string, role?: Role, epoch?: number): string {
+export function encodeShareCode(
+  serverUrl: string,
+  id: string,
+  key: string,
+  role?: Role,
+  epoch?: number,
+  inviteId?: string,
+  expiresAt?: number
+): string {
   const obj: ShareCode = { s: serverUrl, id, k: key };
   if (role) obj.r = role;
   if (epoch != null) obj.e = epoch;
+  if (inviteId) obj.i = inviteId;
+  if (expiresAt != null) obj.x = expiresAt;
   return base64urlFromBinary(utf8ToBinary(JSON.stringify(obj)));
 }
 

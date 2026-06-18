@@ -23,7 +23,7 @@ import {
   httpBase,
 } from "./utils/roomName";
 import { HistoryView, HISTORY_VIEW_TYPE, type HistoryContext } from "./ui/HistoryView";
-import type { CollabPluginSettings, SyncStatus, ConnectedUser, Share, Role } from "./types";
+import type { CollabPluginSettings, SyncStatus, ConnectedUser, Share, Role, ShareInvite } from "./types";
 import { colorFor, DEFAULT_SETTINGS, LEGACY_SHARE_ID } from "./types";
 
 export default class CollabPlugin extends Plugin {
@@ -479,7 +479,9 @@ export default class CollabPlugin extends Plugin {
     const base = httpBase(this.settings.serverUrl);
     const relPath = m.toRel(file.path);
     const histShareId = share.legacy ? "legacy" : share.id;
-    const roleQ = share.legacy ? "" : `&role=${share.role || "editor"}&epoch=${share.epoch ?? 1}`;
+    const roleQ = share.legacy
+      ? ""
+      : `&role=${share.role || "editor"}&epoch=${share.epoch ?? 1}${share.inviteId ? `&invite=${encodeURIComponent(share.inviteId)}` : ""}${share.expiresAt ? `&exp=${share.expiresAt}` : ""}`;
     const token = async (): Promise<string | null> =>
       share.legacy ? (this.settings.serverPassword || null) : share.key;
 
@@ -587,6 +589,89 @@ export default class CollabPlugin extends Plugin {
     return null;
   }
 
+  async generateShareInviteCode(share: Share, role: Role, recipient: string, expiresAt?: number): Promise<string | null> {
+    if (share.legacy) {
+      new Notice("Invite links require a non-legacy share.");
+      return null;
+    }
+    if (!share.ownerKey) {
+      new Notice("This device does not have owner access for that share.");
+      return null;
+    }
+
+    const epoch = share.epoch ?? 1;
+    try {
+      const res = await postJson<{
+        id: string;
+        inviteId: string;
+        key: string;
+        role: Role;
+        epoch: number;
+        recipient?: string;
+        expiresAt?: number;
+        createdAt?: number;
+      }>(
+        `${httpBase(this.settings.serverUrl)}/share/invite?share=${encodeURIComponent(share.id)}&role=${encodeURIComponent(role)}&epoch=${epoch}`,
+        { recipient, expiresAt },
+        bearerHeaders(share.ownerKey)
+      );
+      if (!res.ok || !res.body?.key || !res.body.inviteId) {
+        new Notice("Could not create that invite on the server.");
+        return null;
+      }
+
+      const invite: ShareInvite = {
+        id: res.body.inviteId,
+        key: res.body.key,
+        role: res.body.role,
+        recipient: res.body.recipient || recipient || undefined,
+        createdAt: res.body.createdAt,
+        expiresAt: res.body.expiresAt,
+      };
+      share.invites = [invite, ...(share.invites || []).filter((i) => i.id !== invite.id)].slice(0, 50);
+      await this.persist();
+      return encodeShareCode(
+        this.settings.serverUrl,
+        share.id,
+        res.body.key,
+        res.body.role,
+        res.body.epoch,
+        res.body.inviteId,
+        res.body.expiresAt
+      );
+    } catch (e) {
+      err("share", "server invite mint failed", e);
+      new Notice("Invite request failed.");
+      return null;
+    }
+  }
+
+  async revokeShareInvite(share: Share, invite: ShareInvite): Promise<boolean> {
+    if (!share.ownerKey) {
+      new Notice("This device does not have owner access for that share.");
+      return false;
+    }
+    try {
+      const res = await postJson<{ ok: boolean; revokedAt?: number; closedConnections?: number }>(
+        `${httpBase(this.settings.serverUrl)}/share/invite/revoke?share=${encodeURIComponent(share.id)}&invite=${encodeURIComponent(invite.id)}&epoch=${share.epoch ?? 1}`,
+        undefined,
+        bearerHeaders(share.ownerKey)
+      );
+      if (!res.ok) {
+        new Notice("Could not revoke that invite.");
+        return false;
+      }
+      invite.revokedAt = res.body?.revokedAt || Date.now();
+      await this.persist();
+      new Notice(`Invite revoked${res.body?.closedConnections ? `; closed ${res.body.closedConnections} connection(s)` : ""}.`);
+      return true;
+    } catch (e) {
+      err("revoke", e);
+      new Notice("Invite revoke request failed.");
+      return false;
+    }
+  }
+
   /** Revoke ALL outstanding codes for a share by bumping its epoch. */
   async revokeShareAccess(share: Share): Promise<boolean> {
     if (share.legacy) {
@@ -609,6 +694,10 @@ export default class CollabPlugin extends Plugin {
         share.role = "editor";
         share.key = res.body.key;
         share.ownerKey = res.body.ownerKey;
+        const revokedAt = Date.now();
+        for (const invite of share.invites || []) {
+          if (!invite.revokedAt) invite.revokedAt = revokedAt;
+        }
         await this.persist();
         await this.stopShare(share.id);
         await this.startShare(share);
@@ -639,6 +728,10 @@ export default class CollabPlugin extends Plugin {
     share.epoch = newEpoch;
     share.role = share.role || "editor";
     share.key = await deriveRoleKey(this.settings.serverSecret, share.id, share.role as Role, newEpoch);
+    const revokedAt = Date.now();
+    for (const invite of share.invites || []) {
+      if (!invite.revokedAt) invite.revokedAt = revokedAt;
+    }
     await this.persist();
     await this.stopShare(share.id);
     await this.startShare(share);
@@ -778,6 +871,8 @@ export default class CollabPlugin extends Plugin {
       key: decoded.k,
       role: decoded.r,
       epoch: decoded.e,
+      inviteId: decoded.i,
+      expiresAt: decoded.x,
       label: folder.split("/").pop() || folder,
       localFolder: folder,
     };

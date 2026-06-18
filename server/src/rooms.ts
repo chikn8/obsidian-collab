@@ -344,6 +344,22 @@ export function closeRevokedConnections(shareId: string, minEpoch: number): numb
   return closed;
 }
 
+export function closeInviteConnections(shareId: string, inviteId: string): number {
+  let closed = 0;
+  const prefix = `@${shareId}:`;
+  for (const [roomName, doc] of docs) {
+    if (!roomName.startsWith(prefix)) continue;
+    for (const conn of doc.conns.keys()) {
+      if ((conn as any).collabShareId === shareId && (conn as any).collabInviteId === inviteId) {
+        closed++;
+        conn.close(4003, "Invite access revoked");
+      }
+    }
+  }
+  if (closed > 0) console.log(`[rooms] closed ${closed} invite connection(s) for share ${shareId}`);
+  return closed;
+}
+
 /**
  * Send a binary message to a WebSocket client.
  */
@@ -612,6 +628,7 @@ export async function setupWSConnection(
   (conn as any).collabRole = (req as any).collabRole || "editor";
   (conn as any).collabShareId = (req as any).collabShareId || null;
   (conn as any).collabEpoch = (req as any).collabEpoch ?? 0;
+  (conn as any).collabInviteId = (req as any).collabInviteId || null;
   (conn as any).collabIdentity = identityFromUrl(url, (conn as any).collabConnId);
 
   // Track this connection
@@ -628,6 +645,7 @@ export async function setupWSConnection(
     uid: (conn as any).collabIdentity?.uid,
     name: (conn as any).collabIdentity?.name,
     epoch: (conn as any).collabEpoch ?? 0,
+    inviteId: (conn as any).collabInviteId || undefined,
     conns: doc.conns.size,
     clients: doc.awareness.getStates().size,
     textLen: fileTextLen(doc),
@@ -643,6 +661,7 @@ export async function setupWSConnection(
     device: (conn as any).collabIdentity?.device,
     deviceId: (conn as any).collabIdentity?.deviceId,
     epoch: (conn as any).collabEpoch ?? 0,
+    inviteId: (conn as any).collabInviteId || undefined,
     remote: req.socket.remoteAddress || "",
     conns: doc.conns.size,
   });

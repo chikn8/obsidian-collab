@@ -34,7 +34,7 @@ namespaced set of rooms plus a manifest.
 |---|---|
 | **Editing** | Live multi-cursor editing (CRDT), remote selections, instant sync via CodeMirror 6 |
 | **Sharing** | Per-folder shares; mount the same share at any local path; multiple independent shares |
-| **Roles** | `editor` / `commenter` / `viewer`, enforced server-side; revoke all links by bumping an epoch |
+| **Roles** | `editor` / `commenter` / `viewer`, enforced server-side; per-recipient invites + revoke-all |
 | **Presence** | Top-of-editor facepile, file-explorer avatars (desktop), click-to-jump, per-device identity |
 | **Comments** | Threaded, anchored to text, replies + emoji reactions; survive edits; `@mention` → phone push |
 | **History** | Server-side git snapshots per file; browse, preview, restore any version |
@@ -194,8 +194,8 @@ See `server/.env.example` for a copy-paste template, and `server/RECOVERY.md` fo
 - **Join:** `Cmd+P` → *Add a shared folder (paste code)…*, or open an `obsidian://collab-add?code=…`
   link, then pick a local folder to sync into.
 - **Roles:** share an *editor*, *commenter*, or *viewer* link. Viewers/commenters can't write the file
-  (enforced on the server). **Revoke all links** for a share from settings (bumps the epoch; old links
-  stop working, live revoked clients are disconnected).
+  (enforced on the server). Use **Invite…** for a named/expiring recipient link that can be revoked by
+  itself, or **Revoke all links** to bump the share epoch and disconnect every old link.
 - **Comments:** select text → right-click → *Add comment*. Open the comments panel from the ribbon.
 - **Version history:** right-click a synced note → *Version history*, or `Cmd+P` → *Open version
   history*. Preview and restore any snapshot (a pre-restore backup is saved).
@@ -260,7 +260,7 @@ manual installs but violates Obsidian's current community-directory naming rule 
 
 The reliability core (loops, lost-content, deletes/renames, offline, folder ops) is implemented and
 test-covered; backend durability and security hardening are largely in place. Remaining work
-(scale/HA, per-recipient invites/signed identity, attachment sync, hunk-level version restore, and the human
+(scale/HA, signed user identity, attachment sync, hunk-level version restore, and the human
 device-matrix test) is tracked in **[ROADMAP-v2-hardening.md](ROADMAP-v2-hardening.md)**.
 
 **Before trusting it with important notes:** exclude the shared folder from Obsidian Sync, confirm an

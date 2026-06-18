@@ -1,6 +1,8 @@
 import {
+  inviteKey,
   ownerKey,
   roleKey,
+  verifyInviteAccess,
   verifyOwnerAccess,
   verifyShareAccess,
 } from "../src/auth.ts";
@@ -20,6 +22,8 @@ const epoch = 3;
 const editor = roleKey(serverSecret, shareId, "editor", epoch);
 const viewer = roleKey(serverSecret, shareId, "viewer", epoch);
 const owner = ownerKey(ownerSecret, shareId, epoch);
+const futureExpiry = Date.now() + 60_000;
+const invite = inviteKey(serverSecret, shareId, "commenter", epoch, "abc123XYZ", futureExpiry);
 
 check("role keys are role scoped", editor !== viewer);
 check("editor token grants editor", verifyShareAccess(serverSecret, shareId, editor, "editor", epoch, 1) === "editor");
@@ -28,6 +32,12 @@ check("owner key validates only with owner secret", verifyOwnerAccess(ownerSecre
 check("owner key is not a share access token", verifyShareAccess(serverSecret, shareId, owner, "editor", epoch, 1) === null);
 check("revoked epoch rejects owner key", !verifyOwnerAccess(ownerSecret, shareId, owner, epoch, epoch + 1));
 check("wrong share rejects owner key", !verifyOwnerAccess(ownerSecret, "other-share", owner, epoch, 1));
+check("invite token grants scoped role",
+  verifyInviteAccess(serverSecret, shareId, invite, "commenter", epoch, "abc123XYZ", futureExpiry, 1) === "commenter");
+check("invite token is invite scoped",
+  verifyInviteAccess(serverSecret, shareId, invite, "commenter", epoch, "other123", futureExpiry, 1) === null);
+check("expired invite rejects",
+  verifyInviteAccess(serverSecret, shareId, inviteKey(serverSecret, shareId, "viewer", epoch, "abc123XYZ", Date.now() - 1), "viewer", epoch, "abc123XYZ", Date.now() - 1, 1) === null);
 
 console.log("");
 if (failures > 0) { console.error(`FAILED — ${failures} assertion(s) failed`); process.exit(1); }

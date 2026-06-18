@@ -2,6 +2,7 @@ import fs from "fs/promises";
 import path from "path";
 import { alertOps } from "./notify.js";
 import { atomicWriteFile } from "./storage.js";
+import type { Role } from "./auth.js";
 
 /**
  * Per-share control state persisted on the Railway volume. Currently just the
@@ -12,8 +13,19 @@ import { atomicWriteFile } from "./storage.js";
 const PERSIST_DIR = process.env.PERSIST_DIR || "./collab-data";
 const STATE_FILE = path.join(PERSIST_DIR, "share-state.json");
 
+export interface ShareInviteEntry {
+  id: string;
+  role: Role;
+  epoch: number;
+  createdAt: number;
+  recipient?: string;
+  expiresAt?: number;
+  revokedAt?: number;
+}
+
 interface ShareEntry {
   minEpoch: number;
+  invites?: Record<string, ShareInviteEntry>;
 }
 type State = Record<string, ShareEntry>;
 
@@ -32,8 +44,34 @@ function parseState(raw: string): State {
     if (!entry || typeof entry !== "object" || !Number.isFinite(entry.minEpoch) || entry.minEpoch < 0) {
       throw new Error(`invalid share state entry for ${shareId}`);
     }
+    if (entry.invites !== undefined) {
+      if (!entry.invites || typeof entry.invites !== "object" || Array.isArray(entry.invites)) {
+        throw new Error(`invalid invites map for ${shareId}`);
+      }
+      for (const [inviteId, invite] of Object.entries(entry.invites as Record<string, any>)) {
+        if (
+          !invite ||
+          typeof invite !== "object" ||
+          invite.id !== inviteId ||
+          !["viewer", "commenter", "editor"].includes(invite.role) ||
+          !Number.isFinite(invite.epoch) ||
+          !Number.isFinite(invite.createdAt) ||
+          (invite.expiresAt !== undefined && !Number.isFinite(invite.expiresAt)) ||
+          (invite.revokedAt !== undefined && !Number.isFinite(invite.revokedAt))
+        ) {
+          throw new Error(`invalid invite ${inviteId} for ${shareId}`);
+        }
+      }
+    }
   }
   return parsed as State;
+}
+
+function shareEntry(s: State, shareId: string): ShareEntry {
+  const cur = s[shareId] || { minEpoch: 0 };
+  if (!cur.invites) cur.invites = {};
+  s[shareId] = cur;
+  return cur;
 }
 
 async function load(): Promise<State> {
@@ -83,10 +121,33 @@ export async function setMinEpoch(shareId: string, epoch: number): Promise<void>
   const s = await load();
   const cur = s[shareId]?.minEpoch ?? 0;
   if (epoch > cur) {
-    s[shareId] = { minEpoch: epoch };
+    s[shareId] = { ...(s[shareId] || {}), minEpoch: epoch };
     await save();
     console.log(`[shareState] ${shareId} minEpoch -> ${epoch}`);
   }
+}
+
+export async function putInvite(shareId: string, invite: ShareInviteEntry): Promise<void> {
+  const s = await load();
+  const entry = shareEntry(s, shareId);
+  entry.invites![invite.id] = invite;
+  await save();
+}
+
+export async function getInvite(shareId: string, inviteId: string): Promise<ShareInviteEntry | null> {
+  const s = await load();
+  return s[shareId]?.invites?.[inviteId] ?? null;
+}
+
+export async function revokeInvite(shareId: string, inviteId: string, revokedAt = Date.now()): Promise<ShareInviteEntry | null> {
+  const s = await load();
+  const invite = s[shareId]?.invites?.[inviteId];
+  if (!invite) return null;
+  if (!invite.revokedAt) {
+    invite.revokedAt = revokedAt;
+    await save();
+  }
+  return invite;
 }
 
 export function getShareStateHealth() {

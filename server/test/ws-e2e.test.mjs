@@ -41,6 +41,10 @@ function adminToken(shareId, epoch) {
   return hmac(ADMIN_SECRET, `admin:${shareId}:${epoch}`);
 }
 
+function ownerKey(shareId, epoch) {
+  return hmac(SHARE_OWNER_SECRET, `owner:${shareId}:${epoch}`);
+}
+
 function roomName(shareId, relPath) {
   return `@${shareId}:file:${encodeURIComponent(relPath)}`;
 }
@@ -232,6 +236,20 @@ function authParams(role, epoch, shareId) {
   };
 }
 
+function inviteAuthParams(invite) {
+  return {
+    token: invite.key,
+    role: invite.role,
+    epoch: invite.epoch,
+    invite: invite.inviteId,
+    ...(invite.expiresAt ? { exp: invite.expiresAt } : {}),
+    uid: `uid-invite-${Math.random().toString(36).slice(2)}`,
+    name: "invite user",
+    device: "test",
+    deviceId: `device-${Math.random().toString(36).slice(2)}`,
+  };
+}
+
 console.log("real server WebSocket e2e\n");
 
 const persistDir = await fs.mkdtemp(path.join(os.tmpdir(), "obsidian-collab-ws-e2e-"));
@@ -320,6 +338,38 @@ try {
     ]);
     check("old epoch socket closed with 4003", closed?.code === 4003, `code=${closed?.code}`);
     client.doc.destroy();
+  }
+
+  console.log("Per-recipient invite can be revoked independently");
+  {
+    const shareId = "e2e-invite";
+    const room = roomName(shareId, "invite.md");
+    const epoch = 1;
+    const inviteRes = await fetch(`${server.httpBase}/share/invite?share=${encodeURIComponent(shareId)}&role=editor&epoch=${epoch}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${ownerKey(shareId, epoch)}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ recipient: "Mira", expiresAt: Date.now() + 60_000 }),
+    });
+    const invite = await inviteRes.json();
+    check("invite mint HTTP succeeds", inviteRes.status === 200 && !!invite.inviteId, `status=${inviteRes.status}`);
+    const invited = new SyncClient(server.wsBase, room, inviteAuthParams(invite));
+    await invited.ready;
+    invited.setText("invite can edit until revoked");
+    await sleep(300);
+    const revokeRes = await fetch(`${server.httpBase}/share/invite/revoke?share=${encodeURIComponent(shareId)}&invite=${encodeURIComponent(invite.inviteId)}&epoch=${epoch}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${ownerKey(shareId, epoch)}` },
+    });
+    check("invite revoke HTTP succeeds", revokeRes.status === 200, `status=${revokeRes.status}`);
+    const closed = await Promise.race([
+      invited.closed,
+      sleep(5000).then(() => null),
+    ]);
+    check("revoked invite socket closed with 4003", closed?.code === 4003, `code=${closed?.code}`);
+    invited.doc.destroy();
   }
 } finally {
   await stopServer(server);

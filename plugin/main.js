@@ -11014,15 +11014,20 @@ function shareToken(share, serverPassword) {
 }
 function shareAuthParams(share) {
   if (share.legacy || !share.role || share.epoch == null) return {};
-  return { role: share.role, epoch: String(share.epoch) };
+  const params2 = { role: share.role, epoch: String(share.epoch) };
+  if (share.inviteId) params2.invite = share.inviteId;
+  if (share.expiresAt) params2.exp = String(share.expiresAt);
+  return params2;
 }
 function httpBase(serverUrl) {
   return serverUrl.replace(/^ws/, "http").replace(/\/$/, "");
 }
-function encodeShareCode(serverUrl, id2, key, role, epoch) {
+function encodeShareCode(serverUrl, id2, key, role, epoch, inviteId, expiresAt) {
   const obj = { s: serverUrl, id: id2, k: key };
   if (role) obj.r = role;
   if (epoch != null) obj.e = epoch;
+  if (inviteId) obj.i = inviteId;
+  if (expiresAt != null) obj.x = expiresAt;
   return base64urlFromBinary(utf8ToBinary(JSON.stringify(obj)));
 }
 function decodeShareCode(code) {
@@ -12483,8 +12488,45 @@ var StatusBarWidget = class {
 };
 
 // src/ui/SettingsTab.ts
+var import_obsidian6 = require("obsidian");
+
+// src/ui/modals.ts
 var import_obsidian5 = require("obsidian");
-var CollabSettingsTab = class extends import_obsidian5.PluginSettingTab {
+function promptModal(app, opts) {
+  return new Promise((resolve) => {
+    var _a2;
+    const modal = new import_obsidian5.Modal(app);
+    modal.titleEl.setText(opts.title);
+    const values = {};
+    for (const f of opts.fields) values[f.key] = (_a2 = f.value) != null ? _a2 : "";
+    for (const f of opts.fields) {
+      new import_obsidian5.Setting(modal.contentEl).setName(f.label).addText((t) => {
+        var _a3;
+        t.setPlaceholder((_a3 = f.placeholder) != null ? _a3 : "").setValue(values[f.key]);
+        t.onChange((v) => values[f.key] = v);
+        t.inputEl.style.width = "100%";
+      });
+    }
+    let submitted = false;
+    new import_obsidian5.Setting(modal.contentEl).addButton(
+      (b) => {
+        var _a3;
+        return b.setButtonText((_a3 = opts.cta) != null ? _a3 : "OK").setCta().onClick(() => {
+          submitted = true;
+          modal.close();
+          resolve(values);
+        });
+      }
+    );
+    modal.onClose = () => {
+      if (!submitted) resolve(null);
+    };
+    modal.open();
+  });
+}
+
+// src/ui/SettingsTab.ts
+var CollabSettingsTab = class extends import_obsidian6.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -12493,40 +12535,40 @@ var CollabSettingsTab = class extends import_obsidian5.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Real-Time Collaboration" });
-    new import_obsidian5.Setting(containerEl).setName("Server URL").setDesc("WebSocket server address for Yjs sync.").addText(
+    new import_obsidian6.Setting(containerEl).setName("Server URL").setDesc("WebSocket server address for Yjs sync.").addText(
       (text2) => text2.setPlaceholder("wss://obsidiansync-production.up.railway.app").setValue(this.plugin.settings.serverUrl).onChange(async (value) => {
         this.plugin.settings.serverUrl = value.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("Server Password").setDesc("Global password for the legacy shared folder. Must match the server's AUTH_TOKEN.").addText((text2) => {
+    new import_obsidian6.Setting(containerEl).setName("Server Password").setDesc("Global password for the legacy shared folder. Must match the server's AUTH_TOKEN.").addText((text2) => {
       text2.inputEl.type = "password";
       text2.setPlaceholder("Enter password").setValue(this.plugin.settings.serverPassword).onChange(async (value) => {
         this.plugin.settings.serverPassword = value;
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Share admin token").setDesc("Creates new shares through the server without storing SERVER_SECRET on this device. Must match SHARE_MINT_TOKEN.").addText((text2) => {
+    new import_obsidian6.Setting(containerEl).setName("Share admin token").setDesc("Creates new shares through the server without storing SERVER_SECRET on this device. Must match SHARE_MINT_TOKEN.").addText((text2) => {
       text2.inputEl.type = "password";
       text2.setPlaceholder("Enter share admin token").setValue(this.plugin.settings.shareMintToken).onChange(async (value) => {
         this.plugin.settings.shareMintToken = value;
         await this.plugin.saveSettings(false);
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Legacy server secret").setDesc("Deprecated fallback for older servers that cannot mint shares. Avoid storing SERVER_SECRET in client settings.").addText((text2) => {
+    new import_obsidian6.Setting(containerEl).setName("Legacy server secret").setDesc("Deprecated fallback for older servers that cannot mint shares. Avoid storing SERVER_SECRET in client settings.").addText((text2) => {
       text2.inputEl.type = "password";
       text2.setPlaceholder("Avoid unless using an old server").setValue(this.plugin.settings.serverSecret).onChange(async (value) => {
         this.plugin.settings.serverSecret = value;
         await this.plugin.saveSettings(false);
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Display Name").setDesc("Shown to collaborators (and its first letter becomes your avatar).").addText(
+    new import_obsidian6.Setting(containerEl).setName("Display Name").setDesc("Shown to collaborators (and its first letter becomes your avatar).").addText(
       (text2) => text2.setPlaceholder("Anonymous").setValue(this.plugin.settings.displayName).onChange(async (value) => {
         this.plugin.settings.displayName = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("Cursor / Avatar Color").setDesc("Your color visible to others.").addText((text2) => {
+    new import_obsidian6.Setting(containerEl).setName("Cursor / Avatar Color").setDesc("Your color visible to others.").addText((text2) => {
       text2.inputEl.type = "color";
       text2.inputEl.style.width = "60px";
       text2.inputEl.style.padding = "2px";
@@ -12535,25 +12577,25 @@ var CollabSettingsTab = class extends import_obsidian5.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("ntfy Topic (mentions)").setDesc("Your ntfy.sh topic to receive @mention push notifications. Leave blank to disable.").addText(
+    new import_obsidian6.Setting(containerEl).setName("ntfy Topic (mentions)").setDesc("Your ntfy.sh topic to receive @mention push notifications. Leave blank to disable.").addText(
       (text2) => text2.setPlaceholder("e.g. elijah-cli-xxxx").setValue(this.plugin.settings.ntfyTopic).onChange(async (value) => {
         this.plugin.settings.ntfyTopic = value.trim();
         await this.plugin.saveSettings(false);
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("Debug logging").setDesc("Verbose console logs for bug-testing (open the dev console).").addToggle(
+    new import_obsidian6.Setting(containerEl).setName("Debug logging").setDesc("Verbose console logs for bug-testing (open the dev console).").addToggle(
       (t) => t.setValue(this.plugin.settings.debugLogging).onChange(async (v) => {
         this.plugin.settings.debugLogging = v;
         await this.plugin.saveSettings(false);
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("Diagnostic trace file").setDesc("Write redacted structured sync diagnostics to the vault for feedback-loop debugging.").addToggle(
+    new import_obsidian6.Setting(containerEl).setName("Diagnostic trace file").setDesc("Write redacted structured sync diagnostics to the vault for feedback-loop debugging.").addToggle(
       (t) => t.setValue(this.plugin.settings.diagnosticLogging).onChange(async (v) => {
         this.plugin.settings.diagnosticLogging = v;
         await this.plugin.saveSettings(false);
       })
     );
-    new import_obsidian5.Setting(containerEl).setName("Diagnostics").setDesc("Capture or export redacted sync events for debugging lost saves, loops, and presence glitches.").addButton(
+    new import_obsidian6.Setting(containerEl).setName("Diagnostics").setDesc("Capture or export redacted sync events for debugging lost saves, loops, and presence glitches.").addButton(
       (b) => b.setButtonText("Trace 2 min").onClick(() => {
         this.plugin.startDiagnosticTraceInteractive();
       })
@@ -12563,7 +12605,7 @@ var CollabSettingsTab = class extends import_obsidian5.PluginSettingTab {
       })
     );
     containerEl.createEl("h3", { text: "Shared Folders" });
-    new import_obsidian5.Setting(containerEl).setName("Add a shared folder").setDesc("Share one of your folders with someone, or join a folder someone shared with you.").addButton(
+    new import_obsidian6.Setting(containerEl).setName("Add a shared folder").setDesc("Share one of your folders with someone, or join a folder someone shared with you.").addButton(
       (b) => b.setButtonText("Share a folder\u2026").onClick(async () => {
         await this.plugin.shareFolderInteractive();
         this.display();
@@ -12584,7 +12626,7 @@ var CollabSettingsTab = class extends import_obsidian5.PluginSettingTab {
     for (const share of this.plugin.settings.shares) {
       const role = share.role || "editor";
       const tags = [share.legacy ? "legacy" : null, role !== "editor" ? role : null].filter(Boolean).join(", ");
-      const s = new import_obsidian5.Setting(containerEl).setName(share.label + (tags ? `  (${tags})` : "")).setDesc(share.localFolder);
+      const s = new import_obsidian6.Setting(containerEl).setName(share.label + (tags ? `  (${tags})` : "")).setDesc(share.localFolder);
       if (!share.legacy && (share.ownerKey || hasLegacyMint)) {
         s.addButton(
           (b) => b.setButtonText("Editor link").onClick(async () => {
@@ -12596,6 +12638,35 @@ var CollabSettingsTab = class extends import_obsidian5.PluginSettingTab {
           (b) => b.setButtonText("View-only link").onClick(async () => {
             const code = await this.plugin.generateShareCode(share, "viewer");
             if (code) await copyToClipboard(code, "View-only link copied");
+          })
+        );
+        s.addButton(
+          (b) => b.setButtonText("Invite\u2026").onClick(async () => {
+            const res = await promptModal(this.app, {
+              title: "Create invite",
+              cta: "Create",
+              fields: [
+                { key: "recipient", label: "Recipient label", placeholder: "e.g. Mira laptop" },
+                { key: "role", label: "Role", placeholder: "viewer, commenter, or editor", value: "editor" },
+                { key: "expiresHours", label: "Expires in hours", placeholder: "Leave blank for no expiry" }
+              ]
+            });
+            if (!res) return;
+            const role2 = parseRole(res.role);
+            if (!role2) {
+              new import_obsidian6.Notice("Role must be viewer, commenter, or editor.");
+              return;
+            }
+            const hoursRaw = res.expiresHours.trim();
+            const hours = hoursRaw ? Number(hoursRaw) : 0;
+            if (hoursRaw && (!Number.isFinite(hours) || hours <= 0)) {
+              new import_obsidian6.Notice("Expiry must be a positive number of hours.");
+              return;
+            }
+            const expiresAt = hours > 0 ? Date.now() + hours * 60 * 6e4 : void 0;
+            const code = await this.plugin.generateShareInviteCode(share, role2, res.recipient.trim(), expiresAt);
+            if (code) await copyToClipboard(code, "Invite link copied");
+            this.display();
           })
         );
         s.addButton(
@@ -12611,15 +12682,54 @@ var CollabSettingsTab = class extends import_obsidian5.PluginSettingTab {
           this.display();
         })
       );
+      const invites = (share.invites || []).filter((i) => i.id);
+      for (const invite of invites) {
+        const label = invite.recipient || invite.id;
+        const meta = [
+          invite.role,
+          invite.expiresAt ? `expires ${new Date(invite.expiresAt).toLocaleString()}` : "no expiry",
+          invite.revokedAt ? `revoked ${new Date(invite.revokedAt).toLocaleString()}` : null
+        ].filter(Boolean).join(" \xB7 ");
+        const row = new import_obsidian6.Setting(containerEl).setName(`Invite: ${label}`).setDesc(meta);
+        if (!invite.revokedAt && invite.key) {
+          row.addButton(
+            (b) => b.setButtonText("Copy").onClick(async () => {
+              var _a2;
+              const code = encodeShareCode(
+                this.plugin.settings.serverUrl,
+                share.id,
+                invite.key,
+                invite.role,
+                (_a2 = share.epoch) != null ? _a2 : 1,
+                invite.id,
+                invite.expiresAt
+              );
+              await copyToClipboard(code, "Invite link copied");
+            })
+          );
+        }
+        if (!invite.revokedAt && share.ownerKey) {
+          row.addButton(
+            (b) => b.setButtonText("Revoke").setWarning().onClick(async () => {
+              await this.plugin.revokeShareInvite(share, invite);
+              this.display();
+            })
+          );
+        }
+      }
     }
   }
 };
+function parseRole(value) {
+  const v = value.trim().toLowerCase();
+  return v === "viewer" || v === "commenter" || v === "editor" ? v : null;
+}
 async function copyToClipboard(text2, okMsg) {
   try {
     await navigator.clipboard.writeText(text2);
-    new import_obsidian5.Notice(okMsg);
+    new import_obsidian6.Notice(okMsg);
   } catch (e) {
-    new import_obsidian5.Notice(`Copy this link manually:
+    new import_obsidian6.Notice(`Copy this link manually:
 ${text2}`, 15e3);
   }
 }
@@ -13687,10 +13797,10 @@ function alphaColor(color, alphaHex) {
 }
 
 // src/ui/CommentsView.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 var COMMENTS_VIEW_TYPE = "collab-comments";
 var REACTIONS = ["\u{1F44D}", "\u2764\uFE0F", "\u{1F389}", "\u{1F604}", "\u{1F440}"];
-var CommentsView = class extends import_obsidian6.ItemView {
+var CommentsView = class extends import_obsidian7.ItemView {
   constructor(leaf) {
     super(leaf);
     this.ctx = null;
@@ -13792,12 +13902,12 @@ var CommentsView = class extends import_obsidian6.ItemView {
       }
     });
     const resolveBtn = actions.createEl("button", { cls: "collab-comment-btn" });
-    (0, import_obsidian6.setIcon)(resolveBtn, t.resolved ? "rotate-ccw" : "check");
+    (0, import_obsidian7.setIcon)(resolveBtn, t.resolved ? "rotate-ccw" : "check");
     resolveBtn.setAttr("aria-label", t.resolved ? "Reopen" : "Resolve");
     resolveBtn.onclick = () => this.ctx.store.setResolved(t.id, !t.resolved);
     if (t.authorUid === this.ctx.me.uid) {
       const del2 = actions.createEl("button", { cls: "collab-comment-btn" });
-      (0, import_obsidian6.setIcon)(del2, "trash-2");
+      (0, import_obsidian7.setIcon)(del2, "trash-2");
       del2.setAttr("aria-label", "Delete thread");
       del2.onclick = () => this.ctx.store.deleteThread(t.id);
     }
@@ -13827,41 +13937,6 @@ function timeAgo(now, then) {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
-}
-
-// src/ui/modals.ts
-var import_obsidian7 = require("obsidian");
-function promptModal(app, opts) {
-  return new Promise((resolve) => {
-    var _a2;
-    const modal = new import_obsidian7.Modal(app);
-    modal.titleEl.setText(opts.title);
-    const values = {};
-    for (const f of opts.fields) values[f.key] = (_a2 = f.value) != null ? _a2 : "";
-    for (const f of opts.fields) {
-      new import_obsidian7.Setting(modal.contentEl).setName(f.label).addText((t) => {
-        var _a3;
-        t.setPlaceholder((_a3 = f.placeholder) != null ? _a3 : "").setValue(values[f.key]);
-        t.onChange((v) => values[f.key] = v);
-        t.inputEl.style.width = "100%";
-      });
-    }
-    let submitted = false;
-    new import_obsidian7.Setting(modal.contentEl).addButton(
-      (b) => {
-        var _a3;
-        return b.setButtonText((_a3 = opts.cta) != null ? _a3 : "OK").setCta().onClick(() => {
-          submitted = true;
-          modal.close();
-          resolve(values);
-        });
-      }
-    );
-    modal.onClose = () => {
-      if (!submitted) resolve(null);
-    };
-    modal.open();
-  });
 }
 
 // src/utils/http.ts
@@ -14588,7 +14663,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     const base = httpBase(this.settings.serverUrl);
     const relPath = m.toRel(file.path);
     const histShareId = share.legacy ? "legacy" : share.id;
-    const roleQ = share.legacy ? "" : `&role=${share.role || "editor"}&epoch=${(_a2 = share.epoch) != null ? _a2 : 1}`;
+    const roleQ = share.legacy ? "" : `&role=${share.role || "editor"}&epoch=${(_a2 = share.epoch) != null ? _a2 : 1}${share.inviteId ? `&invite=${encodeURIComponent(share.inviteId)}` : ""}${share.expiresAt ? `&exp=${share.expiresAt}` : ""}`;
     const token = async () => share.legacy ? this.settings.serverPassword || null : share.key;
     return {
       fileName: file.name,
@@ -14710,6 +14785,78 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     new import_obsidian10.Notice("This device does not have owner access for that share.");
     return null;
   }
+  async generateShareInviteCode(share, role, recipient, expiresAt) {
+    var _a2, _b2;
+    if (share.legacy) {
+      new import_obsidian10.Notice("Invite links require a non-legacy share.");
+      return null;
+    }
+    if (!share.ownerKey) {
+      new import_obsidian10.Notice("This device does not have owner access for that share.");
+      return null;
+    }
+    const epoch = (_a2 = share.epoch) != null ? _a2 : 1;
+    try {
+      const res = await postJson(
+        `${httpBase(this.settings.serverUrl)}/share/invite?share=${encodeURIComponent(share.id)}&role=${encodeURIComponent(role)}&epoch=${epoch}`,
+        { recipient, expiresAt },
+        bearerHeaders(share.ownerKey)
+      );
+      if (!res.ok || !((_b2 = res.body) == null ? void 0 : _b2.key) || !res.body.inviteId) {
+        new import_obsidian10.Notice("Could not create that invite on the server.");
+        return null;
+      }
+      const invite = {
+        id: res.body.inviteId,
+        key: res.body.key,
+        role: res.body.role,
+        recipient: res.body.recipient || recipient || void 0,
+        createdAt: res.body.createdAt,
+        expiresAt: res.body.expiresAt
+      };
+      share.invites = [invite, ...(share.invites || []).filter((i) => i.id !== invite.id)].slice(0, 50);
+      await this.persist();
+      return encodeShareCode(
+        this.settings.serverUrl,
+        share.id,
+        res.body.key,
+        res.body.role,
+        res.body.epoch,
+        res.body.inviteId,
+        res.body.expiresAt
+      );
+    } catch (e) {
+      err("share", "server invite mint failed", e);
+      new import_obsidian10.Notice("Invite request failed.");
+      return null;
+    }
+  }
+  async revokeShareInvite(share, invite) {
+    var _a2, _b2, _c;
+    if (!share.ownerKey) {
+      new import_obsidian10.Notice("This device does not have owner access for that share.");
+      return false;
+    }
+    try {
+      const res = await postJson(
+        `${httpBase(this.settings.serverUrl)}/share/invite/revoke?share=${encodeURIComponent(share.id)}&invite=${encodeURIComponent(invite.id)}&epoch=${(_a2 = share.epoch) != null ? _a2 : 1}`,
+        void 0,
+        bearerHeaders(share.ownerKey)
+      );
+      if (!res.ok) {
+        new import_obsidian10.Notice("Could not revoke that invite.");
+        return false;
+      }
+      invite.revokedAt = ((_b2 = res.body) == null ? void 0 : _b2.revokedAt) || Date.now();
+      await this.persist();
+      new import_obsidian10.Notice(`Invite revoked${((_c = res.body) == null ? void 0 : _c.closedConnections) ? `; closed ${res.body.closedConnections} connection(s)` : ""}.`);
+      return true;
+    } catch (e) {
+      err("revoke", e);
+      new import_obsidian10.Notice("Invite revoke request failed.");
+      return false;
+    }
+  }
   /** Revoke ALL outstanding codes for a share by bumping its epoch. */
   async revokeShareAccess(share) {
     var _a2, _b2, _c, _d;
@@ -14732,6 +14879,10 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
         share.role = "editor";
         share.key = res.body.key;
         share.ownerKey = res.body.ownerKey;
+        const revokedAt2 = Date.now();
+        for (const invite of share.invites || []) {
+          if (!invite.revokedAt) invite.revokedAt = revokedAt2;
+        }
         await this.persist();
         await this.stopShare(share.id);
         await this.startShare(share);
@@ -14764,6 +14915,10 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     share.epoch = newEpoch;
     share.role = share.role || "editor";
     share.key = await deriveRoleKey(this.settings.serverSecret, share.id, share.role, newEpoch);
+    const revokedAt = Date.now();
+    for (const invite of share.invites || []) {
+      if (!invite.revokedAt) invite.revokedAt = revokedAt;
+    }
     await this.persist();
     await this.stopShare(share.id);
     await this.startShare(share);
@@ -14893,6 +15048,8 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       key: decoded.k,
       role: decoded.r,
       epoch: decoded.e,
+      inviteId: decoded.i,
+      expiresAt: decoded.x,
       label: folder.split("/").pop() || folder,
       localFolder: folder
     };

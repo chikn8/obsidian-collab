@@ -61,6 +61,7 @@ export interface ShareCode {
   e?: number; // epoch
   i?: string; // invite id
   x?: number; // expiresAt ms epoch
+  l?: string; // human label, optional/non-authoritative
 }
 
 /** Encode a share into a compact copy-paste code (optionally role-scoped). */
@@ -71,13 +72,15 @@ export function encodeShareCode(
   role?: Role,
   epoch?: number,
   inviteId?: string,
-  expiresAt?: number
+  expiresAt?: number,
+  label?: string
 ): string {
   const obj: ShareCode = { s: serverUrl, id, k: key };
   if (role) obj.r = role;
   if (epoch != null) obj.e = epoch;
   if (inviteId) obj.i = inviteId;
   if (expiresAt != null) obj.x = expiresAt;
+  if (label?.trim()) obj.l = label.trim().slice(0, 80);
   return base64urlFromBinary(utf8ToBinary(JSON.stringify(obj)));
 }
 

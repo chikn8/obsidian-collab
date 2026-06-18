@@ -178,7 +178,7 @@ export default class CollabPlugin extends Plugin {
 
     // Deep link: obsidian://collab-add?code=...
     this.registerObsidianProtocolHandler("collab-add", async (params) => {
-      if (params.code) await this.addShareFromCode(params.code);
+      if (params.code) await this.addShareFromCodeInteractive(params.code);
     });
 
     // Commands
@@ -603,7 +603,7 @@ export default class CollabPlugin extends Plugin {
     if (share.legacy) return null;
     const epoch = share.epoch ?? 1;
     if (role === (share.role || "editor")) {
-      return encodeShareCode(this.settings.serverUrl, share.id, share.key, role, epoch);
+      return encodeShareCode(this.settings.serverUrl, share.id, share.key, role, epoch, undefined, undefined, share.label);
     }
 
     if (share.ownerKey) {
@@ -614,7 +614,7 @@ export default class CollabPlugin extends Plugin {
           bearerHeaders(share.ownerKey)
         );
         if (res.ok && res.body?.key) {
-          return encodeShareCode(this.settings.serverUrl, share.id, res.body.key, res.body.role, res.body.epoch);
+          return encodeShareCode(this.settings.serverUrl, share.id, res.body.key, res.body.role, res.body.epoch, undefined, undefined, share.label);
         }
       } catch (e) {
         err("share", "server link mint failed", e);
@@ -625,7 +625,7 @@ export default class CollabPlugin extends Plugin {
 
     if (this.settings.serverSecret) {
       const key = await deriveRoleKey(this.settings.serverSecret, share.id, role, epoch);
-      return encodeShareCode(this.settings.serverUrl, share.id, key, role, epoch);
+      return encodeShareCode(this.settings.serverUrl, share.id, key, role, epoch, undefined, undefined, share.label);
     }
 
     new Notice("This device does not have owner access for that share.");
@@ -680,7 +680,8 @@ export default class CollabPlugin extends Plugin {
         res.body.role,
         res.body.epoch,
         res.body.inviteId,
-        res.body.expiresAt
+        res.body.expiresAt,
+        share.label
       );
     } catch (e) {
       err("share", "server invite mint failed", e);
@@ -874,20 +875,24 @@ export default class CollabPlugin extends Plugin {
     return null;
   }
 
-  async addShareFromCodeInteractive(): Promise<void> {
+  async addShareFromCodeInteractive(presetCode = ""): Promise<void> {
+    const decoded = presetCode ? decodeShareCode(presetCode) : null;
+    const suggestedFolder = decoded ? this.suggestJoinFolder(decoded.l, decoded.id) : "";
+    const suggestedLabel = decoded?.l || "";
     const res = await promptModal(this.app, {
       title: "Join a shared folder",
       cta: "Join",
       fields: [
-        { key: "code", label: "Share code", placeholder: "Paste the code you were sent" },
-        { key: "folder", label: "Local folder to sync into", placeholder: "Path/To/Folder" },
+        { key: "code", label: "Share code", placeholder: "Paste the code you were sent", value: presetCode },
+        { key: "folder", label: "Local folder to sync into", placeholder: "Shared/Team Notes", value: suggestedFolder },
+        { key: "label", label: "Label (shown to you)", placeholder: "e.g. Team Notes", value: suggestedLabel },
       ],
     });
     if (!res || !res.code.trim()) return;
-    await this.addShareFromCode(res.code.trim(), res.folder.trim());
+    await this.addShareFromCode(res.code.trim(), res.folder.trim(), res.label.trim());
   }
 
-  async addShareFromCode(code: string, localFolder?: string): Promise<void> {
+  async addShareFromCode(code: string, localFolder?: string, label?: string): Promise<void> {
     const decoded = decodeShareCode(code);
     if (!decoded) {
       new Notice("Invalid share code.");
@@ -901,7 +906,7 @@ export default class CollabPlugin extends Plugin {
     if (!this.settings.serverUrl || this.settings.serverUrl === DEFAULT_SETTINGS.serverUrl) {
       this.settings.serverUrl = decoded.s;
     }
-    const folder = (localFolder || `Shared/${decoded.id}`).replace(/\/+$/, "");
+    const folder = (localFolder?.trim() || this.suggestJoinFolder(decoded.l, decoded.id)).replace(/\/+$/, "");
     const overlap = this.folderOverlaps(folder);
     if (overlap) {
       new Notice(`That folder overlaps an existing share ("${overlap.label}").`);
@@ -916,7 +921,7 @@ export default class CollabPlugin extends Plugin {
       epoch: decoded.e,
       inviteId: decoded.i,
       expiresAt: decoded.x,
-      label: folder.split("/").pop() || folder,
+      label: label?.trim() || decoded.l?.trim() || folder.split("/").pop() || folder,
       localFolder: folder,
     };
     this.settings.shares.push(share);
@@ -924,6 +929,17 @@ export default class CollabPlugin extends Plugin {
     await this.startShare(share);
     log("share", "joined", share.id, "role=", share.role || "editor");
     new Notice(`Joined shared folder → ${folder}${share.role && share.role !== "editor" ? ` (${share.role})` : ""}`);
+  }
+
+  private suggestJoinFolder(label: string | undefined, id: string): string {
+    const baseName = safeFolderSegment(label || "Collab share");
+    const base = `Shared/${baseName}`;
+    let candidate = base;
+    let i = 2;
+    while (this.folderOverlaps(candidate) || this.app.vault.getAbstractFileByPath(candidate)) {
+      candidate = `${base} ${i++}`;
+    }
+    return candidate;
   }
 
   async removeShare(id: string): Promise<void> {
@@ -1027,4 +1043,14 @@ export default class CollabPlugin extends Plugin {
 
 function bearerHeaders(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}` };
+}
+
+function safeFolderSegment(value: string): string {
+  const clean = value
+    .replace(/[\\/:*?"<>|#[\]^]/g, " ")
+    .replace(/[\u0000-\u001f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 60);
+  return clean || "Collab share";
 }

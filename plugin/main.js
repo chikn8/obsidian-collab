@@ -11345,12 +11345,13 @@ function shareAuthParams(share) {
 function httpBase(serverUrl) {
   return serverUrl.replace(/^ws/, "http").replace(/\/$/, "");
 }
-function encodeShareCode(serverUrl, id2, key, role, epoch, inviteId, expiresAt) {
+function encodeShareCode(serverUrl, id2, key, role, epoch, inviteId, expiresAt, label) {
   const obj = { s: serverUrl, id: id2, k: key };
   if (role) obj.r = role;
   if (epoch != null) obj.e = epoch;
   if (inviteId) obj.i = inviteId;
   if (expiresAt != null) obj.x = expiresAt;
+  if (label == null ? void 0 : label.trim()) obj.l = label.trim().slice(0, 80);
   return base64urlFromBinary(utf8ToBinary(JSON.stringify(obj)));
 }
 function decodeShareCode(code) {
@@ -13674,7 +13675,8 @@ var CollabSettingsTab = class extends import_obsidian7.PluginSettingTab {
                 invite.role,
                 (_a2 = share.epoch) != null ? _a2 : 1,
                 invite.id,
-                invite.expiresAt
+                invite.expiresAt,
+                share.label
               );
               await copyToClipboard(code, "Invite link copied");
             })
@@ -15558,7 +15560,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       })
     );
     this.registerObsidianProtocolHandler("collab-add", async (params2) => {
-      if (params2.code) await this.addShareFromCode(params2.code);
+      if (params2.code) await this.addShareFromCodeInteractive(params2.code);
     });
     this.addCommand({
       id: "share-folder",
@@ -15966,7 +15968,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     if (share.legacy) return null;
     const epoch = (_a2 = share.epoch) != null ? _a2 : 1;
     if (role === (share.role || "editor")) {
-      return encodeShareCode(this.settings.serverUrl, share.id, share.key, role, epoch);
+      return encodeShareCode(this.settings.serverUrl, share.id, share.key, role, epoch, void 0, void 0, share.label);
     }
     if (share.ownerKey) {
       try {
@@ -15976,7 +15978,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
           bearerHeaders(share.ownerKey)
         );
         if (res.ok && ((_b2 = res.body) == null ? void 0 : _b2.key)) {
-          return encodeShareCode(this.settings.serverUrl, share.id, res.body.key, res.body.role, res.body.epoch);
+          return encodeShareCode(this.settings.serverUrl, share.id, res.body.key, res.body.role, res.body.epoch, void 0, void 0, share.label);
         }
       } catch (e) {
         err("share", "server link mint failed", e);
@@ -15986,7 +15988,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     }
     if (this.settings.serverSecret) {
       const key = await deriveRoleKey(this.settings.serverSecret, share.id, role, epoch);
-      return encodeShareCode(this.settings.serverUrl, share.id, key, role, epoch);
+      return encodeShareCode(this.settings.serverUrl, share.id, key, role, epoch, void 0, void 0, share.label);
     }
     new import_obsidian10.Notice("This device does not have owner access for that share.");
     return null;
@@ -16029,7 +16031,8 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
         res.body.role,
         res.body.epoch,
         res.body.inviteId,
-        res.body.expiresAt
+        res.body.expiresAt,
+        share.label
       );
     } catch (e) {
       err("share", "server invite mint failed", e);
@@ -16217,19 +16220,24 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     }
     return null;
   }
-  async addShareFromCodeInteractive() {
+  async addShareFromCodeInteractive(presetCode = "") {
+    const decoded = presetCode ? decodeShareCode(presetCode) : null;
+    const suggestedFolder = decoded ? this.suggestJoinFolder(decoded.l, decoded.id) : "";
+    const suggestedLabel = (decoded == null ? void 0 : decoded.l) || "";
     const res = await promptModal(this.app, {
       title: "Join a shared folder",
       cta: "Join",
       fields: [
-        { key: "code", label: "Share code", placeholder: "Paste the code you were sent" },
-        { key: "folder", label: "Local folder to sync into", placeholder: "Path/To/Folder" }
+        { key: "code", label: "Share code", placeholder: "Paste the code you were sent", value: presetCode },
+        { key: "folder", label: "Local folder to sync into", placeholder: "Shared/Team Notes", value: suggestedFolder },
+        { key: "label", label: "Label (shown to you)", placeholder: "e.g. Team Notes", value: suggestedLabel }
       ]
     });
     if (!res || !res.code.trim()) return;
-    await this.addShareFromCode(res.code.trim(), res.folder.trim());
+    await this.addShareFromCode(res.code.trim(), res.folder.trim(), res.label.trim());
   }
-  async addShareFromCode(code, localFolder) {
+  async addShareFromCode(code, localFolder, label) {
+    var _a2;
     const decoded = decodeShareCode(code);
     if (!decoded) {
       new import_obsidian10.Notice("Invalid share code.");
@@ -16242,7 +16250,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     if (!this.settings.serverUrl || this.settings.serverUrl === DEFAULT_SETTINGS.serverUrl) {
       this.settings.serverUrl = decoded.s;
     }
-    const folder = (localFolder || `Shared/${decoded.id}`).replace(/\/+$/, "");
+    const folder = ((localFolder == null ? void 0 : localFolder.trim()) || this.suggestJoinFolder(decoded.l, decoded.id)).replace(/\/+$/, "");
     const overlap = this.folderOverlaps(folder);
     if (overlap) {
       new import_obsidian10.Notice(`That folder overlaps an existing share ("${overlap.label}").`);
@@ -16256,7 +16264,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       epoch: decoded.e,
       inviteId: decoded.i,
       expiresAt: decoded.x,
-      label: folder.split("/").pop() || folder,
+      label: (label == null ? void 0 : label.trim()) || ((_a2 = decoded.l) == null ? void 0 : _a2.trim()) || folder.split("/").pop() || folder,
       localFolder: folder
     };
     this.settings.shares.push(share);
@@ -16264,6 +16272,16 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     await this.startShare(share);
     log("share", "joined", share.id, "role=", share.role || "editor");
     new import_obsidian10.Notice(`Joined shared folder \u2192 ${folder}${share.role && share.role !== "editor" ? ` (${share.role})` : ""}`);
+  }
+  suggestJoinFolder(label, id2) {
+    const baseName = safeFolderSegment(label || "Collab share");
+    const base = `Shared/${baseName}`;
+    let candidate = base;
+    let i = 2;
+    while (this.folderOverlaps(candidate) || this.app.vault.getAbstractFileByPath(candidate)) {
+      candidate = `${base} ${i++}`;
+    }
+    return candidate;
   }
   async removeShare(id2) {
     await this.stopShare(id2);
@@ -16359,4 +16377,8 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
 };
 function bearerHeaders(token) {
   return { Authorization: `Bearer ${token}` };
+}
+function safeFolderSegment(value) {
+  const clean2 = value.replace(/[\\/:*?"<>|#[\]^]/g, " ").replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
+  return clean2 || "Collab share";
 }

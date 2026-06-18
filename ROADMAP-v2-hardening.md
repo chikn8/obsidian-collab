@@ -366,9 +366,10 @@ local file. The active-editor facepile still jumps to a peer's caret in the same
 repairs `[[wikilinks]]`/embeds in synced Markdown notes as a CRDT edit, preserving aliases/subpaths and
 skipping code.
 
-### 4.6 — Join-by-code UX (S/M)
-Deep-link opens a pre-filled join modal; prompt for a friendly folder + label instead of dumping into
-`Shared/<rawid>`.
+### 4.6 — Join-by-code UX (implemented)
+Deep-links open the join modal with the code pre-filled. New share codes carry an optional label, and
+the join flow suggests a friendly `Shared/<label>` folder plus editable label instead of silently dumping
+into `Shared/<rawid>`.
 
 ### 4.7 — Nested/overlapping shares + suggesting mode (XL, deferred)
 Most-specific-wins precedence for overlapping shares (currently hard-blocked); track-changes/suggesting mode

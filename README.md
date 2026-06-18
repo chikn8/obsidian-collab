@@ -204,7 +204,7 @@ See `server/.env.example` for a copy-paste template, and `server/RECOVERY.md` fo
   folder…*). A **share code** is copied — send it to a collaborator. Editor links are copied by default;
   grab a view-only link from the settings tab.
 - **Join:** `Cmd+P` → *Add a shared folder (paste code)…*, or open an `obsidian://collab-add?code=…`
-  link, then pick a local folder to sync into.
+  link. The join modal pre-fills the code and suggests a friendly local folder/label.
 - **Roles:** share an *editor*, *commenter*, or *viewer* link. Viewers/commenters can't write the file
   (enforced on the server). Use **Invite…** for a named/expiring recipient link that can be revoked by
   itself; invite links are bound to the first signed local install that uses them. Use **Revoke all

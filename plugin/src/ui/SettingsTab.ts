@@ -266,7 +266,8 @@ export class CollabSettingsTab extends PluginSettingTab {
                 invite.role,
                 share.epoch ?? 1,
                 invite.id,
-                invite.expiresAt
+                invite.expiresAt,
+                share.label
               );
               await copyToClipboard(code, "Invite link copied");
             })

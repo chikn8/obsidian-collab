@@ -153,7 +153,10 @@ export default class CollabPlugin extends Plugin {
       this.app.workspace.on("active-leaf-change", () => void this.handleActiveLeafChange())
     );
     this.registerEvent(
-      this.app.workspace.on("layout-change", () => this.eachManager((m) => m.refreshPresenceUi()))
+      this.app.workspace.on("layout-change", () => {
+        trace("presence", "layout-change-refresh", { managers: this.syncManagers.size });
+        this.eachManager((m) => m.refreshPresenceUi());
+      })
     );
 
     // File/folder context-menu
@@ -349,12 +352,18 @@ export default class CollabPlugin extends Plugin {
       return;
     }
     const relevant = ".workspace-tab-header, .nav-file-title";
+    trace("presence", "dom-observer-started", { selector: relevant });
     this.presenceDomObserver = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         const nodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)];
         for (const node of nodes) {
           if (!(node instanceof HTMLElement)) continue;
           if (node.matches(relevant) || node.querySelector(relevant)) {
+            trace("presence", "dom-rebuild-detected", {
+              added: mutation.addedNodes.length,
+              removed: mutation.removedNodes.length,
+              managers: this.syncManagers.size,
+            });
             this.debouncedPresenceDomRefresh();
             return;
           }
@@ -1119,6 +1128,7 @@ export default class CollabPlugin extends Plugin {
   async onunload(): Promise<void> {
     this.presenceDomObserver?.disconnect();
     this.presenceDomObserver = null;
+    trace("presence", "dom-observer-stopped");
     this.boundSession?.detach();
     this.boundPresence?.stop();
     if (this.boundView) {

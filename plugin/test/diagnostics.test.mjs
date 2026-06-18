@@ -46,6 +46,7 @@ trace("test", "redaction", {
 
 const last = getRecentDiagnostics().at(-1);
 check("records structured rows", !!last && last.ns === "test" && last.event === "redaction");
+check("adds sequence and relative timing", Number.isInteger(last?.seq) && last.seq > 0 && Number.isInteger(last?.dt) && last.dt >= 0);
 check("redacts token fields", last?.fields?.token === "[redacted]");
 check("redacts content fields", last?.fields?.content === "[redacted]" && last?.fields?.body === "[redacted]");
 check("keeps safe metadata", last?.fields?.path === "Shared/note.md" && last?.fields?.len === 27);
@@ -57,6 +58,7 @@ check("writes bundle file", writes.has(bundlePath));
 check("bundle includes sanitized context", bundle.context.plugin.version === "0.1-test" && bundle.context.settings.shareCount === 2);
 check("bundle context redacts secret-like fields", bundle.context.settings.serverToken === "[redacted]");
 check("bundle includes diagnostics state", bundle.context.diagnostics.rowCount >= 1 && typeof bundle.context.diagnostics.tracePath === "string");
+check("bundle includes diagnostic capacity counters", bundle.context.diagnostics.maxRows >= 10000 && bundle.context.diagnostics.droppedRows === 0);
 check("bundle excludes secret values", !writes.get(bundlePath).includes("should-not-export"));
 
 console.log("");

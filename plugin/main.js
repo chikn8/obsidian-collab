@@ -10415,8 +10415,8 @@ function pluginDataPath(app, relPath) {
 }
 
 // src/utils/log.ts
-var MAX_ROWS = 2500;
-var MAX_TRACE_LINES = 6e3;
+var MAX_ROWS = 1e4;
+var MAX_TRACE_LINES = 5e4;
 var MAX_STRING = 500;
 var SECRET_KEY_RE = /(secret|password|token|key|code|auth|credential|content|body|text)/i;
 var DEBUG = false;
@@ -10428,6 +10428,10 @@ var flushTimer = null;
 var flushChain = Promise.resolve();
 var lastWritePath = "";
 var contextProvider = null;
+var seq = 0;
+var droppedRows = 0;
+var droppedTraceLines = 0;
+var sessionStartedAt = Date.now();
 var _a, _b;
 var sessionId = ((_b = (_a = globalThis.crypto) == null ? void 0 : _a.randomUUID) == null ? void 0 : _b.call(_a)) || `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 var rows = [];
@@ -10477,9 +10481,12 @@ function err(ns, ...args2) {
   console.error(`[collab:${ns}]`, ...args2);
 }
 function record(level, ns, event, fields = {}) {
+  const now = Date.now();
   const row = {
+    seq: ++seq,
     ts: (/* @__PURE__ */ new Date()).toISOString(),
-    t: Date.now(),
+    t: now,
+    dt: now - sessionStartedAt,
     sessionId,
     level,
     ns,
@@ -10487,10 +10494,16 @@ function record(level, ns, event, fields = {}) {
     fields: sanitizeRecord(fields)
   };
   rows.push(row);
-  while (rows.length > MAX_ROWS) rows.shift();
-  if (DIAGNOSTIC_FILE || Date.now() < traceUntil || level === "warn" || level === "error") {
+  while (rows.length > MAX_ROWS) {
+    rows.shift();
+    droppedRows++;
+  }
+  if (DIAGNOSTIC_FILE || now < traceUntil || level === "warn" || level === "error") {
     traceLines.push(JSON.stringify(row));
-    while (traceLines.length > MAX_TRACE_LINES) traceLines.shift();
+    while (traceLines.length > MAX_TRACE_LINES) {
+      traceLines.shift();
+      droppedTraceLines++;
+    }
     scheduleFlush();
   }
 }
@@ -10530,7 +10543,14 @@ function collectContext() {
     traceUntil: traceUntil ? new Date(traceUntil).toISOString() : "",
     tracePath: tracePath(),
     rowCount: rows.length,
-    traceLineCount: traceLines.length
+    traceLineCount: traceLines.length,
+    maxRows: MAX_ROWS,
+    maxTraceLines: MAX_TRACE_LINES,
+    droppedRows,
+    droppedTraceLines,
+    nextSeq: seq + 1,
+    sessionStartedAt: new Date(sessionStartedAt).toISOString(),
+    sessionAgeMs: Date.now() - sessionStartedAt
   };
   if (!contextProvider) return sanitizeRecord({ diagnostics: base });
   try {
@@ -10962,6 +10982,13 @@ var FileProvider = class _FileProvider {
    *  lose the latest CRDT state. */
   startObserver() {
     if (this.observer || this.destroyed) return;
+    trace("file", "observer-started", {
+      path: this.filePath,
+      room: this.roomName,
+      editorBound: this.editorBound,
+      connected: this.connected,
+      len: this.ytext.length
+    });
     this.observer = (_event, transaction) => {
       var _a2, _b2;
       if (this.destroyed) return;
@@ -11015,27 +11042,27 @@ var FileProvider = class _FileProvider {
   /** Write ytext content to vault file (if different) */
   async writeToFile(force = false, reason = "sync") {
     var _a2, _b2;
-    const seq = ++this.writeSeq;
+    const seq2 = ++this.writeSeq;
     trace("file", "write-queued", {
       path: this.filePath,
       room: this.roomName,
-      seq,
+      seq: seq2,
       force,
       reason,
       editorBound: this.editorBound,
       len: (_b2 = (_a2 = this.ytext) == null ? void 0 : _a2.length) != null ? _b2 : null
     });
-    const run = () => this.writeToFileNow(force, reason, seq);
+    const run = () => this.writeToFileNow(force, reason, seq2);
     this.writeQueue = this.writeQueue.then(run, run);
     await this.writeQueue;
   }
-  async writeToFileNow(force, reason, seq) {
+  async writeToFileNow(force, reason, seq2) {
     if (this.destroyed) {
-      trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq, reason, cause: "destroyed" });
+      trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq: seq2, reason, cause: "destroyed" });
       return;
     }
     if (this.editorBound && !force) {
-      trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq, reason, cause: "editor-bound" });
+      trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq: seq2, reason, cause: "editor-bound" });
       return;
     }
     this.writing = true;
@@ -11043,7 +11070,7 @@ var FileProvider = class _FileProvider {
       const content = this.ytext.toString();
       const file = this.app.vault.getAbstractFileByPath(this.filePath);
       if (!(file instanceof import_obsidian2.TFile)) {
-        trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq, reason, cause: "missing-file" });
+        trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq: seq2, reason, cause: "missing-file" });
         return;
       }
       let wrote = false;
@@ -11056,7 +11083,7 @@ var FileProvider = class _FileProvider {
           trace("file", "write-start", {
             path: this.filePath,
             room: this.roomName,
-            seq,
+            seq: seq2,
             reason,
             oldLen: current.length,
             newLen: content.length
@@ -11064,15 +11091,15 @@ var FileProvider = class _FileProvider {
           return content;
         });
         if (!wrote) {
-          trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq, reason, cause: "unchanged", len: content.length });
+          trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq: seq2, reason, cause: "unchanged", len: content.length });
           return;
         }
-        trace("file", "write-ok", { path: this.filePath, room: this.roomName, seq, reason, len: content.length });
+        trace("file", "write-ok", { path: this.filePath, room: this.roomName, seq: seq2, reason, len: content.length });
       } finally {
         endRemoteApply();
       }
     } catch (e) {
-      trace("file", "write-error", { path: this.filePath, room: this.roomName, seq, reason, error: e });
+      trace("file", "write-error", { path: this.filePath, room: this.roomName, seq: seq2, reason, error: e });
       console.error("FileProvider: writeToFile failed", this.filePath, e);
     } finally {
       this.writing = false;
@@ -11080,10 +11107,37 @@ var FileProvider = class _FileProvider {
   }
   /** Apply a local file change to ytext (called from vault.on("modify")) */
   applyLocalChange(newContent) {
-    if (!this.isInitialized || this.destroyed) return;
-    if (this.editorBound) return;
+    if (!this.isInitialized || this.destroyed) {
+      trace("file", "local-change-skipped", {
+        path: this.filePath,
+        room: this.roomName,
+        cause: this.destroyed ? "destroyed" : "not-initialized",
+        initialized: this.isInitialized,
+        destroyed: this.destroyed,
+        newLen: newContent.length
+      });
+      return;
+    }
+    if (this.editorBound) {
+      trace("file", "local-change-skipped", {
+        path: this.filePath,
+        room: this.roomName,
+        cause: "editor-bound",
+        newLen: newContent.length,
+        yLen: this.ytext.length
+      });
+      return;
+    }
     const old = this.ytext.toString();
-    if (old === newContent) return;
+    if (old === newContent) {
+      trace("file", "local-change-skipped", {
+        path: this.filePath,
+        room: this.roomName,
+        cause: "unchanged",
+        len: newContent.length
+      });
+      return;
+    }
     if (this.echo.isEcho(this.filePath, newContent)) {
       log("loop", "stale echo ignored in applyLocalChange", this.filePath);
       trace("loop", "stale-echo-ignored", { path: this.filePath, room: this.roomName, len: newContent.length });
@@ -12052,6 +12106,7 @@ var SyncManager = class {
   }
   /** Re-render presence UI after Obsidian changes tab/file-explorer layout. */
   refreshPresenceUi() {
+    trace("presence", "refresh-requested", { shareId: this.histShareId, providers: this.fileProviders.size });
     this.lastPresenceSig = "";
     this.debouncedPresence();
   }
@@ -12582,9 +12637,22 @@ var SyncManager = class {
   onFileCreate(file) {
     var _a2;
     if (!this.isInLinkedFolder(file.path)) return;
-    if (!this.isSyncableFile(file)) return;
-    if (this.role !== "editor") return;
-    if (isApplyingRemote() || this.echo.isCreatedEcho(file.path)) return;
+    if (!this.isSyncableFile(file)) {
+      trace("vault", "create-skipped", { shareId: this.histShareId, path: file.path, cause: "unsupported-file" });
+      return;
+    }
+    if (this.role !== "editor") {
+      trace("vault", "create-skipped", { shareId: this.histShareId, path: file.path, cause: "read-only-role", role: this.role });
+      return;
+    }
+    if (isApplyingRemote()) {
+      trace("vault", "create-skipped", { shareId: this.histShareId, path: file.path, cause: "remote-apply-active" });
+      return;
+    }
+    if (this.echo.isCreatedEcho(file.path)) {
+      trace("vault", "create-skipped", { shareId: this.histShareId, path: file.path, cause: "echo" });
+      return;
+    }
     const relPath = this.toRelativePath(file.path);
     if (!this.safeManifestRelPath(relPath, "local create")) return;
     trace("vault", "local-create", { shareId: this.histShareId, relPath, path: file.path });
@@ -12606,15 +12674,27 @@ var SyncManager = class {
   async onFileModify(file) {
     var _a2;
     if (!this.isInLinkedFolder(file.path)) return;
-    if (!this.isSyncableFile(file)) return;
-    if (this.role !== "editor") return;
-    if (isApplyingRemote()) return;
+    if (!this.isSyncableFile(file)) {
+      trace("vault", "modify-skipped", { shareId: this.histShareId, path: file.path, cause: "unsupported-file" });
+      return;
+    }
+    if (this.role !== "editor") {
+      trace("vault", "modify-skipped", { shareId: this.histShareId, path: file.path, cause: "read-only-role", role: this.role });
+      return;
+    }
+    if (isApplyingRemote()) {
+      trace("vault", "modify-skipped", { shareId: this.histShareId, path: file.path, cause: "remote-apply-active" });
+      return;
+    }
     const relPath = this.toRelativePath(file.path);
     if (!this.safeManifestRelPath(relPath, "local modify")) return;
     if (isSyncableBinaryPath(relPath)) {
       const info = await this.readBinaryInfo(file);
       if (!info) return;
-      if (this.echo.isEcho(file.path, info.hash)) return;
+      if (this.echo.isEcho(file.path, info.hash)) {
+        trace("vault", "modify-skipped", { shareId: this.histShareId, relPath, path: file.path, cause: "binary-echo", hash: info.hash, size: info.size });
+        return;
+      }
       await this.publishBinaryFile(relPath, file.path, (_a2 = this.manifestMap) == null ? void 0 : _a2.get(relPath), "modify");
       this.emitStatus();
       return;
@@ -12622,16 +12702,34 @@ var SyncManager = class {
     const fp = this.fileProviders.get(relPath);
     if (fp) {
       const content = await this.app.vault.read(file);
-      if (this.echo.isEcho(file.path, content)) return;
+      if (this.echo.isEcho(file.path, content)) {
+        trace("vault", "modify-skipped", { shareId: this.histShareId, relPath, path: file.path, cause: "echo", len: content.length });
+        return;
+      }
       trace("vault", "local-modify", { shareId: this.histShareId, relPath, path: file.path, len: content.length });
       fp.applyLocalChange(content);
+    } else {
+      trace("vault", "modify-skipped", { shareId: this.histShareId, relPath, path: file.path, cause: "provider-missing" });
     }
   }
   async onFileDelete(file) {
     if (!this.isInLinkedFolder(file.path)) return;
-    if (!this.isSyncableFile(file)) return;
-    if (this.role !== "editor") return;
-    if (isApplyingRemote() || this.echo.isDeletedEcho(file.path)) return;
+    if (!this.isSyncableFile(file)) {
+      trace("vault", "delete-skipped", { shareId: this.histShareId, path: file.path, cause: "unsupported-file" });
+      return;
+    }
+    if (this.role !== "editor") {
+      trace("vault", "delete-skipped", { shareId: this.histShareId, path: file.path, cause: "read-only-role", role: this.role });
+      return;
+    }
+    if (isApplyingRemote()) {
+      trace("vault", "delete-skipped", { shareId: this.histShareId, path: file.path, cause: "remote-apply-active" });
+      return;
+    }
+    if (this.echo.isDeletedEcho(file.path)) {
+      trace("vault", "delete-skipped", { shareId: this.histShareId, path: file.path, cause: "echo" });
+      return;
+    }
     const relPath = this.toRelativePath(file.path);
     if (!this.safeManifestRelPath(relPath, "local delete")) return;
     trace("vault", "local-delete", { shareId: this.histShareId, relPath, path: file.path });
@@ -15689,7 +15787,10 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       this.app.workspace.on("active-leaf-change", () => void this.handleActiveLeafChange())
     );
     this.registerEvent(
-      this.app.workspace.on("layout-change", () => this.eachManager((m) => m.refreshPresenceUi()))
+      this.app.workspace.on("layout-change", () => {
+        trace("presence", "layout-change-refresh", { managers: this.syncManagers.size });
+        this.eachManager((m) => m.refreshPresenceUi());
+      })
     );
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
@@ -15855,12 +15956,18 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       return;
     }
     const relevant = ".workspace-tab-header, .nav-file-title";
+    trace("presence", "dom-observer-started", { selector: relevant });
     this.presenceDomObserver = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         const nodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)];
         for (const node of nodes) {
           if (!(node instanceof HTMLElement)) continue;
           if (node.matches(relevant) || node.querySelector(relevant)) {
+            trace("presence", "dom-rebuild-detected", {
+              added: mutation.addedNodes.length,
+              removed: mutation.removedNodes.length,
+              managers: this.syncManagers.size
+            });
             this.debouncedPresenceDomRefresh();
             return;
           }
@@ -16586,6 +16693,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     var _a2, _b2, _c, _d, _e;
     (_a2 = this.presenceDomObserver) == null ? void 0 : _a2.disconnect();
     this.presenceDomObserver = null;
+    trace("presence", "dom-observer-stopped");
     (_b2 = this.boundSession) == null ? void 0 : _b2.detach();
     (_c = this.boundPresence) == null ? void 0 : _c.stop();
     if (this.boundView) {

@@ -170,6 +170,7 @@ export class SyncManager {
 
   /** Re-render presence UI after Obsidian changes tab/file-explorer layout. */
   refreshPresenceUi(): void {
+    trace("presence", "refresh-requested", { shareId: this.histShareId, providers: this.fileProviders.size });
     this.lastPresenceSig = "";
     this.debouncedPresence();
   }
@@ -769,11 +770,24 @@ export class SyncManager {
 
   onFileCreate(file: TFile): void {
     if (!this.isInLinkedFolder(file.path)) return;
-    if (!this.isSyncableFile(file)) return;
-    if (this.role !== "editor") return;
+    if (!this.isSyncableFile(file)) {
+      trace("vault", "create-skipped", { shareId: this.histShareId, path: file.path, cause: "unsupported-file" });
+      return;
+    }
+    if (this.role !== "editor") {
+      trace("vault", "create-skipped", { shareId: this.histShareId, path: file.path, cause: "read-only-role", role: this.role });
+      return;
+    }
     // Drop our own create echo, and any create delivered synchronously while
     // we're applying a remote change.
-    if (isApplyingRemote() || this.echo.isCreatedEcho(file.path)) return;
+    if (isApplyingRemote()) {
+      trace("vault", "create-skipped", { shareId: this.histShareId, path: file.path, cause: "remote-apply-active" });
+      return;
+    }
+    if (this.echo.isCreatedEcho(file.path)) {
+      trace("vault", "create-skipped", { shareId: this.histShareId, path: file.path, cause: "echo" });
+      return;
+    }
 
     const relPath = this.toRelativePath(file.path);
     if (!this.safeManifestRelPath(relPath, "local create")) return;
@@ -801,16 +815,28 @@ export class SyncManager {
 
   async onFileModify(file: TFile): Promise<void> {
     if (!this.isInLinkedFolder(file.path)) return;
-    if (!this.isSyncableFile(file)) return;
-    if (this.role !== "editor") return;
-    if (isApplyingRemote()) return;
+    if (!this.isSyncableFile(file)) {
+      trace("vault", "modify-skipped", { shareId: this.histShareId, path: file.path, cause: "unsupported-file" });
+      return;
+    }
+    if (this.role !== "editor") {
+      trace("vault", "modify-skipped", { shareId: this.histShareId, path: file.path, cause: "read-only-role", role: this.role });
+      return;
+    }
+    if (isApplyingRemote()) {
+      trace("vault", "modify-skipped", { shareId: this.histShareId, path: file.path, cause: "remote-apply-active" });
+      return;
+    }
 
     const relPath = this.toRelativePath(file.path);
     if (!this.safeManifestRelPath(relPath, "local modify")) return;
     if (isSyncableBinaryPath(relPath)) {
       const info = await this.readBinaryInfo(file);
       if (!info) return;
-      if (this.echo.isEcho(file.path, info.hash)) return;
+      if (this.echo.isEcho(file.path, info.hash)) {
+        trace("vault", "modify-skipped", { shareId: this.histShareId, relPath, path: file.path, cause: "binary-echo", hash: info.hash, size: info.size });
+        return;
+      }
       await this.publishBinaryFile(relPath, file.path, this.manifestMap?.get(relPath) as ManifestEntry | undefined, "modify");
       this.emitStatus();
       return;
@@ -819,17 +845,35 @@ export class SyncManager {
     if (fp) {
       const content = await this.app.vault.read(file);
       // Our own write echo (deterministic, content-based — no timing window).
-      if (this.echo.isEcho(file.path, content)) return;
+      if (this.echo.isEcho(file.path, content)) {
+        trace("vault", "modify-skipped", { shareId: this.histShareId, relPath, path: file.path, cause: "echo", len: content.length });
+        return;
+      }
       trace("vault", "local-modify", { shareId: this.histShareId, relPath, path: file.path, len: content.length });
       fp.applyLocalChange(content);
+    } else {
+      trace("vault", "modify-skipped", { shareId: this.histShareId, relPath, path: file.path, cause: "provider-missing" });
     }
   }
 
   async onFileDelete(file: TFile): Promise<void> {
     if (!this.isInLinkedFolder(file.path)) return;
-    if (!this.isSyncableFile(file)) return;
-    if (this.role !== "editor") return;
-    if (isApplyingRemote() || this.echo.isDeletedEcho(file.path)) return;
+    if (!this.isSyncableFile(file)) {
+      trace("vault", "delete-skipped", { shareId: this.histShareId, path: file.path, cause: "unsupported-file" });
+      return;
+    }
+    if (this.role !== "editor") {
+      trace("vault", "delete-skipped", { shareId: this.histShareId, path: file.path, cause: "read-only-role", role: this.role });
+      return;
+    }
+    if (isApplyingRemote()) {
+      trace("vault", "delete-skipped", { shareId: this.histShareId, path: file.path, cause: "remote-apply-active" });
+      return;
+    }
+    if (this.echo.isDeletedEcho(file.path)) {
+      trace("vault", "delete-skipped", { shareId: this.histShareId, path: file.path, cause: "echo" });
+      return;
+    }
 
     const relPath = this.toRelativePath(file.path);
     if (!this.safeManifestRelPath(relPath, "local delete")) return;

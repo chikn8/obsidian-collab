@@ -304,6 +304,14 @@ export class FileProvider {
   private startObserver(): void {
     if (this.observer || this.destroyed) return;
 
+    trace("file", "observer-started", {
+      path: this.filePath,
+      room: this.roomName,
+      editorBound: this.editorBound,
+      connected: this.connected,
+      len: this.ytext.length,
+    });
+
     this.observer = (_event: any, transaction: any) => {
       if (this.destroyed) return;
       // Local edits (typing in the bound editor, or applyLocalChange) → stamp
@@ -432,12 +440,39 @@ export class FileProvider {
 
   /** Apply a local file change to ytext (called from vault.on("modify")) */
   applyLocalChange(newContent: string): void {
-    if (!this.isInitialized || this.destroyed) return;
+    if (!this.isInitialized || this.destroyed) {
+      trace("file", "local-change-skipped", {
+        path: this.filePath,
+        room: this.roomName,
+        cause: this.destroyed ? "destroyed" : "not-initialized",
+        initialized: this.isInitialized,
+        destroyed: this.destroyed,
+        newLen: newContent.length,
+      });
+      return;
+    }
     // While bound, yCollab already streams editor edits into ytext — the
     // vault write echo would double-apply, so ignore it here.
-    if (this.editorBound) return;
+    if (this.editorBound) {
+      trace("file", "local-change-skipped", {
+        path: this.filePath,
+        room: this.roomName,
+        cause: "editor-bound",
+        newLen: newContent.length,
+        yLen: this.ytext.length,
+      });
+      return;
+    }
     const old = this.ytext.toString();
-    if (old === newContent) return;
+    if (old === newContent) {
+      trace("file", "local-change-skipped", {
+        path: this.filePath,
+        room: this.roomName,
+        cause: "unchanged",
+        len: newContent.length,
+      });
+      return;
+    }
     // Staleness guard: the incoming disk content matches something the plugin
     // recently wrote, but ytext has since merged newer remote ops (old !==
     // newContent). Applying it would revert the merge — drop the late echo.

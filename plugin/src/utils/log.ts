@@ -4,8 +4,10 @@ import { pluginDataPath } from "./pluginPaths";
 type Level = "debug" | "info" | "warn" | "error";
 
 export interface LogRow {
+  seq: number;
   ts: string;
   t: number;
+  dt: number;
   sessionId: string;
   level: Level;
   ns: string;
@@ -21,8 +23,8 @@ interface DiagnosticsConfig {
   context?: () => Record<string, unknown>;
 }
 
-const MAX_ROWS = 2500;
-const MAX_TRACE_LINES = 6000;
+const MAX_ROWS = 10000;
+const MAX_TRACE_LINES = 50000;
 const MAX_STRING = 500;
 const SECRET_KEY_RE = /(secret|password|token|key|code|auth|credential|content|body|text)/i;
 
@@ -35,6 +37,10 @@ let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let flushChain: Promise<void> = Promise.resolve();
 let lastWritePath = "";
 let contextProvider: (() => Record<string, unknown>) | null = null;
+let seq = 0;
+let droppedRows = 0;
+let droppedTraceLines = 0;
+const sessionStartedAt = Date.now();
 
 const sessionId =
   (globalThis.crypto?.randomUUID?.() as string | undefined) ||
@@ -115,9 +121,12 @@ export function err(ns: string, ...args: unknown[]): void {
 }
 
 function record(level: Level, ns: string, event: string, fields: Record<string, unknown> = {}): void {
+  const now = Date.now();
   const row: LogRow = {
+    seq: ++seq,
     ts: new Date().toISOString(),
-    t: Date.now(),
+    t: now,
+    dt: now - sessionStartedAt,
     sessionId,
     level,
     ns,
@@ -125,11 +134,17 @@ function record(level: Level, ns: string, event: string, fields: Record<string, 
     fields: sanitizeRecord(fields),
   };
   rows.push(row);
-  while (rows.length > MAX_ROWS) rows.shift();
+  while (rows.length > MAX_ROWS) {
+    rows.shift();
+    droppedRows++;
+  }
 
-  if (DIAGNOSTIC_FILE || Date.now() < traceUntil || level === "warn" || level === "error") {
+  if (DIAGNOSTIC_FILE || now < traceUntil || level === "warn" || level === "error") {
     traceLines.push(JSON.stringify(row));
-    while (traceLines.length > MAX_TRACE_LINES) traceLines.shift();
+    while (traceLines.length > MAX_TRACE_LINES) {
+      traceLines.shift();
+      droppedTraceLines++;
+    }
     scheduleFlush();
   }
 }
@@ -173,6 +188,13 @@ function collectContext(): Record<string, unknown> {
     tracePath: tracePath(),
     rowCount: rows.length,
     traceLineCount: traceLines.length,
+    maxRows: MAX_ROWS,
+    maxTraceLines: MAX_TRACE_LINES,
+    droppedRows,
+    droppedTraceLines,
+    nextSeq: seq + 1,
+    sessionStartedAt: new Date(sessionStartedAt).toISOString(),
+    sessionAgeMs: Date.now() - sessionStartedAt,
   };
   if (!contextProvider) return sanitizeRecord({ diagnostics: base });
   try {

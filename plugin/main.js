@@ -13915,16 +13915,12 @@ function lower(name) {
 function findMentionedUsers(text2, users) {
   if (!text2.includes("@")) return [];
   const found = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const user of users) {
+  for (const user of groupedMentionUsers(users)) {
     const name = normalizeName(user.name);
-    if (!name || seen.has(user.uid)) continue;
+    if (!name) continue;
     const quoted = text2.toLocaleLowerCase().includes(`@"${name.toLocaleLowerCase()}"`);
     const bare = !/\s/.test(name) && new RegExp(`(^|[^A-Za-z0-9_-])@${escapeRegExp(name)}(?=$|[^A-Za-z0-9_-])`, "i").test(text2);
-    if (quoted || bare) {
-      seen.add(user.uid);
-      found.push(user);
-    }
+    if (quoted || bare) found.push(user);
   }
   return found;
 }
@@ -13942,13 +13938,11 @@ function mentionTokenAt(text2, cursor) {
 }
 function matchingMentionUsers(users, query, limit = 6) {
   const q = lower(query);
-  const seen = /* @__PURE__ */ new Set();
   const matches = [];
-  for (const user of users) {
+  for (const user of groupedMentionUsers(users)) {
     const name = normalizeName(user.name);
-    if (!name || seen.has(user.uid)) continue;
+    if (!name) continue;
     if (!q || lower(name).includes(q)) {
-      seen.add(user.uid);
       matches.push({ ...user, name });
     }
     if (matches.length >= limit) break;
@@ -13961,6 +13955,24 @@ function mentionTextFor(user) {
 }
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function groupedMentionUsers(users) {
+  var _a2;
+  const byName = /* @__PURE__ */ new Map();
+  for (const user of users) {
+    const name = normalizeName(user.name);
+    if (!name) continue;
+    const key = lower(name);
+    const existing = byName.get(key);
+    if (!existing) {
+      byName.set(key, { ...user, name, uids: ((_a2 = user.uids) == null ? void 0 : _a2.length) ? [...user.uids] : [user.uid] });
+      continue;
+    }
+    const ids = new Set(existing.uids || [existing.uid]);
+    for (const uid of user.uids || [user.uid]) ids.add(uid);
+    existing.uids = Array.from(ids);
+  }
+  return Array.from(byName.values());
 }
 
 // src/ui/mentionInput.ts
@@ -16775,9 +16787,12 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     const m = this.managerOwning(filePath);
     if (!m) return notified;
     for (const c of findMentionedUsers(text2, m.roster())) {
-      m.sendMention(c.uid, `${this.settings.displayName} mentioned you in ${fileName}`, text2.slice(0, 300), filePath);
-      notified.add(c.uid);
-      log("mention", "notified", c.name, c.uid);
+      for (const uid of c.uids || [c.uid]) {
+        if (notified.has(uid)) continue;
+        m.sendMention(uid, `${this.settings.displayName} mentioned you in ${fileName}`, text2.slice(0, 300), filePath);
+        notified.add(uid);
+        log("mention", "notified", c.name, uid);
+      }
     }
     return notified;
   }

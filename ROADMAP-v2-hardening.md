@@ -339,7 +339,8 @@ tokens use the current primary secrets. The old client-side HMAC path remains as
 servers.
 Per-device awareness now carries both a base color and a device-scoped color, so multiple installs for the
 same visible name render as separate, consistently colored cursors/selections/badges without requiring a
-real account system.
+real account system. Mention autocomplete groups live same-name installs into one visible person row and
+fans notifications out to each live uid behind that name.
 **Remaining.** Account-grade identity semantics.
 **Verify.** Server auth/share-state tests and real-server e2e cover role/owner/invite separation, expiry,
 revoked-owner rejection, live invite revocation, and signed invite identity binding.

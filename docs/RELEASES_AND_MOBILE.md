@@ -70,7 +70,8 @@ Expected to work on mobile:
 - Multi-device presence: each phone/tablet/desktop install has its own `deviceId`, color variant, and
   awareness entry. Editor cursors, self-selection overlays, file-tree badges, tab badges, and facepiles
   use the same device color. Cursor labels include the device, while facepiles and hover labels show the
-  plain name plus device/status.
+  plain name plus device/status. Mention autocomplete groups live same-name devices into one visible row
+  and fans the notification out to all live device identities behind that name.
 
 Known mobile differences:
 

@@ -163,8 +163,9 @@ presence. Cursor labels use a device-aware `user.name` such as `Elijah (mobile)`
 `user.displayName` plus a separate device suffix so facepiles, mentions, and hover labels do not duplicate
 device text. Each install keeps its own `deviceId`; cursor colors, self-selection overlays, file-tree
 badges, tab badges, and facepiles all use the same per-device color variant, while `baseColor` remains
-available for grouping/debugging. This is still not a full account system: there is no central login or
-cross-device key recovery. Security-relevant
+available for grouping/debugging. Mention autocomplete groups live same-name installs into one visible
+person row and fans a mention notification out to each live uid behind that name. This is still not a full
+account system: there is no central login or cross-device key recovery. Security-relevant
 share/link/invite/revoke/join/reject events are written to the server audit JSONL log.
 
 **Roles** (`viewer`/`commenter`/`editor`) are enforced *server-side*: in `rooms.ts`, a non-editor's sync

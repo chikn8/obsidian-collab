@@ -684,9 +684,12 @@ export default class CollabPlugin extends Plugin {
     const m = this.managerOwning(filePath);
     if (!m) return notified;
     for (const c of findMentionedUsers(text, m.roster())) {
-      m.sendMention(c.uid, `${this.settings.displayName} mentioned you in ${fileName}`, text.slice(0, 300), filePath);
-      notified.add(c.uid);
-      log("mention", "notified", c.name, c.uid);
+      for (const uid of c.uids || [c.uid]) {
+        if (notified.has(uid)) continue;
+        m.sendMention(uid, `${this.settings.displayName} mentioned you in ${fileName}`, text.slice(0, 300), filePath);
+        notified.add(uid);
+        log("mention", "notified", c.name, uid);
+      }
     }
     return notified;
   }

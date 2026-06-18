@@ -24,6 +24,16 @@ check("quoted mention matches full name", findMentionedUsers('hi @"Bob Smith"', 
 check("bare mention does not partial-match", findMentionedUsers("hi @Alice2", users).length === 0);
 check("matchingMentionUsers filters case-insensitively", matchingMentionUsers(users, "bo")[0]?.uid === "b");
 
+const sameNameDevices = [
+  { uid: "desktop", name: "Elijah" },
+  { uid: "phone", name: "Elijah" },
+  { uid: "other", name: "Elijah R" },
+];
+const groupedMatches = matchingMentionUsers(sameNameDevices, "eli");
+check("same-name devices show one completion", groupedMatches.length === 2 && groupedMatches[0]?.uids?.join(",") === "desktop,phone", JSON.stringify(groupedMatches));
+const groupedMentions = findMentionedUsers("hi @Elijah", sameNameDevices);
+check("same-name mention keeps all device uids", groupedMentions.length === 1 && groupedMentions[0]?.uids?.join(",") === "desktop,phone", JSON.stringify(groupedMentions));
+
 const bare = mentionTokenAt("reply @Al", "reply @Al".length);
 check("bare token found", bare?.from === 6 && bare?.query === "Al", JSON.stringify(bare));
 const quoted = mentionTokenAt('reply @"Bob S', 'reply @"Bob S'.length);

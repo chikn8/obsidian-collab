@@ -10360,21 +10360,6 @@ var FileProvider = class _FileProvider {
       }
     }
     const diskContent = initialContent || "";
-    const idbContent = this.ytext.toString();
-    if (diskContent.length > 0 && idbContent !== diskContent) {
-      if (idbContent.length === 0) {
-        this.ytext.insert(0, diskContent);
-      } else {
-        log(
-          "offline",
-          "reconciling offline disk edits",
-          this.filePath,
-          `(base ${idbContent.length} \u2192 disk ${diskContent.length} chars)`
-        );
-        await this.saveSnapshot(diskContent).catch((e) => log("offline", "pre-reconcile snapshot failed", e));
-        this.applyDiff(idbContent, diskContent);
-      }
-    }
     this.provider = createProvider(
       this.settings.serverUrl,
       this.roomName,
@@ -10401,6 +10386,9 @@ var FileProvider = class _FileProvider {
             setTimeout(() => {
               if (this.destroyed || this.isInitialized) return;
               this.isInitialized = true;
+              if (this.ytext.length === 0 && diskContent.length > 0) {
+                this.ytext.insert(0, diskContent);
+              }
               const mergedContent = this.ytext.toString();
               if (diskContent.length > 0 && mergedContent !== diskContent) {
                 this.saveSnapshot(diskContent).catch((e) => {
@@ -10410,9 +10398,6 @@ var FileProvider = class _FileProvider {
                 new import_obsidian2.Notice(
                   `Sync updated "${fileName}" \u2014 pre-sync backup saved`
                 );
-              }
-              if (this.ytext.length === 0 && diskContent.length > 0) {
-                this.ytext.insert(0, diskContent);
               }
               if (this.ytext.length > 0) {
                 this.writeToFile();

@@ -314,6 +314,7 @@ export default class CollabPlugin extends Plugin {
         boundProviderReady: this.boundProvider?.isReady() ?? false,
         boundHasPresence: !!this.boundPresence,
         pendingModifyDebounces: this.modifyDebounceMap.size,
+        managers: Array.from(this.syncManagers.values()).map((m) => m.diagnosticSnapshot()),
       },
     };
   }

@@ -21,6 +21,7 @@ const writeRows = rows.filter((r) => r.ns === "file" && String(r.event).startsWi
 const echoRows = rows.filter((r) => r.ns === "echo" || r.ns === "loop");
 const presenceRows = rows.filter((r) => r.ns === "presence");
 const manifestRows = rows.filter((r) => r.ns === "manifest");
+const bindRows = rows.filter((r) => r.ns === "bind");
 const skippedRows = rows.filter((r) => String(r.event).endsWith("-skipped") || field(r, "cause"));
 const suspiciousPaths = repeatedWritePaths(writeRows);
 
@@ -68,6 +69,19 @@ if (missingPresence.length > 0) {
     console.log(`- ${rowStamp(row)} ${row.event} ${field(row, "path") || ""}`);
   }
 }
+
+section("Active Editor / Lifecycle Signals");
+for (const [key, count] of top(countBy(bindRows, (r) => r.event), 12)) line(key, count);
+const lifecycleRows = bindRows.filter((r) => String(r.event).startsWith("lifecycle-flush"));
+if (lifecycleRows.length > 0) {
+  console.log("");
+  console.log("Recent lifecycle flushes:");
+  for (const row of lifecycleRows.slice(-10)) {
+    console.log(`- ${rowStamp(row)} ${row.event} ${compactFields(row.fields)}`);
+  }
+}
+const editorBoundRows = rows.filter((r) => r.ns === "bind" && r.event === "editor-bound");
+line("Editor-bound transitions", editorBoundRows.length);
 
 section("Manifest Mutation Signals");
 const mutationRows = manifestRows.filter((r) => field(r, "mutationId"));
@@ -152,6 +166,14 @@ function printContext(context) {
   line("Shares", `count=${settings.shareCount ?? "?"}, legacy=${settings.legacyShareCount ?? "?"}, roles=${JSON.stringify(settings.roles || {})}`);
   line("Settings", `ntfy=${bool(settings.ntfyConfigured)}, customColor=${bool(settings.customCursorColor)}`);
   line("Runtime", `managers=${runtime.managerCount ?? "?"}, bound=${runtime.boundPath || "none"}, ready=${bool(runtime.boundProviderReady)}, presence=${bool(runtime.boundHasPresence)}`);
+  if (Array.isArray(runtime.managers) && runtime.managers.length > 0) {
+    for (const manager of runtime.managers) {
+      line(
+        `Manager ${manager.shareId || manager.configuredShareId || "?"}`,
+        `status=${manager.status || "?"}, role=${manager.role || "?"}, files=${manager.fileProviders ?? "?"}, pending=${manager.pendingOffline ?? "?"}, fileHosts=${manager.renderedFilePresenceHosts ?? "?"}, tabHosts=${manager.renderedTabPresenceHosts ?? "?"}, missingAnchors=${bool(manager.lastPresenceHadMissingAnchors)}`
+      );
+    }
+  }
   line("Trace", `active=${bool(diagnostics.traceActive)}, rows=${diagnostics.rowCount ?? "?"}/${diagnostics.maxRows ?? "?"}, lines=${diagnostics.traceLineCount ?? "?"}/${diagnostics.maxTraceLines ?? "?"}, droppedRows=${diagnostics.droppedRows ?? 0}, droppedLines=${diagnostics.droppedTraceLines ?? 0}, nextSeq=${diagnostics.nextSeq ?? "?"}, path=${diagnostics.tracePath || "?"}`);
 }
 
@@ -178,7 +200,7 @@ function rowStamp(row) {
 function compactFields(fields) {
   if (!fields || typeof fields !== "object") return "";
   const keep = {};
-  for (const key of ["shareId", "path", "relPath", "room", "reason", "cause", "len", "oldLen", "newLen", "status", "error", "providers", "activeFiles", "fileMissing", "tabMissing", "mutationId", "mutationAction", "mutationDeviceId"]) {
+  for (const key of ["shareId", "path", "relPath", "room", "reason", "cause", "len", "oldLen", "newLen", "status", "error", "providers", "activeFiles", "fileMissing", "tabMissing", "mutationId", "mutationAction", "mutationDeviceId", "hasProvider", "bound", "ready"]) {
     if (Object.prototype.hasOwnProperty.call(fields, key)) keep[key] = fields[key];
   }
   const keys = Object.keys(keep);

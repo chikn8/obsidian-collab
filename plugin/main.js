@@ -12295,6 +12295,22 @@ var SyncManager = class {
   toFull(relPath) {
     return this.toFullPath(relPath);
   }
+  diagnosticSnapshot() {
+    return {
+      shareId: this.histShareId,
+      configuredShareId: this.share.id,
+      label: this.share.label,
+      localFolder: this.share.localFolder,
+      legacy: !!this.share.legacy,
+      role: this.role,
+      status: this.syncStatus,
+      fileProviders: this.fileProviders.size,
+      pendingOffline: this.pendingOfflineCount(),
+      renderedFilePresenceHosts: this.renderedPresence.size,
+      renderedTabPresenceHosts: this.renderedTabPresence.size,
+      lastPresenceHadMissingAnchors: this.lastPresenceHadMissingAnchors
+    };
+  }
   manifestMutation(action) {
     return manifestMutationFields({
       action,
@@ -16396,7 +16412,8 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
         boundPath: this.boundPath || "",
         boundProviderReady: (_b2 = (_a2 = this.boundProvider) == null ? void 0 : _a2.isReady()) != null ? _b2 : false,
         boundHasPresence: !!this.boundPresence,
-        pendingModifyDebounces: this.modifyDebounceMap.size
+        pendingModifyDebounces: this.modifyDebounceMap.size,
+        managers: Array.from(this.syncManagers.values()).map((m) => m.diagnosticSnapshot())
       }
     };
   }

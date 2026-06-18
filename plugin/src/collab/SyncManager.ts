@@ -216,6 +216,23 @@ export class SyncManager {
   toRel(fullPath: string): string { return this.toRelativePath(fullPath); }
   toFull(relPath: string): string { return this.toFullPath(relPath); }
 
+  diagnosticSnapshot(): Record<string, unknown> {
+    return {
+      shareId: this.histShareId,
+      configuredShareId: this.share.id,
+      label: this.share.label,
+      localFolder: this.share.localFolder,
+      legacy: !!this.share.legacy,
+      role: this.role,
+      status: this.syncStatus,
+      fileProviders: this.fileProviders.size,
+      pendingOffline: this.pendingOfflineCount(),
+      renderedFilePresenceHosts: this.renderedPresence.size,
+      renderedTabPresenceHosts: this.renderedTabPresence.size,
+      lastPresenceHadMissingAnchors: this.lastPresenceHadMissingAnchors,
+    };
+  }
+
   private manifestMutation(action: string): Partial<ManifestEntry> {
     return manifestMutationFields({
       action,

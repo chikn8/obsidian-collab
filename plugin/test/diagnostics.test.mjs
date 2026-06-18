@@ -33,7 +33,18 @@ configureDiagnostics({
   context: () => ({
     plugin: { version: "0.1-test" },
     settings: { shareCount: 2, serverToken: "should-not-export" },
-    runtime: { boundPath: "Shared/note.md" },
+    runtime: {
+      boundPath: "Shared/note.md",
+      managers: [{
+        shareId: "share-1",
+        status: "connected",
+        fileProviders: 3,
+        pendingOffline: 0,
+        renderedFilePresenceHosts: 1,
+        renderedTabPresenceHosts: 1,
+        lastPresenceHadMissingAnchors: false,
+      }],
+    },
   }),
 });
 trace("test", "redaction", {
@@ -60,6 +71,7 @@ check("bundle includes sanitized context", bundle.context.plugin.version === "0.
 check("bundle context redacts secret-like fields", bundle.context.settings.serverToken === "[redacted]");
 check("bundle includes diagnostics state", bundle.context.diagnostics.rowCount >= 1 && typeof bundle.context.diagnostics.tracePath === "string");
 check("bundle includes diagnostic capacity counters", bundle.context.diagnostics.maxRows >= 10000 && bundle.context.diagnostics.droppedRows === 0);
+check("bundle includes runtime manager snapshots", bundle.context.runtime.managers[0].shareId === "share-1" && bundle.context.runtime.managers[0].fileProviders === 3);
 check("bundle excludes secret values", !writes.get(bundlePath).includes("should-not-export"));
 
 const posts = [];

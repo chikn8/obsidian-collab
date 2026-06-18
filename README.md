@@ -267,7 +267,8 @@ cd plugin && node test/ws-sync.test.mjs <wsBase> <token>
 
 Diagnostic bundles exported from the plugin are JSON and safe to hand to an AI/debugging session.
 The summary tool also accepts the live `trace-....jsonl` file and highlights skipped file events,
-echo drops, repeated writes, and missing presence anchors:
+echo drops, repeated writes, missing presence anchors, active-editor bind/unbind events, lifecycle
+flushes, and per-share runtime snapshots:
 
 ```bash
 node tools/diagnostics-summary.mjs "<vault-config>/plugins/live-collab/diagnostics/diagnostic-bundle-....json"

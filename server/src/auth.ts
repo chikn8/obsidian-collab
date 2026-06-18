@@ -57,6 +57,23 @@ export function adminToken(secret: string, shareId: string, epoch: number): stri
   return hmac(secret, `admin:${shareId}:${epoch}`);
 }
 
+/** Per-share owner token. Lets a creator mint links/revoke only this share. */
+export function ownerKey(secret: string, shareId: string, epoch: number): string {
+  return hmac(secret, `owner:${shareId}:${epoch}`);
+}
+
+export function verifyOwnerAccess(
+  secret: string,
+  shareId: string,
+  token: string,
+  epoch: number | undefined,
+  minEpoch: number
+): boolean {
+  if (epoch === undefined || !Number.isFinite(epoch)) return false;
+  if (epoch < minEpoch) return false;
+  return timingSafeEqualStr(token, ownerKey(secret, shareId, epoch));
+}
+
 /**
  * Validate a connection's access to a namespaced share. Back-compatible:
  *  - role/epoch absent  → legacy/plain key HMAC(secret, shareId), treated as editor.

@@ -131,7 +131,7 @@ Already deployed on Railway as **ObsidianSync**. To run locally:
 cd server
 npm install
 cp .env.example .env        # then edit secrets
-SERVER_SECRET=$(openssl rand -hex 24) AUTH_TOKEN=$(openssl rand -hex 16) npm run dev
+SERVER_SECRET=$(openssl rand -hex 24) SHARE_MINT_TOKEN=$(openssl rand -hex 16) AUTH_TOKEN=$(openssl rand -hex 16) npm run dev
 ```
 
 For production, set the env vars in [Configuration](#configuration) (especially the secrets, a mounted
@@ -152,7 +152,8 @@ Enable **Real-Time Collaboration** in Settings → Community Plugins.
 
 Settings → Real-Time Collaboration:
 - **Server URL** (e.g. `wss://obsidiansync-production.up.railway.app`)
-- **Server Secret** (= server `SERVER_SECRET`) — only needed to *create* shares
+- **Share admin token** (= server `SHARE_MINT_TOKEN`) — only needed to create new shares
+- **Legacy server secret** is only for old servers; do not store `SERVER_SECRET` in clients for normal use
 - **Server Password** (= server `AUTH_TOKEN`) — only for the legacy folder
 - **Display Name** + **Cursor/Avatar Color**
 - **ntfy topic** (optional) — to receive `@mention` push notifications
@@ -168,6 +169,8 @@ Settings → Real-Time Collaboration:
 | `AUTH_TOKEN` | — | Global password for the legacy (un-namespaced) share |
 | `ADMIN_SECRET` | = `SERVER_SECRET` | Separate secret for `/admin/revoke` (defense in depth) |
 | `METRICS_TOKEN` | = `ADMIN_SECRET` | Bearer/query token required for `/metrics` when auth is enabled |
+| `SHARE_MINT_TOKEN` | = `ADMIN_SECRET` | Bearer token allowed to create new shares without exposing `SERVER_SECRET` |
+| `SHARE_OWNER_SECRET` | = `ADMIN_SECRET` | Derives per-share owner keys for link minting/revocation |
 | `REQUIRE_AUTH` | `true` if `NODE_ENV=production` | Refuse to start without strong secrets |
 | `MIN_SECRET_LENGTH` | `16` | Minimum secret length enforced when `REQUIRE_AUTH` |
 | `DISABLE_LEGACY_ROOMS` | `false` | Reject un-namespaced rooms entirely (no `AUTH_TOKEN` needed) |

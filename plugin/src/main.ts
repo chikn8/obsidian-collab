@@ -549,21 +549,80 @@ export default class CollabPlugin extends Plugin {
 
   // ── Share creation / joining ───────────────────────────────────
 
-  /** Generate a role-scoped share code (requires the server secret to mint keys). */
+  /** Generate a role-scoped share code using ownerKey, or legacy local-HMAC fallback. */
   async generateShareCode(share: Share, role: Role): Promise<string | null> {
-    if (share.legacy || !this.settings.serverSecret) return null;
+    if (share.legacy) return null;
     const epoch = share.epoch ?? 1;
-    const key =
-      role === (share.role || "editor") ? share.key : await deriveRoleKey(this.settings.serverSecret, share.id, role, epoch);
-    return encodeShareCode(this.settings.serverUrl, share.id, key, role, epoch);
+    if (role === (share.role || "editor")) {
+      return encodeShareCode(this.settings.serverUrl, share.id, share.key, role, epoch);
+    }
+
+    if (share.ownerKey) {
+      try {
+        const res = await postJson<{ key: string; role: Role; epoch: number }>(
+          `${httpBase(this.settings.serverUrl)}/share/link?share=${encodeURIComponent(share.id)}&role=${encodeURIComponent(role)}&epoch=${epoch}`,
+          undefined,
+          bearerHeaders(share.ownerKey)
+        );
+        if (res.ok && res.body?.key) {
+          return encodeShareCode(this.settings.serverUrl, share.id, res.body.key, res.body.role, res.body.epoch);
+        }
+      } catch (e) {
+        err("share", "server link mint failed", e);
+      }
+      new Notice("Could not create that share link on the server.");
+      return null;
+    }
+
+    if (this.settings.serverSecret) {
+      const key = await deriveRoleKey(this.settings.serverSecret, share.id, role, epoch);
+      return encodeShareCode(this.settings.serverUrl, share.id, key, role, epoch);
+    }
+
+    new Notice("This device does not have owner access for that share.");
+    return null;
   }
 
   /** Revoke ALL outstanding codes for a share by bumping its epoch. */
   async revokeShareAccess(share: Share): Promise<boolean> {
-    if (share.legacy || !this.settings.serverSecret) {
-      new Notice("Can't revoke this share (needs the server secret).");
+    if (share.legacy) {
+      new Notice("Can't revoke legacy shares.");
       return false;
     }
+
+    if (share.ownerKey) {
+      try {
+        const res = await postJson<{ epoch: number; key: string; ownerKey: string; closedConnections?: number }>(
+          `${httpBase(this.settings.serverUrl)}/share/revoke?share=${encodeURIComponent(share.id)}&epoch=${share.epoch ?? 1}`,
+          undefined,
+          bearerHeaders(share.ownerKey)
+        );
+        if (!res.ok || !res.body?.key || !res.body.ownerKey) {
+          new Notice("Revoke failed on the server.");
+          return false;
+        }
+        share.epoch = res.body.epoch;
+        share.role = "editor";
+        share.key = res.body.key;
+        share.ownerKey = res.body.ownerKey;
+        await this.persist();
+        await this.stopShare(share.id);
+        await this.startShare(share);
+        log("revoke", "share", share.id, "-> epoch", share.epoch, "closed=", res.body.closedConnections ?? 0);
+        new Notice("Access revoked. Old links no longer work — re-share to invite again.");
+        return true;
+      } catch (e) {
+        err("revoke", e);
+        new Notice("Revoke request failed.");
+        return false;
+      }
+    }
+
+    if (!this.settings.serverSecret) {
+      new Notice("Can't revoke this share from this device.");
+      return false;
+    }
+
     const newEpoch = (share.epoch ?? 1) + 1;
     const token = await deriveAdminToken(this.settings.serverSecret, share.id, newEpoch);
     try {
@@ -593,8 +652,8 @@ export default class CollabPlugin extends Plugin {
   }
 
   async shareFolderInteractive(presetFolder?: string): Promise<void> {
-    if (!this.settings.serverSecret) {
-      new Notice("Set the Server Secret in settings first — it's needed to create shares.");
+    if (!this.settings.shareMintToken && !this.settings.serverSecret) {
+      new Notice("Set the Share admin token in settings first — it's needed to create shares.");
       return;
     }
     const res = await promptModal(this.app, {
@@ -615,14 +674,14 @@ export default class CollabPlugin extends Plugin {
     }
     await this.ensureFolder(folder);
 
-    const id = generateShareId();
-    const epoch = 1;
-    const key = await deriveRoleKey(this.settings.serverSecret, id, "editor", epoch);
+    const minted = await this.mintShare();
+    if (!minted) return;
     const share: Share = {
-      id,
-      key,
+      id: minted.id,
+      key: minted.key,
       role: "editor",
-      epoch,
+      epoch: minted.epoch,
+      ownerKey: minted.ownerKey,
       label: res.label.trim() || folder.split("/").pop() || folder,
       localFolder: folder,
     };
@@ -639,6 +698,40 @@ export default class CollabPlugin extends Plugin {
     new Notice(copied
       ? `Share created — editor link copied. For a view-only link, use “Copy link” in settings.`
       : `Share created. Copy the editor link from settings (clipboard unavailable here).`);
+  }
+
+  private async mintShare(): Promise<{ id: string; key: string; epoch: number; ownerKey?: string } | null> {
+    if (this.settings.shareMintToken) {
+      try {
+        const res = await postJson<{ id: string; key: string; epoch: number; ownerKey?: string }>(
+          `${httpBase(this.settings.serverUrl)}/share/create`,
+          undefined,
+          bearerHeaders(this.settings.shareMintToken)
+        );
+        if (res.ok && res.body?.id && res.body.key) {
+          return {
+            id: res.body.id,
+            key: res.body.key,
+            epoch: res.body.epoch ?? 1,
+            ownerKey: res.body.ownerKey,
+          };
+        }
+        new Notice("Share creation was rejected by the server.");
+      } catch (e) {
+        err("share", "server mint failed", e);
+        new Notice("Share creation request failed.");
+      }
+      if (!this.settings.serverSecret) return null;
+    }
+
+    if (this.settings.serverSecret) {
+      const id = generateShareId();
+      const epoch = 1;
+      const key = await deriveRoleKey(this.settings.serverSecret, id, "editor", epoch);
+      return { id, key, epoch };
+    }
+
+    return null;
   }
 
   async addShareFromCodeInteractive(): Promise<void> {
@@ -734,6 +827,7 @@ export default class CollabPlugin extends Plugin {
       this.settings = {
         serverUrl: raw.serverUrl ?? DEFAULT_SETTINGS.serverUrl,
         serverPassword: raw.password ?? "",
+        shareMintToken: raw.shareMintToken ?? "",
         serverSecret: "",
         displayName: raw.displayName ?? DEFAULT_SETTINGS.displayName,
         cursorColor: raw.cursorColor ?? DEFAULT_SETTINGS.cursorColor,
@@ -778,4 +872,8 @@ export default class CollabPlugin extends Plugin {
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function bearerHeaders(token: string): Record<string, string> {
+  return { Authorization: `Bearer ${token}` };
 }

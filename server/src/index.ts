@@ -1,7 +1,8 @@
 import http from "http";
+import { randomBytes } from "crypto";
 import { WebSocketServer } from "ws";
 import { setupWSConnection, getMetrics, saveAllDocs, closeRevokedConnections } from "./rooms.js";
-import { authenticate, timingSafeEqualStr, verifyShareAccess, adminToken, type Role } from "./auth.js";
+import { authenticate, timingSafeEqualStr, verifyShareAccess, adminToken, ownerKey, roleKey, verifyOwnerAccess, ROLES, type Role } from "./auth.js";
 import { startSnapshots, stopSnapshots, commitSnapshotsNow, getSnapshotsHealth } from "./snapshots.js";
 import { listVersions, getVersion, listShareFiles } from "./history.js";
 import { getMinEpoch, setMinEpoch, getShareStateHealth } from "./shareState.js";
@@ -17,6 +18,8 @@ const AUTH_TOKEN = process.env.AUTH_TOKEN || "";
 const SERVER_SECRET = process.env.SERVER_SECRET || AUTH_TOKEN;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || SERVER_SECRET;
 const METRICS_TOKEN = process.env.METRICS_TOKEN || ADMIN_SECRET;
+const SHARE_MINT_TOKEN = process.env.SHARE_MINT_TOKEN || ADMIN_SECRET;
+const SHARE_OWNER_SECRET = process.env.SHARE_OWNER_SECRET || ADMIN_SECRET;
 const REQUIRE_AUTH = process.env.REQUIRE_AUTH === "true" || process.env.NODE_ENV === "production";
 const DISABLE_LEGACY_ROOMS = process.env.DISABLE_LEGACY_ROOMS === "true";
 const MIN_SECRET_LENGTH = Number(process.env.MIN_SECRET_LENGTH || 16);
@@ -30,6 +33,8 @@ if (REQUIRE_AUTH) {
   if (!strongSecret(SERVER_SECRET)) problems.push(`SERVER_SECRET must be at least ${MIN_SECRET_LENGTH} chars`);
   if (!strongSecret(ADMIN_SECRET)) problems.push(`ADMIN_SECRET must be at least ${MIN_SECRET_LENGTH} chars`);
   if (!strongSecret(METRICS_TOKEN)) problems.push(`METRICS_TOKEN must be at least ${MIN_SECRET_LENGTH} chars`);
+  if (!strongSecret(SHARE_MINT_TOKEN)) problems.push(`SHARE_MINT_TOKEN must be at least ${MIN_SECRET_LENGTH} chars`);
+  if (!strongSecret(SHARE_OWNER_SECRET)) problems.push(`SHARE_OWNER_SECRET must be at least ${MIN_SECRET_LENGTH} chars`);
   if (!DISABLE_LEGACY_ROOMS && !strongSecret(AUTH_TOKEN)) {
     problems.push(`AUTH_TOKEN must be at least ${MIN_SECRET_LENGTH} chars, or set DISABLE_LEGACY_ROOMS=true`);
   }
@@ -53,6 +58,23 @@ function metricsAuthorized(req: http.IncomingMessage, url: URL): boolean {
   if (!REQUIRE_AUTH && !METRICS_TOKEN) return true;
   const provided = bearerOrQueryToken(req, url);
   return !!provided && !!METRICS_TOKEN && timingSafeEqualStr(provided, METRICS_TOKEN);
+}
+
+function mintAuthorized(req: http.IncomingMessage, url: URL): boolean {
+  const provided = bearerOrQueryToken(req, url);
+  return !!provided && !!SHARE_MINT_TOKEN && timingSafeEqualStr(provided, SHARE_MINT_TOKEN);
+}
+
+function isRole(value: string | null): value is Role {
+  return !!value && (ROLES as string[]).includes(value);
+}
+
+const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function generateShareId(len = 16): string {
+  const bytes = randomBytes(len);
+  let out = "";
+  for (const b of bytes) out += BASE58[b % BASE58.length];
+  return out;
 }
 
 // ── HTTP: health + read-only version-history API + admin revoke ──────────────
@@ -107,6 +129,58 @@ const server = http.createServer(async (req, res) => {
       return json(200, getMetrics());
     }
 
+    // Server-side share minting. Clients receive scoped per-share keys; the raw
+    // SERVER_SECRET never needs to leave the server.
+    if (p === "/share/create" && req.method === "POST") {
+      if (!mintAuthorized(req, url)) return json(401, { error: "unauthorized" });
+      const shareId = generateShareId();
+      const epoch = 1;
+      await setMinEpoch(shareId, epoch);
+      return json(200, {
+        id: shareId,
+        role: "editor",
+        epoch,
+        key: roleKey(SERVER_SECRET, shareId, "editor", epoch),
+        ownerKey: ownerKey(SHARE_OWNER_SECRET, shareId, epoch),
+      });
+    }
+
+    if (p === "/share/link" && req.method === "POST") {
+      const shareId = url.searchParams.get("share") || "";
+      const role = url.searchParams.get("role");
+      const epoch = url.searchParams.get("epoch") != null ? Number(url.searchParams.get("epoch")) : undefined;
+      const token = bearerOrQueryToken(req, url);
+      if (!shareId || !isRole(role)) return json(400, { error: "bad request" });
+      const min = await getMinEpoch(shareId);
+      if (!verifyOwnerAccess(SHARE_OWNER_SECRET, shareId, token, epoch, min)) return json(401, { error: "unauthorized" });
+      return json(200, {
+        id: shareId,
+        role,
+        epoch,
+        key: roleKey(SERVER_SECRET, shareId, role, epoch!),
+      });
+    }
+
+    if (p === "/share/revoke" && req.method === "POST") {
+      const shareId = url.searchParams.get("share") || "";
+      const epoch = url.searchParams.get("epoch") != null ? Number(url.searchParams.get("epoch")) : undefined;
+      const token = bearerOrQueryToken(req, url);
+      if (!shareId || epoch === undefined || !Number.isFinite(epoch)) return json(400, { error: "bad request" });
+      const min = await getMinEpoch(shareId);
+      if (!verifyOwnerAccess(SHARE_OWNER_SECRET, shareId, token, epoch, min)) return json(401, { error: "unauthorized" });
+      const newEpoch = Math.max(epoch + 1, min + 1);
+      await setMinEpoch(shareId, newEpoch);
+      const closedConnections = closeRevokedConnections(shareId, newEpoch);
+      return json(200, {
+        ok: true,
+        shareId,
+        epoch: newEpoch,
+        key: roleKey(SERVER_SECRET, shareId, "editor", newEpoch),
+        ownerKey: ownerKey(SHARE_OWNER_SECRET, shareId, newEpoch),
+        closedConnections,
+      });
+    }
+
     // History endpoints require a valid share token (any role — these are reads).
     if (p === "/history" || p === "/version" || p === "/files") {
       const shareId = url.searchParams.get("share") || "";
@@ -134,7 +208,7 @@ const server = http.createServer(async (req, res) => {
     if (p === "/admin/revoke" && req.method === "POST") {
       const shareId = url.searchParams.get("share") || "";
       const epoch = Number(url.searchParams.get("epoch"));
-      const token = url.searchParams.get("token") || "";
+      const token = bearerOrQueryToken(req, url);
       if (!shareId || !Number.isFinite(epoch)) return json(400, { error: "bad request" });
       if (!timingSafeEqualStr(token, adminToken(ADMIN_SECRET, shareId, epoch))) return json(401, { error: "unauthorized" });
       await setMinEpoch(shareId, epoch);

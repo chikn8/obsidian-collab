@@ -111,13 +111,18 @@ changes pending") and clears on resync.
 Two tiers (`server/src/auth.ts`, `index.ts`):
 - **Legacy rooms** use the global `AUTH_TOKEN`.
 - **Namespaced shares** use a per-share capability token: `key = HMAC(SERVER_SECRET, "<id>:<role>:<epoch>")`.
-  The server validates it for the room's shareId — you can't forge another share's key (unless you hold
-  `SERVER_SECRET` itself, which only creators do; see the roadmap's server-side-minting item).
+  The server validates it for the room's shareId — you can't forge another share's key unless you hold
+  `SERVER_SECRET`.
+
+New shares are minted server-side through `/share/create`, authenticated by `SHARE_MINT_TOKEN`, so
+`SERVER_SECRET` no longer has to be stored in plugin settings. The creator receives an editor role key
+plus a scoped `ownerKey` for that share. Later role links are minted through `/share/link`, and revocation
+uses `/share/revoke`; both require the share's owner key and cannot derive keys for other shares.
 
 **Roles** (`viewer`/`commenter`/`editor`) are enforced *server-side*: in `rooms.ts`, a non-editor's sync
 writes (step2/update) are dropped — un-applied and un-persisted — so the read-only boundary is real, not
-just UI. **Revocation** bumps a per-share `epoch` watermark (`shareState.json`); `/admin/revoke` raises
-it (proving `ADMIN_SECRET` knowledge) and disconnects live revoked clients with close code 4003.
+just UI. **Revocation** bumps a per-share `epoch` watermark (`shareState.json`); `/share/revoke` or the
+legacy `/admin/revoke` raises it and disconnects live revoked clients with close code 4003.
 
 ## 7. The server
 

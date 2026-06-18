@@ -33,8 +33,7 @@ createFileProvider in-flight reservation · comment-anchor quote-verify + re-mat
 **Tier 2**: real-`FileProvider` integration test (fake vault/IDB/WS via esbuild alias) wired into CI.
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
-(ops, not code) · server-side share **minting** so `SERVER_SECRET` never leaves the box (Tier 3.2) ·
-within-share uid spoofing (needs server-verified identity) · socket multiplexing / scale ceiling
+(ops, not code) · within-share uid spoofing (needs server-verified identity) · socket multiplexing / scale ceiling
 (Tier 3.1) · binary/attachment + `.canvas` sync (Tier 4.1) · version-diff UI · human device-matrix test.
 
 ---
@@ -296,14 +295,13 @@ active files + the manifest; add client connect jitter; replace per-room 60s sav
 with a per-room dirty-flag **global sweep**.
 **Verify.** A 1,000-file share opens O(1) sockets/client; redeploy reconnect is smooth; idle memory bounded.
 
-### 3.2 — Server-side share minting / per-share key isolation (XL)
-**Problem.** `auth.ts` derives ALL share/role/admin tokens from one `SERVER_SECRET`, and creators paste the
-raw secret into **synced** plugin settings. `verifyShareAccess` only checks "do you hold a key for this
-shareId" and never binds the connection to a single share, so a secret holder can derive **any** share's key.
-One leaked `settings.json` = full read/write/revoke across every share; rotation invalidates every code at once.
-**Fix.** Move minting **server-side**: an authenticated "create share" endpoint so `SERVER_SECRET` never
-leaves the server; clients receive only a scoped per-share key. Add a key-rotation window.
-**Verify.** No secret in any client/synced file; a leaked client config grants only that client's shares.
+### 3.2 — Server-side share minting / per-share key isolation (implemented foundation; follow-ups remain)
+**Status.** Implemented the foundation: `/share/create` mints new shares with `SHARE_MINT_TOKEN`, returns
+only a scoped editor key plus per-share `ownerKey`, and keeps `SERVER_SECRET` on the server. `/share/link`
+and `/share/revoke` require the owner key, so a leaked client config can mint/revoke only that share. The
+old client-side HMAC path remains as a legacy fallback for old servers.
+**Remaining.** Add key-rotation windows, per-recipient/expiring invites, and an audit log (see 3.5).
+**Verify.** Server auth tests cover role/owner key separation and revoked-owner rejection.
 
 ### 3.3 — Memory-pressure room eviction + process tuning (L)
 **Fix.** LRU room eviction under a memory ceiling (persist + drop idle rooms); `--max-old-space-size`;

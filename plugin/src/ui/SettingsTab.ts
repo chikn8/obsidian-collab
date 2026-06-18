@@ -44,12 +44,26 @@ export class CollabSettingsTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("Server Secret")
-      .setDesc("Only needed to CREATE shares (mints per-folder keys). Leave blank if you only join others' shares. Must match the server's SERVER_SECRET.")
+      .setName("Share admin token")
+      .setDesc("Creates new shares through the server without storing SERVER_SECRET on this device. Must match SHARE_MINT_TOKEN.")
       .addText((text) => {
         text.inputEl.type = "password";
         text
-          .setPlaceholder("Enter server secret")
+          .setPlaceholder("Enter share admin token")
+          .setValue(this.plugin.settings.shareMintToken)
+          .onChange(async (value) => {
+            this.plugin.settings.shareMintToken = value;
+            await this.plugin.saveSettings(false);
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Legacy server secret")
+      .setDesc("Deprecated fallback for older servers that cannot mint shares. Avoid storing SERVER_SECRET in client settings.")
+      .addText((text) => {
+        text.inputEl.type = "password";
+        text
+          .setPlaceholder("Avoid unless using an old server")
           .setValue(this.plugin.settings.serverSecret)
           .onChange(async (value) => {
             this.plugin.settings.serverSecret = value;
@@ -159,7 +173,7 @@ export class CollabSettingsTab extends PluginSettingTab {
       });
     }
 
-    const canMint = !!this.plugin.settings.serverSecret;
+    const hasLegacyMint = !!this.plugin.settings.serverSecret;
     for (const share of this.plugin.settings.shares) {
       const role = share.role || "editor";
       const tags = [share.legacy ? "legacy" : null, role !== "editor" ? role : null].filter(Boolean).join(", ");
@@ -167,8 +181,8 @@ export class CollabSettingsTab extends PluginSettingTab {
         .setName(share.label + (tags ? `  (${tags})` : ""))
         .setDesc(share.localFolder);
 
-      // Creator controls (need the server secret to mint role keys / revoke).
-      if (!share.legacy && canMint) {
+      // Creator controls need either the scoped owner key or the legacy server secret.
+      if (!share.legacy && (share.ownerKey || hasLegacyMint)) {
         s.addButton((b) =>
           b.setButtonText("Editor link").onClick(async () => {
             const code = await this.plugin.generateShareCode(share, "editor");

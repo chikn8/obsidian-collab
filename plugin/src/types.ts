@@ -1,8 +1,8 @@
 /**
  * A single shared folder. The unit you hand to one person/group.
  *  - `id`    : unguessable namespace for this share's rooms (and Tier-1 capability).
- *  - `key`   : per-share token = base64url(HMAC-SHA256(serverSecret, id)); sent as
- *              the WebSocket `token` for Tier-2 server-enforced auth.
+ *  - `key`   : scoped role token sent as the WebSocket `token`.
+ *  - `ownerKey`: creator-only scoped token for minting links/revoking this share.
  *  - `legacy`: the auto-migrated original folder. Uses the OLD un-prefixed rooms
  *              (__manifest__, file:...) so existing data + collaborators are untouched.
  */
@@ -19,6 +19,8 @@ export interface Share {
   role?: Role;
   /** Revocation epoch baked into the role key (default 1 for new shares). */
   epoch?: number;
+  /** Scoped creator token for this share only. Never included in share codes. */
+  ownerKey?: string;
 }
 
 /**
@@ -58,7 +60,9 @@ export interface CollabPluginSettings {
   serverUrl: string;
   /** Global password for legacy (un-namespaced) rooms. Was `password`. */
   serverPassword: string;
-  /** Creator-only secret used to MINT share keys. Joiners never receive this. */
+  /** Narrow server-side mint token for creating shares. Does not derive share keys client-side. */
+  shareMintToken: string;
+  /** Deprecated fallback for old servers that require client-side HMAC minting. */
   serverSecret: string;
   displayName: string;
   cursorColor: string;
@@ -78,6 +82,7 @@ export interface CollabPluginSettings {
 export const DEFAULT_SETTINGS: CollabPluginSettings = {
   serverUrl: "ws://localhost:1234",
   serverPassword: "",
+  shareMintToken: "",
   serverSecret: "",
   displayName: "Anonymous",
   cursorColor: "#ff6b6b",

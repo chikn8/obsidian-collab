@@ -25,6 +25,8 @@ import { getPersistenceHealth } from "./persistence.js";
 import { startBackups, stopBackups, getBackupHealth } from "./backups.js";
 import { auditEvent } from "./audit.js";
 import { getRuntimeHealth } from "./runtime.js";
+import { CLIENT_LOG_MAX_BYTES, clientLogFields } from "./clientLog.js";
+import { logEvent } from "./logging.js";
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = parseInt(process.env.PORT || "8080", 10);
@@ -267,6 +269,38 @@ const server = http.createServer(async (req, res) => {
     if (p === "/metrics") {
       if (!metricsAuthorized(req, url)) return json(401, { error: "unauthorized" });
       return json(200, { ...getMetrics(), runtime: getRuntimeHealth() });
+    }
+
+    if (p === "/clientlog" && req.method === "POST") {
+      const shareId = url.searchParams.get("share") || "";
+      const token = bearerOrQueryToken(req, url);
+      const role = (url.searchParams.get("role") as Role | null) || undefined;
+      const epoch = url.searchParams.get("epoch") != null ? Number(url.searchParams.get("epoch")) : undefined;
+      const inviteId = url.searchParams.get("invite") || undefined;
+      const expiresAt = inviteExpiresAt(url);
+      const identity = identityParams(url);
+      if (!shareId) return json(400, { error: "bad request" });
+      const granted =
+        shareId === "legacy" && !DISABLE_LEGACY_ROOMS && tokenMatchesAny(token, AUTH_TOKENS)
+          ? "editor"
+          : await verifyNamespacedAccess({ shareId, token, role, epoch, inviteId, expiresAt, ...identity });
+      if (!granted) return json(401, { error: "unauthorized" });
+      let body: any;
+      try {
+        body = await readJsonBody(req, CLIENT_LOG_MAX_BYTES);
+      } catch (e: any) {
+        if (String(e?.message || e) === "request body too large") {
+          return json(413, { error: "request body too large", maxBytes: CLIENT_LOG_MAX_BYTES });
+        }
+        throw e;
+      }
+      logEvent("error", "client.error", clientLogFields({
+        shareId,
+        role: granted,
+        remote: remoteAddress(req),
+        body,
+      }));
+      return json(200, { ok: true });
     }
 
     if (p === "/blob" && (req.method === "GET" || req.method === "PUT")) {

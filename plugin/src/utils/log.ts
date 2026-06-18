@@ -20,11 +20,16 @@ interface DiagnosticsConfig {
   uid?: string;
   debugLogging?: boolean;
   diagnosticLogging?: boolean;
+  clientTelemetry?: {
+    enabled: boolean;
+    url: string;
+  };
   context?: () => Record<string, unknown>;
 }
 
 const MAX_ROWS = 10000;
 const MAX_TRACE_LINES = 50000;
+const MAX_TELEMETRY_QUEUE = 50;
 const MAX_STRING = 500;
 const SECRET_KEY_RE = /(secret|password|token|key|code|auth|credential|content|body|text)/i;
 
@@ -40,6 +45,12 @@ let contextProvider: (() => Record<string, unknown>) | null = null;
 let seq = 0;
 let droppedRows = 0;
 let droppedTraceLines = 0;
+let telemetryEnabled = false;
+let telemetryUrl = "";
+let telemetryInFlight = false;
+let telemetryDroppedRows = 0;
+let telemetryFailures = 0;
+let telemetryLastFailureAt = "";
 const sessionStartedAt = Date.now();
 
 const sessionId =
@@ -47,12 +58,18 @@ const sessionId =
   `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 const rows: LogRow[] = [];
 const traceLines: string[] = [];
+const telemetryQueue: LogRow[] = [];
 
 export function configureDiagnostics(config: DiagnosticsConfig): void {
   if (config.app) appRef = config.app;
   if (config.uid !== undefined) uidHint = config.uid;
   if (config.debugLogging !== undefined) DEBUG = config.debugLogging;
   if (config.diagnosticLogging !== undefined) DIAGNOSTIC_FILE = config.diagnosticLogging;
+  if (config.clientTelemetry !== undefined) {
+    telemetryEnabled = !!config.clientTelemetry.enabled && !!config.clientTelemetry.url;
+    telemetryUrl = config.clientTelemetry.url || "";
+    if (!telemetryEnabled) telemetryQueue.length = 0;
+  }
   if (config.context !== undefined) contextProvider = config.context;
 }
 
@@ -116,11 +133,12 @@ export function warn(ns: string, ...args: unknown[]): void {
 }
 
 export function err(ns: string, ...args: unknown[]): void {
-  record("error", ns, "error", { args });
+  const row = record("error", ns, "error", { args });
+  enqueueTelemetry(row);
   console.error(`[collab:${ns}]`, ...args);
 }
 
-function record(level: Level, ns: string, event: string, fields: Record<string, unknown> = {}): void {
+function record(level: Level, ns: string, event: string, fields: Record<string, unknown> = {}): LogRow {
   const now = Date.now();
   const row: LogRow = {
     seq: ++seq,
@@ -146,6 +164,43 @@ function record(level: Level, ns: string, event: string, fields: Record<string, 
       droppedTraceLines++;
     }
     scheduleFlush();
+  }
+  return row;
+}
+
+function enqueueTelemetry(row: LogRow): void {
+  if (!telemetryEnabled || !telemetryUrl || row.level !== "error") return;
+  if (telemetryQueue.length >= MAX_TELEMETRY_QUEUE) {
+    telemetryQueue.shift();
+    telemetryDroppedRows++;
+  }
+  telemetryQueue.push(row);
+  void flushTelemetryQueue();
+}
+
+async function flushTelemetryQueue(): Promise<void> {
+  if (telemetryInFlight || !telemetryEnabled || !telemetryUrl) return;
+  const row = telemetryQueue.shift();
+  if (!row) return;
+
+  telemetryInFlight = true;
+  try {
+    const res = await fetch(telemetryUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        row,
+        context: collectContext(),
+      }),
+    });
+    if (!res.ok) throw new Error(`clientlog ${res.status}`);
+  } catch (e) {
+    telemetryFailures++;
+    telemetryLastFailureAt = new Date().toISOString();
+    if (DEBUG) console.warn("[collab:diag] client telemetry failed", e);
+  } finally {
+    telemetryInFlight = false;
+    if (telemetryQueue.length > 0) void flushTelemetryQueue();
   }
 }
 
@@ -192,6 +247,11 @@ function collectContext(): Record<string, unknown> {
     maxTraceLines: MAX_TRACE_LINES,
     droppedRows,
     droppedTraceLines,
+    clientTelemetryEnabled: telemetryEnabled,
+    clientTelemetryQueued: telemetryQueue.length,
+    clientTelemetryDroppedRows: telemetryDroppedRows,
+    clientTelemetryFailures: telemetryFailures,
+    clientTelemetryLastFailureAt: telemetryLastFailureAt,
     nextSeq: seq + 1,
     sessionStartedAt: new Date(sessionStartedAt).toISOString(),
     sessionAgeMs: Date.now() - sessionStartedAt,

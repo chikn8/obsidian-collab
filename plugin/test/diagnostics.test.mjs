@@ -1,5 +1,6 @@
 import {
   configureDiagnostics,
+  err,
   exportDiagnosticBundle,
   getRecentDiagnostics,
   trace,
@@ -60,6 +61,42 @@ check("bundle context redacts secret-like fields", bundle.context.settings.serve
 check("bundle includes diagnostics state", bundle.context.diagnostics.rowCount >= 1 && typeof bundle.context.diagnostics.tracePath === "string");
 check("bundle includes diagnostic capacity counters", bundle.context.diagnostics.maxRows >= 10000 && bundle.context.diagnostics.droppedRows === 0);
 check("bundle excludes secret values", !writes.get(bundlePath).includes("should-not-export"));
+
+const posts = [];
+const originalFetch = globalThis.fetch;
+const originalConsoleError = console.error;
+try {
+  globalThis.fetch = async (url, opts) => {
+    posts.push({ url, opts });
+    return { ok: true, status: 200 };
+  };
+  console.error = () => {};
+  configureDiagnostics({
+    app,
+    uid: "user-123456789",
+    debugLogging: false,
+    diagnosticLogging: false,
+    clientTelemetry: { enabled: true, url: "https://relay.example/clientlog?token=should-not-export" },
+    context: () => ({
+      settings: { serverToken: "should-not-export", shareCount: 1 },
+      runtime: { boundPath: "Shared/note.md" },
+    }),
+  });
+  err("telemetry", "provider failed", new Error("boom"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+} finally {
+  globalThis.fetch = originalFetch;
+  console.error = originalConsoleError;
+  configureDiagnostics({ clientTelemetry: { enabled: false, url: "" } });
+}
+
+const telemetry = posts.length === 1 ? JSON.parse(posts[0].opts.body) : null;
+check("posts one telemetry error", posts.length === 1);
+check("telemetry uses JSON POST", posts[0]?.opts?.method === "POST" && posts[0]?.opts?.headers?.["Content-Type"] === "application/json");
+check("telemetry row is sanitized error", telemetry?.row?.level === "error" && telemetry?.row?.ns === "telemetry");
+check("telemetry includes sanitized context", telemetry?.context?.settings?.shareCount === 1 && telemetry?.context?.runtime?.boundPath === "Shared/note.md");
+check("telemetry context redacts secrets", telemetry?.context?.settings?.serverToken === "[redacted]");
+check("telemetry body excludes secret values", !JSON.stringify(telemetry).includes("should-not-export"));
 
 console.log("");
 if (failures > 0) { console.error(`FAILED — ${failures} assertion(s) failed`); process.exit(1); }

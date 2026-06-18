@@ -20,7 +20,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const SETTINGS = (uid) => ({
   serverUrl: "ws://fake", serverPassword: "", serverSecret: "",
-  displayName: uid, cursorColor: "", uid, ntfyTopic: "", debugLogging: false, diagnosticLogging: false, shares: [],
+  displayName: uid, cursorColor: "", uid, ntfyTopic: "", debugLogging: false, diagnosticLogging: false, clientTelemetry: false, shares: [],
 });
 
 /** A "client": a fake App + an EchoGuard + a FileProvider for one file, with the

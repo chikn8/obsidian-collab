@@ -100,6 +100,8 @@ export interface CollabPluginSettings {
   debugLogging: boolean;
   /** Persist a redacted structured diagnostic trace for feedback-loop debugging. */
   diagnosticLogging: boolean;
+  /** Opt-in: POST redacted error rows to the collab server for lifecycle debugging. */
+  clientTelemetry: boolean;
   /** Local per-device read markers for the comment inbox. */
   commentReadAt: Record<string, number>;
   shares: Share[];
@@ -119,6 +121,7 @@ export const DEFAULT_SETTINGS: CollabPluginSettings = {
   ntfyTopic: "",
   debugLogging: false,
   diagnosticLogging: false,
+  clientTelemetry: false,
   commentReadAt: {},
   shares: [],
 };

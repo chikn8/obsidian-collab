@@ -10431,6 +10431,7 @@ async function readLegacyPluginData(app) {
 // src/utils/log.ts
 var MAX_ROWS = 1e4;
 var MAX_TRACE_LINES = 5e4;
+var MAX_TELEMETRY_QUEUE = 50;
 var MAX_STRING = 500;
 var SECRET_KEY_RE = /(secret|password|token|key|code|auth|credential|content|body|text)/i;
 var DEBUG = false;
@@ -10445,16 +10446,28 @@ var contextProvider = null;
 var seq = 0;
 var droppedRows = 0;
 var droppedTraceLines = 0;
+var telemetryEnabled = false;
+var telemetryUrl = "";
+var telemetryInFlight = false;
+var telemetryDroppedRows = 0;
+var telemetryFailures = 0;
+var telemetryLastFailureAt = "";
 var sessionStartedAt = Date.now();
 var _a, _b;
 var sessionId = ((_b = (_a = globalThis.crypto) == null ? void 0 : _a.randomUUID) == null ? void 0 : _b.call(_a)) || `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 var rows = [];
 var traceLines = [];
+var telemetryQueue = [];
 function configureDiagnostics(config) {
   if (config.app) appRef = config.app;
   if (config.uid !== void 0) uidHint = config.uid;
   if (config.debugLogging !== void 0) DEBUG = config.debugLogging;
   if (config.diagnosticLogging !== void 0) DIAGNOSTIC_FILE = config.diagnosticLogging;
+  if (config.clientTelemetry !== void 0) {
+    telemetryEnabled = !!config.clientTelemetry.enabled && !!config.clientTelemetry.url;
+    telemetryUrl = config.clientTelemetry.url || "";
+    if (!telemetryEnabled) telemetryQueue.length = 0;
+  }
   if (config.context !== void 0) contextProvider = config.context;
 }
 function setDiagnosticLogging(on) {
@@ -10491,7 +10504,8 @@ function log(ns, ...args2) {
   if (DEBUG) console.log(`%c[collab:${ns}]`, "color:#54a0ff;font-weight:600", ...args2);
 }
 function err(ns, ...args2) {
-  record("error", ns, "error", { args: args2 });
+  const row = record("error", ns, "error", { args: args2 });
+  enqueueTelemetry(row);
   console.error(`[collab:${ns}]`, ...args2);
 }
 function record(level, ns, event, fields = {}) {
@@ -10519,6 +10533,40 @@ function record(level, ns, event, fields = {}) {
       droppedTraceLines++;
     }
     scheduleFlush();
+  }
+  return row;
+}
+function enqueueTelemetry(row) {
+  if (!telemetryEnabled || !telemetryUrl || row.level !== "error") return;
+  if (telemetryQueue.length >= MAX_TELEMETRY_QUEUE) {
+    telemetryQueue.shift();
+    telemetryDroppedRows++;
+  }
+  telemetryQueue.push(row);
+  void flushTelemetryQueue();
+}
+async function flushTelemetryQueue() {
+  if (telemetryInFlight || !telemetryEnabled || !telemetryUrl) return;
+  const row = telemetryQueue.shift();
+  if (!row) return;
+  telemetryInFlight = true;
+  try {
+    const res = await fetch(telemetryUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        row,
+        context: collectContext()
+      })
+    });
+    if (!res.ok) throw new Error(`clientlog ${res.status}`);
+  } catch (e) {
+    telemetryFailures++;
+    telemetryLastFailureAt = (/* @__PURE__ */ new Date()).toISOString();
+    if (DEBUG) console.warn("[collab:diag] client telemetry failed", e);
+  } finally {
+    telemetryInFlight = false;
+    if (telemetryQueue.length > 0) void flushTelemetryQueue();
   }
 }
 function scheduleFlush() {
@@ -10562,6 +10610,11 @@ function collectContext() {
     maxTraceLines: MAX_TRACE_LINES,
     droppedRows,
     droppedTraceLines,
+    clientTelemetryEnabled: telemetryEnabled,
+    clientTelemetryQueued: telemetryQueue.length,
+    clientTelemetryDroppedRows: telemetryDroppedRows,
+    clientTelemetryFailures: telemetryFailures,
+    clientTelemetryLastFailureAt: telemetryLastFailureAt,
     nextSeq: seq + 1,
     sessionStartedAt: new Date(sessionStartedAt).toISOString(),
     sessionAgeMs: Date.now() - sessionStartedAt
@@ -10757,6 +10810,7 @@ var DEFAULT_SETTINGS = {
   ntfyTopic: "",
   debugLogging: false,
   diagnosticLogging: false,
+  clientTelemetry: false,
   commentReadAt: {},
   shares: []
 };
@@ -13791,6 +13845,12 @@ var CollabSettingsTab = class extends import_obsidian7.PluginSettingTab {
         await this.plugin.saveSettings(false);
       })
     );
+    new import_obsidian7.Setting(containerEl).setName("Send error telemetry").setDesc("Opt in to POST redacted error diagnostics to your collab server.").addToggle(
+      (t) => t.setValue(this.plugin.settings.clientTelemetry).onChange(async (v) => {
+        this.plugin.settings.clientTelemetry = v;
+        await this.plugin.saveSettings(false);
+      })
+    );
     new import_obsidian7.Setting(containerEl).setName("Diagnostics").setDesc("Capture or export redacted sync events for debugging lost saves, loops, and presence glitches.").addButton(
       (b) => b.setButtonText("Trace 2 min").onClick(() => {
         this.plugin.startDiagnosticTraceInteractive();
@@ -15802,6 +15862,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       uid: this.settings.uid,
       debugLogging: this.settings.debugLogging,
       diagnosticLogging: this.settings.diagnosticLogging,
+      clientTelemetry: this.clientTelemetryConfig(),
       context: () => this.diagnosticContext()
     });
     log("load", "starting; uid=", (_a2 = this.settings.uid) == null ? void 0 : _a2.slice(0, 8), "shares=", this.settings.shares.length);
@@ -15986,7 +16047,8 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
         legacyShareCount: this.settings.shares.filter((s) => s.legacy).length,
         roles,
         ntfyConfigured: !!this.settings.ntfyTopic,
-        customCursorColor: !!this.settings.cursorColor
+        customCursorColor: !!this.settings.cursorColor,
+        clientTelemetry: !!this.settings.clientTelemetry
       },
       runtime: {
         managerCount: this.syncManagers.size,
@@ -16797,7 +16859,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
   }
   // ── Settings (with migration) ──────────────────────────────────
   async loadSettings() {
-    var _a2, _b2, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o;
+    var _a2, _b2, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p;
     const raw = await this.loadCurrentOrLegacyData();
     if (raw.shares === void 0 && (raw.linkedFolder !== void 0 || raw.password !== void 0)) {
       this.settings = {
@@ -16814,7 +16876,8 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
         ntfyTopic: (_j = raw.ntfyTopic) != null ? _j : "",
         debugLogging: (_k = raw.debugLogging) != null ? _k : DEFAULT_SETTINGS.debugLogging,
         diagnosticLogging: (_l = raw.diagnosticLogging) != null ? _l : DEFAULT_SETTINGS.diagnosticLogging,
-        commentReadAt: (_m = raw.commentReadAt) != null ? _m : {},
+        clientTelemetry: (_m = raw.clientTelemetry) != null ? _m : DEFAULT_SETTINGS.clientTelemetry,
+        commentReadAt: (_n = raw.commentReadAt) != null ? _n : {},
         shares: raw.linkedFolder ? [{ id: LEGACY_SHARE_ID, key: "", label: "Synced Obsidian", localFolder: raw.linkedFolder, legacy: true }] : []
       };
       await this.persist();
@@ -16822,7 +16885,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       this.settings = Object.assign({}, DEFAULT_SETTINGS, raw);
     }
     if (!this.settings.uid) {
-      this.settings.uid = ((_o = (_n = globalThis.crypto) == null ? void 0 : _n.randomUUID) == null ? void 0 : _o.call(_n)) || generateShareId(24);
+      this.settings.uid = ((_p = (_o = globalThis.crypto) == null ? void 0 : _o.randomUUID) == null ? void 0 : _p.call(_o)) || generateShareId(24);
       await this.persist();
     }
     const identity = await ensureIdentityKeys({
@@ -16856,11 +16919,29 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       uid: this.settings.uid,
       debugLogging: this.settings.debugLogging,
       diagnosticLogging: this.settings.diagnosticLogging,
+      clientTelemetry: this.clientTelemetryConfig(),
       context: () => this.diagnosticContext()
     });
     setDiagnosticLogging(this.settings.diagnosticLogging);
     await this.persist();
     if (restart) this.debouncedRestart();
+  }
+  clientTelemetryConfig() {
+    if (!this.settings.clientTelemetry) return { enabled: false, url: "" };
+    const share = this.settings.shares[0];
+    if (!share) return { enabled: false, url: "" };
+    const token = shareToken(share, this.settings.serverPassword);
+    if (!token) return { enabled: false, url: "" };
+    const q = new URLSearchParams();
+    q.set("share", share.legacy ? "legacy" : share.id);
+    q.set("token", token);
+    for (const [key, value] of Object.entries(shareAuthParams(share))) q.set(key, value);
+    if (share.inviteId && this.settings.identityPublicKey && this.settings.identitySignature) {
+      q.set("uid", this.settings.uid);
+      q.set("identityKey", this.settings.identityPublicKey);
+      q.set("identitySig", this.settings.identitySignature);
+    }
+    return { enabled: true, url: `${httpBase(this.settings.serverUrl)}/clientlog?${q}` };
   }
 };
 function bearerHeaders(token) {

@@ -163,6 +163,7 @@ Settings → Real-Time Collaboration:
 - **Server Password** (= server `AUTH_TOKEN`) — only for the legacy folder
 - **Display Name** + **Cursor/Avatar Color**
 - **ntfy topic** (optional) — to receive `@mention` push notifications
+- **Send error telemetry** (optional) — POSTs redacted plugin error diagnostics to your collab server
 
 ## Configuration
 
@@ -187,6 +188,7 @@ Settings → Real-Time Collaboration:
 | `SYNC_DEBUG_LOG` | `false` | Emit verbose structured sync/awareness relay rows for debugging loops/glitches |
 | `SYNC_LOG_LARGE_UPDATE_BYTES` | `65536` | Warn when an inbound Yjs sync update frame is this large |
 | `SYNC_LOG_LARGE_TEXT_DELTA` | `20480` | Warn when a single inbound sync update changes text length by this much |
+| `CLIENT_LOG_MAX_BYTES` | `65536` | Max opt-in `/clientlog` telemetry request body size |
 | `BLOB_MAX_BYTES` | `26214400` | Max attachment/blob upload size |
 | `BLOB_STORE` | `fs` | Attachment blob backend: `fs` or S3-compatible `s3` |
 | `BLOB_S3_ENDPOINT` / `BLOB_S3_BUCKET` / `BLOB_S3_REGION` | — / — / `auto` | S3/R2 object-store endpoint, bucket, and signing region when `BLOB_STORE=s3` |
@@ -266,6 +268,8 @@ node tools/diagnostics-summary.mjs "<vault-config>/plugins/live-collab/diagnosti
 Server relay logs are also structured, redacted JSON rows on stdout/stderr. They include `seq`, `dt`,
 `connId`, room/share metadata, rate-limit/backpressure closes, rejected writes, mux room rejections,
 and suspicious update sizes, but never tokens, keys, note bodies, or raw Yjs payloads.
+If **Send error telemetry** is enabled in the plugin, `err(...)` rows are also POSTed to `/clientlog`
+with normal share authentication; the server logs them as redacted `client.error` rows.
 
 Production durability gate:
 ```bash

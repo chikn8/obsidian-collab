@@ -137,6 +137,16 @@ export class CollabSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("Send error telemetry")
+      .setDesc("Opt in to POST redacted error diagnostics to your collab server.")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.clientTelemetry).onChange(async (v) => {
+          this.plugin.settings.clientTelemetry = v;
+          await this.plugin.saveSettings(false);
+        })
+      );
+
+    new Setting(containerEl)
       .setName("Diagnostics")
       .setDesc("Capture or export redacted sync events for debugging lost saves, loops, and presence glitches.")
       .addButton((b) =>

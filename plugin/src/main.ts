@@ -27,6 +27,8 @@ import {
   deriveRoleKey,
   deriveAdminToken,
   httpBase,
+  shareAuthParams,
+  shareToken,
 } from "./utils/roomName";
 import { HistoryView, HISTORY_VIEW_TYPE, type HistoryContext } from "./ui/HistoryView";
 import type { CollabPluginSettings, SyncStatus, ConnectedUser, Share, Role, ShareInvite } from "./types";
@@ -58,6 +60,7 @@ export default class CollabPlugin extends Plugin {
       uid: this.settings.uid,
       debugLogging: this.settings.debugLogging,
       diagnosticLogging: this.settings.diagnosticLogging,
+      clientTelemetry: this.clientTelemetryConfig(),
       context: () => this.diagnosticContext(),
     });
     log("load", "starting; uid=", this.settings.uid?.slice(0, 8), "shares=", this.settings.shares.length);
@@ -281,6 +284,7 @@ export default class CollabPlugin extends Plugin {
         roles,
         ntfyConfigured: !!this.settings.ntfyTopic,
         customCursorColor: !!this.settings.cursorColor,
+        clientTelemetry: !!this.settings.clientTelemetry,
       },
       runtime: {
         managerCount: this.syncManagers.size,
@@ -1160,6 +1164,7 @@ export default class CollabPlugin extends Plugin {
         ntfyTopic: raw.ntfyTopic ?? "",
         debugLogging: raw.debugLogging ?? DEFAULT_SETTINGS.debugLogging,
         diagnosticLogging: raw.diagnosticLogging ?? DEFAULT_SETTINGS.diagnosticLogging,
+        clientTelemetry: raw.clientTelemetry ?? DEFAULT_SETTINGS.clientTelemetry,
         commentReadAt: raw.commentReadAt ?? {},
         shares: raw.linkedFolder
           ? [{ id: LEGACY_SHARE_ID, key: "", label: "Synced Obsidian", localFolder: raw.linkedFolder, legacy: true }]
@@ -1210,11 +1215,31 @@ export default class CollabPlugin extends Plugin {
       uid: this.settings.uid,
       debugLogging: this.settings.debugLogging,
       diagnosticLogging: this.settings.diagnosticLogging,
+      clientTelemetry: this.clientTelemetryConfig(),
       context: () => this.diagnosticContext(),
     });
     setDiagnosticLogging(this.settings.diagnosticLogging);
     await this.persist();
     if (restart) this.debouncedRestart();
+  }
+
+  private clientTelemetryConfig(): { enabled: boolean; url: string } {
+    if (!this.settings.clientTelemetry) return { enabled: false, url: "" };
+    const share = this.settings.shares[0];
+    if (!share) return { enabled: false, url: "" };
+    const token = shareToken(share, this.settings.serverPassword);
+    if (!token) return { enabled: false, url: "" };
+
+    const q = new URLSearchParams();
+    q.set("share", share.legacy ? "legacy" : share.id);
+    q.set("token", token);
+    for (const [key, value] of Object.entries(shareAuthParams(share))) q.set(key, value);
+    if (share.inviteId && this.settings.identityPublicKey && this.settings.identitySignature) {
+      q.set("uid", this.settings.uid);
+      q.set("identityKey", this.settings.identityPublicKey);
+      q.set("identitySig", this.settings.identitySignature);
+    }
+    return { enabled: true, url: `${httpBase(this.settings.serverUrl)}/clientlog?${q}` };
   }
 }
 

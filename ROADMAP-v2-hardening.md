@@ -288,11 +288,16 @@ on the file doc) when the file-doc protocol is revised.
 **Verify.** Unit coverage asserts resurrect/delete/conflict-copy branches. A full two-client skew simulation
 is still needed.
 
-### 2.6 — Stop swallowing client errors (MEDIUM, M)
+### 2.6 — Stop swallowing client errors (implemented foundation; UX follow-ups remain)
 **Problem.** Many `.catch(()=>{})` hide lifecycle failures from the user and from us.
-**Fix.** Opt-in client error telemetry: POST top-level lifecycle failures to a `/clientlog` endpoint; keep
-intentional best-effort catches but log them under the `err` namespace.
-**Verify.** A simulated provider failure surfaces a Notice + a server-side log entry.
+**Status.** Implemented opt-in client error telemetry: plugin `err(...)` rows are locally persisted as before
+and, when enabled, POSTed to `/clientlog` using normal share authentication. The server caps request size,
+re-normalizes/redacts the payload, and emits a structured `client.error` row. Lifecycle catches already moved
+under the `err` namespace feed this path.
+**Remaining.** Add targeted Notices for the failures users can act on immediately; do not spam Notices for
+best-effort background cleanup.
+**Verify.** Unit coverage checks plugin telemetry POST shape and server-side client-log redaction. A full
+live-server provider-failure drill is still needed.
 
 ---
 

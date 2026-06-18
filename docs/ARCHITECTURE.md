@@ -168,6 +168,10 @@ legacy `/admin/revoke` raises it and disconnects live revoked clients with close
   room/file metadata, so it is protected by `METRICS_TOKEN` whenever auth is enabled. The hot relay path
   emits redacted structured logs for joins/leaves, rejected writes, mux room rejections, rate limits,
   backpressure closes, suspicious update sizes, and awareness debug rows when `SYNC_DEBUG_LOG=true`.
+- **`/clientlog`** — opt-in plugin error telemetry. Clients authenticate with an existing share token
+  (including role/invite identity params where applicable), POST only redacted `err(...)` diagnostics, and
+  the server re-normalizes the body before emitting a structured `client.error` log row. This is debugging
+  telemetry, not a trust boundary for secrets.
 - **`persistence.ts`** — atomic `.yjs` saves (tmp + rename), one global dirty-room save sweep,
   last-disconnect saves, and SIGTERM flush; corrupt files are renamed aside and the room starts empty
   (one bad file never denies a room); `getPersistenceHealth()` powers `/health`.

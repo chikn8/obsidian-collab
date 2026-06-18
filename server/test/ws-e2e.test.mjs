@@ -450,6 +450,56 @@ try {
     check("rotation mints new links with current secret", link.key === roleKey(shareId, "viewer", epoch), JSON.stringify(link));
   }
 
+  console.log("Client error telemetry uses share auth");
+  {
+    const shareId = "e2e-clientlog";
+    const body = {
+      row: {
+        sessionId: "clientlog-session",
+        seq: 1,
+        ts: new Date().toISOString(),
+        dt: 10,
+        level: "error",
+        ns: "e2e",
+        event: "error",
+        fields: {
+          token: "should-not-export",
+          noteText: "should-not-export",
+          path: "Shared/note.md",
+          args: ["simulated provider failure"],
+        },
+      },
+      context: {
+        settings: { serverToken: "should-not-export", shareCount: 1 },
+      },
+    };
+    const res = await fetch(`${server.httpBase}/clientlog?${queryParams({
+      ...authParams("editor", 1, shareId),
+      share: shareId,
+    })}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    check("clientlog POST succeeds", res.status === 200, `status=${res.status}`);
+    await waitFor(
+      () => server.output().includes('"event":"client.error"') && server.output().includes('"shareId":"e2e-clientlog"'),
+      3000,
+      "clientlog server output"
+    );
+    check("clientlog server output is redacted", !server.output().includes("should-not-export"));
+
+    const rejected = await fetch(`${server.httpBase}/clientlog?${queryParams({
+      ...authParams("editor", 1, shareId, "wrong-secret"),
+      share: shareId,
+    })}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    check("clientlog rejects bad auth", rejected.status === 401, `status=${rejected.status}`);
+  }
+
   console.log("Multiplexed clients sync multiple rooms over one socket each");
   {
     const shareId = "e2e-mux";

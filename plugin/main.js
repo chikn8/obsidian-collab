@@ -12478,7 +12478,13 @@ var SyncManager = class {
         exists: entry.exists,
         fileId: entry.fileId,
         renamedTo: entry.renamedTo,
-        deletedAt: entry.deletedAt
+        deletedAt: entry.deletedAt,
+        mutationId: entry.mutationId,
+        mutationAction: entry.mutationAction,
+        mutationAt: entry.mutationAt,
+        mutationBy: entry.mutationBy,
+        mutationByUid: entry.mutationByUid,
+        mutationDeviceId: entry.mutationDeviceId
       });
       const fullPath = this.toFullPath(relPath);
       if (entry.exists && change.action !== "delete") {

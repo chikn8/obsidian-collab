@@ -20,6 +20,7 @@ const warnings = rows.filter((r) => r.level === "warn" || r.level === "error");
 const writeRows = rows.filter((r) => r.ns === "file" && String(r.event).startsWith("write-"));
 const echoRows = rows.filter((r) => r.ns === "echo" || r.ns === "loop");
 const presenceRows = rows.filter((r) => r.ns === "presence");
+const manifestRows = rows.filter((r) => r.ns === "manifest");
 const skippedRows = rows.filter((r) => String(r.event).endsWith("-skipped") || field(r, "cause"));
 const suspiciousPaths = repeatedWritePaths(writeRows);
 
@@ -65,6 +66,18 @@ if (missingPresence.length > 0) {
   console.log("Presence anchors missing:");
   for (const row of missingPresence.slice(-10)) {
     console.log(`- ${rowStamp(row)} ${row.event} ${field(row, "path") || ""}`);
+  }
+}
+
+section("Manifest Mutation Signals");
+const mutationRows = manifestRows.filter((r) => field(r, "mutationId"));
+line("Mutation-stamped rows", mutationRows.length);
+for (const [key, count] of top(countBy(mutationRows, (r) => field(r, "mutationAction") || "unknown"), 10)) line(key, count);
+if (mutationRows.length > 0) {
+  console.log("");
+  console.log("Recent manifest mutations:");
+  for (const row of mutationRows.slice(-10)) {
+    console.log(`- ${rowStamp(row)} ${field(row, "relPath") || ""} ${field(row, "mutationAction") || ""} ${field(row, "mutationId") || ""}`);
   }
 }
 
@@ -165,7 +178,7 @@ function rowStamp(row) {
 function compactFields(fields) {
   if (!fields || typeof fields !== "object") return "";
   const keep = {};
-  for (const key of ["shareId", "path", "relPath", "room", "reason", "cause", "len", "oldLen", "newLen", "status", "error", "providers", "activeFiles", "fileMissing", "tabMissing"]) {
+  for (const key of ["shareId", "path", "relPath", "room", "reason", "cause", "len", "oldLen", "newLen", "status", "error", "providers", "activeFiles", "fileMissing", "tabMissing", "mutationId", "mutationAction", "mutationDeviceId"]) {
     if (Object.prototype.hasOwnProperty.call(fields, key)) keep[key] = fields[key];
   }
   const keys = Object.keys(keep);

@@ -9,6 +9,7 @@ import { collabEditorExtension, getEditorView, bindEditor, unbindEditor, readOnl
 import { CommentStore } from "./collab/CommentStore";
 import { CommentSession } from "./collab/CommentLayer";
 import { PresenceController } from "./collab/Presence";
+import { selfSelectionExtension } from "./collab/SelfSelection";
 import { CommentsView, COMMENTS_VIEW_TYPE } from "./ui/CommentsView";
 import { promptModal } from "./ui/modals";
 import { configureDiagnostics, exportDiagnosticBundle, log, err, setDiagnosticLogging, startDiagnosticTrace, trace } from "./utils/log";
@@ -22,7 +23,7 @@ import {
 } from "./utils/roomName";
 import { HistoryView, HISTORY_VIEW_TYPE, type HistoryContext } from "./ui/HistoryView";
 import type { CollabPluginSettings, SyncStatus, ConnectedUser, Share, Role } from "./types";
-import { DEFAULT_SETTINGS, LEGACY_SHARE_ID } from "./types";
+import { colorFor, DEFAULT_SETTINGS, LEGACY_SHARE_ID } from "./types";
 
 export default class CollabPlugin extends Plugin {
   settings: CollabPluginSettings = DEFAULT_SETTINGS;
@@ -118,6 +119,9 @@ export default class CollabPlugin extends Plugin {
     );
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => void this.handleActiveLeafChange())
+    );
+    this.registerEvent(
+      this.app.workspace.on("layout-change", () => this.eachManager((m) => m.refreshPresenceUi()))
     );
 
     // File/folder context-menu
@@ -337,7 +341,8 @@ export default class CollabPlugin extends Plugin {
         : null;
 
     const role = manager?.role || "editor";
-    const extras = [session.extension()];
+    const selfColor = this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName);
+    const extras = [session.extension(), selfSelectionExtension({ name: this.settings.displayName || "You", color: selfColor })];
     if (presence) extras.push(presence.extension());
     if (role !== "editor") extras.push(readOnlyExtension());
 

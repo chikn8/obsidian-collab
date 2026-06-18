@@ -2,6 +2,13 @@ import { EditorView, showPanel, Panel } from "@codemirror/view";
 import { StateEffect, Extension } from "@codemirror/state";
 import * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
+import {
+  collectPresenceDevices,
+  presenceInitial,
+  presenceKeyFromState,
+  presenceLabel,
+  type PresenceDevice,
+} from "./PresenceModel";
 
 /**
  * Rich presence for the active editor: a top-of-editor avatar facepile of who
@@ -11,16 +18,7 @@ import type { Awareness } from "y-protocols/awareness";
  * injection into Obsidian's view DOM, and mobile-safe. A PresenceController
  * wires the manifest + file awarenesses and pushes the roster via a StateEffect.
  */
-export interface RosterEntry {
-  presenceKey: string;
-  uid: string;
-  name: string;
-  color: string;
-  device?: string;
-  typing: boolean;
-  hasCaret: boolean; // a resolvable cursor on this file (focused), vs file-open-only
-  isSelf?: boolean;  // you — shown as a "connected" confidence marker
-}
+export type RosterEntry = PresenceDevice;
 
 const setRoster = StateEffect.define<RosterEntry[]>();
 
@@ -41,12 +39,10 @@ function makePanel(_view: EditorView, onJump: (uid: string) => void): Panel {
       av.className = "collab-facepile-avatar"
         + (u.hasCaret ? " live" : "") + (u.typing ? " typing" : "") + (u.isSelf ? " self" : "");
       av.style.backgroundColor = u.color;
-      av.textContent = (u.name?.trim()?.[0] || "?").toUpperCase();
-      const status = u.typing ? "typing…" : u.hasCaret ? "editing" : "viewing";
-      av.title = u.isSelf
-        ? `${u.name} (you) — connected`
-        : `${u.name}${u.device ? ` (${u.device})` : ""} — ${status}` + (u.hasCaret ? " · click to jump" : "");
+      av.textContent = presenceInitial(u.name);
+      av.title = presenceLabel(u) + (u.hasCaret && !u.isSelf ? " - click to jump" : "");
       av.setAttribute("aria-label", av.title);
+      if (u.typing) av.appendChild(makeTypingDots());
       if (u.hasCaret && !u.isSelf) av.onclick = () => onJump(u.presenceKey);
       else av.disabled = true;
       dom.appendChild(av);
@@ -118,35 +114,14 @@ export class PresenceController {
     // Who has this file open (manifest awareness presence.activeFile === relPath)
     const caretKeys = new Set<string>();
     this.fileAwareness.getStates().forEach((s: any, clientId: number) => {
-      if (s?.user?.uid && s?.cursor) caretKeys.add(presenceKey(s, clientId));
+      if (s?.user?.uid && s?.cursor) caretKeys.add(presenceKeyFromState(s, clientId));
     });
 
-    const roster: RosterEntry[] = [];
-    const seen = new Set<string>();
-    const myClientId = (this.manifestAwareness as any).clientID;
-    this.manifestAwareness.getStates().forEach((s: any, clientId: number) => {
-      const u = s?.user;
-      const p = s?.presence;
-      if (!u?.uid) return;
-      // Include yourself too (a "you're connected" marker), as long as this is
-      // the file you have open.
-      if (!p || p.activeFile !== this.relPath) return;
-      const key = presenceKey(s, clientId);
-      if (seen.has(key)) return;
-      seen.add(key);
-      roster.push({
-        presenceKey: key,
-        uid: u.uid,
-        name: u.name || "Anonymous",
-        color: u.color || "#888",
-        device: u.device,
-        typing: !!p.typing,
-        hasCaret: caretKeys.has(key),
-        isSelf: clientId === myClientId,
-      });
+    const roster = collectPresenceDevices({
+      manifestAwareness: this.manifestAwareness,
+      relPath: this.relPath,
+      caretKeys,
     });
-    // You first, then everyone else alphabetically.
-    roster.sort((a, b) => (a.isSelf === b.isSelf ? a.name.localeCompare(b.name) : a.isSelf ? -1 : 1));
     this.view.dispatch({ effects: setRoster.of(roster) });
   }
 
@@ -154,7 +129,7 @@ export class PresenceController {
   private jumpTo(targetKey: string): void {
     let target: any = null;
     this.fileAwareness.getStates().forEach((s: any, clientId: number) => {
-      if (presenceKey(s, clientId) === targetKey && s?.cursor) target = s.cursor;
+      if (presenceKeyFromState(s, clientId) === targetKey && s?.cursor) target = s.cursor;
     });
     if (!target) return; // background/unfocused peer — no live caret to jump to
     const idx = resolveAwarenessCursor(target.head ?? target.anchor, this.doc);
@@ -162,11 +137,6 @@ export class PresenceController {
     const pos = Math.min(idx, this.view.state.doc.length);
     this.view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: "center" }) });
   }
-}
-
-function presenceKey(state: any, clientId: number): string {
-  const uid = state?.user?.uid || "unknown";
-  return `${uid}:${state?.user?.deviceId || clientId}`;
 }
 
 /** Resolve a yCollab awareness cursor (a relative position) to an absolute index. */
@@ -184,4 +154,14 @@ function resolveAwarenessCursor(rel: any, doc: Y.Doc): number | null {
       return null;
     }
   }
+}
+
+function makeTypingDots(): HTMLElement {
+  const pill = document.createElement("span");
+  pill.className = "collab-typing-pill";
+  for (let i = 0; i < 3; i++) {
+    const dot = document.createElement("span");
+    pill.appendChild(dot);
+  }
+  return pill;
 }

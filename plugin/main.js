@@ -291,7 +291,7 @@ var MIN_SAFE_INTEGER = Number.MIN_SAFE_INTEGER;
 var LOWEST_INT32 = 1 << 31;
 var isInteger = Number.isInteger || ((num) => typeof num === "number" && isFinite(num) && floor(num) === num);
 var isNaN3 = Number.isNaN;
-var parseInt = Number.parseInt;
+var parseInt2 = Number.parseInt;
 
 // node_modules/lib0/string.js
 var fromCharCode = String.fromCharCode;
@@ -11129,6 +11129,154 @@ function liveManifestEntry(previous, relPath, fileId, displayName, extra = {}) {
   };
 }
 
+// src/collab/PresenceModel.ts
+function presenceKeyFromState(state, clientId) {
+  var _a2, _b2;
+  const uid = ((_a2 = state == null ? void 0 : state.user) == null ? void 0 : _a2.uid) || "unknown";
+  return `${uid}:${((_b2 = state == null ? void 0 : state.user) == null ? void 0 : _b2.deviceId) || clientId}`;
+}
+function deviceIdFromState(state, clientId) {
+  var _a2;
+  return ((_a2 = state == null ? void 0 : state.user) == null ? void 0 : _a2.deviceId) || String(clientId);
+}
+function presenceLabel(user) {
+  const device = user.device ? ` (${user.device})` : "";
+  const status = user.typing ? "typing" : user.hasCaret ? "editing" : "viewing";
+  return user.isSelf ? `${user.name}${device} (you) - ${status}` : `${user.name}${device} - ${status}`;
+}
+function presenceInitial(name) {
+  var _a2;
+  return (((_a2 = name == null ? void 0 : name.trim()) == null ? void 0 : _a2[0]) || "?").toUpperCase();
+}
+function collectPresenceDevices(args2) {
+  var _a2, _b2, _c;
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const myClientId = (_a2 = args2.manifestAwareness) == null ? void 0 : _a2.clientID;
+  (_c = (_b2 = args2.manifestAwareness) == null ? void 0 : _b2.getStates) == null ? void 0 : _c.call(_b2).forEach((state, clientId) => {
+    var _a3, _b3;
+    const user = state == null ? void 0 : state.user;
+    const presence = state == null ? void 0 : state.presence;
+    if (!(user == null ? void 0 : user.uid)) return;
+    const activeFile = (_a3 = presence == null ? void 0 : presence.activeFile) != null ? _a3 : null;
+    if (args2.relPath !== void 0 && activeFile !== args2.relPath) return;
+    const key = presenceKeyFromState(state, clientId);
+    if (seen.has(key)) return;
+    seen.add(key);
+    const baseColor = user.color || "#888888";
+    const deviceId = deviceIdFromState(state, clientId);
+    out.push({
+      presenceKey: key,
+      uid: user.uid,
+      deviceId,
+      name: user.name || "Anonymous",
+      color: deviceColor(baseColor, deviceId),
+      baseColor,
+      device: user.device,
+      activeFile,
+      typing: !!(presence == null ? void 0 : presence.typing),
+      hasCaret: !!((_b3 = args2.caretKeys) == null ? void 0 : _b3.has(key)),
+      isSelf: clientId === myClientId
+    });
+  });
+  return sortPresence(out);
+}
+function sortPresence(users) {
+  return [...users].sort((a, b) => {
+    if (a.isSelf !== b.isSelf) return a.isSelf ? -1 : 1;
+    const name = a.name.localeCompare(b.name);
+    if (name !== 0) return name;
+    return (a.device || "").localeCompare(b.device || "");
+  });
+}
+function deviceColor(baseColor, deviceId) {
+  const rgb = parseHex(baseColor);
+  if (!rgb) return baseColor;
+  const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+  const jitter = hash(deviceId) % 37 - 18;
+  const saturation = clamp(hsl.s + (hash(deviceId + "s") % 15 - 5), 45, 88);
+  const lightness = clamp(hsl.l + (hash(deviceId + "l") % 17 - 8), 36, 66);
+  return hslToHex((hsl.h + jitter + 360) % 360, saturation, lightness);
+}
+function parseHex(hex) {
+  const clean2 = hex.trim().replace(/^#/, "");
+  if (!/^[0-9a-f]{6}$/i.test(clean2)) return null;
+  return {
+    r: parseInt(clean2.slice(0, 2), 16),
+    g: parseInt(clean2.slice(2, 4), 16),
+    b: parseInt(clean2.slice(4, 6), 16)
+  };
+}
+function rgbToHsl(r, g, b) {
+  r /= 255;
+  g /= 255;
+  b /= 255;
+  const max2 = Math.max(r, g, b);
+  const min2 = Math.min(r, g, b);
+  let h = 0;
+  let s = 0;
+  const l = (max2 + min2) / 2;
+  if (max2 !== min2) {
+    const d = max2 - min2;
+    s = l > 0.5 ? d / (2 - max2 - min2) : d / (max2 + min2);
+    switch (max2) {
+      case r:
+        h = (g - b) / d + (g < b ? 6 : 0);
+        break;
+      case g:
+        h = (b - r) / d + 2;
+        break;
+      case b:
+        h = (r - g) / d + 4;
+        break;
+    }
+    h *= 60;
+  }
+  return { h, s: s * 100, l: l * 100 };
+}
+function hslToHex(h, s, l) {
+  s /= 100;
+  l /= 100;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(h / 60 % 2 - 1));
+  const m = l - c / 2;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) {
+    r = c;
+    g = x;
+  } else if (h < 120) {
+    r = x;
+    g = c;
+  } else if (h < 180) {
+    g = c;
+    b = x;
+  } else if (h < 240) {
+    g = x;
+    b = c;
+  } else if (h < 300) {
+    r = x;
+    b = c;
+  } else {
+    r = c;
+    b = x;
+  }
+  return `#${toHex((r + m) * 255)}${toHex((g + m) * 255)}${toHex((b + m) * 255)}`;
+}
+function toHex(n) {
+  return Math.round(n).toString(16).padStart(2, "0");
+}
+function hash(seed) {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function clamp(n, min2, max2) {
+  return Math.max(min2, Math.min(max2, n));
+}
+
 // src/collab/SyncManager.ts
 function newFileId() {
   var _a2, _b2;
@@ -11160,6 +11308,7 @@ var SyncManager = class {
     this.syncStatus = "disconnected";
     // Presence indicators (file explorer) — full-path → rendered elements
     this.renderedPresence = /* @__PURE__ */ new Map();
+    this.renderedTabPresence = /* @__PURE__ */ new Map();
     this.lastPresenceSig = "";
     // last-edited-by stamping (debounced per file to bound manifest churn). Written
     // to the SEPARATE `edits` map, never the files map, so it cannot LWW-clobber a
@@ -11241,6 +11390,11 @@ var SyncManager = class {
       }
     }
     for (const [, fp] of this.fileProviders) fp.reconnect();
+  }
+  /** Re-render presence UI after Obsidian changes tab/file-explorer layout. */
+  refreshPresenceUi() {
+    this.lastPresenceSig = "";
+    this.debouncedPresence();
   }
   /** Send an @mention push frame (server fans out to the target's ntfy topic). */
   sendMention(toUid, title, body, click) {
@@ -11907,22 +12061,51 @@ var SyncManager = class {
     }
   }
   renderPresenceDesktop() {
-    const states = this.manifestProvider.awareness.getStates();
-    const myClientId = this.manifestProvider.awareness.clientID;
-    const fileUsers = /* @__PURE__ */ new Map();
-    states.forEach((state, clientId) => {
-      const presence = state.presence;
-      const user = state.user;
-      if (!(presence == null ? void 0 : presence.activeFile) || !user) return;
-      const safeRel = this.safeManifestRelPath(presence.activeFile, "remote presence");
-      if (!safeRel) return;
-      const fullPath = this.toFullPath(safeRel);
-      if (!fileUsers.has(fullPath)) fileUsers.set(fullPath, []);
-      fileUsers.get(fullPath).push({ name: user.name, color: user.color, device: user.device, isSelf: clientId === myClientId });
-    });
-    const sig = JSON.stringify(Array.from(fileUsers.entries()).sort());
+    const fileUsers = this.collectFilePresence();
+    const sig = JSON.stringify(
+      Array.from(fileUsers.entries()).map(([path, users]) => [path, users.map((u) => [u.presenceKey, u.typing, u.hasCaret, u.color])]).sort()
+    );
     if (sig === this.lastPresenceSig) return;
     this.lastPresenceSig = sig;
+    this.renderFileTreePresence(fileUsers);
+    this.renderTabPresence(fileUsers);
+  }
+  collectFilePresence() {
+    const rels = /* @__PURE__ */ new Set();
+    this.manifestProvider.awareness.getStates().forEach((state) => {
+      var _a2;
+      const candidate = (_a2 = state == null ? void 0 : state.presence) == null ? void 0 : _a2.activeFile;
+      if (!candidate) return;
+      const safeRel = this.safeManifestRelPath(candidate, "remote presence");
+      if (safeRel) rels.add(safeRel);
+    });
+    const caretByRel = this.collectCaretKeysByRel();
+    const out = /* @__PURE__ */ new Map();
+    for (const relPath of rels) {
+      const users = collectPresenceDevices({
+        manifestAwareness: this.manifestProvider.awareness,
+        relPath,
+        caretKeys: caretByRel.get(relPath)
+      });
+      if (users.length > 0) out.set(this.toFullPath(relPath), users);
+    }
+    return out;
+  }
+  collectCaretKeysByRel() {
+    const out = /* @__PURE__ */ new Map();
+    for (const [relPath, fp] of this.fileProviders) {
+      const aw = fp.getAwareness();
+      if (!aw) continue;
+      aw.getStates().forEach((state, clientId) => {
+        var _a2;
+        if (!((_a2 = state == null ? void 0 : state.user) == null ? void 0 : _a2.uid) || !(state == null ? void 0 : state.cursor)) return;
+        if (!out.has(relPath)) out.set(relPath, /* @__PURE__ */ new Set());
+        out.get(relPath).add(presenceKeyFromState(state, clientId));
+      });
+    }
+    return out;
+  }
+  renderFileTreePresence(fileUsers) {
     for (const els of this.renderedPresence.values()) for (const el of els) el.remove();
     this.renderedPresence.clear();
     for (const [fullPath, users] of fileUsers) {
@@ -11930,28 +12113,55 @@ var SyncManager = class {
         `.nav-file-title[data-path="${CSS.escape(fullPath)}"]`
       );
       if (!fileEl) continue;
-      const ordered = [...users].sort((a, b) => a.isSelf === b.isSelf ? 0 : a.isSelf ? -1 : 1);
-      const rendered = [];
-      ordered.forEach((user, i) => {
-        var _a2, _b2;
-        const av = document.createElement("span");
-        av.className = "collab-presence-avatar" + (user.isSelf ? " self" : "");
-        if (i > 0) av.classList.add("stacked");
-        av.style.backgroundColor = user.color;
-        av.textContent = (((_b2 = (_a2 = user.name) == null ? void 0 : _a2.trim()) == null ? void 0 : _b2[0]) || "?").toUpperCase();
-        const label = user.isSelf ? `${user.name} (you) \u2014 connected` : user.device ? `${user.name} (${user.device})` : user.name;
-        av.setAttribute("aria-label", label);
-        av.title = label;
-        fileEl.appendChild(av);
-        rendered.push(av);
-      });
-      this.renderedPresence.set(fullPath, rendered);
+      const host = document.createElement("span");
+      host.className = "collab-file-presence-host";
+      renderPresenceAvatars(host, users, "file");
+      fileEl.appendChild(host);
+      this.renderedPresence.set(fullPath, [host]);
     }
+  }
+  renderTabPresence(fileUsers) {
+    for (const els of this.renderedTabPresence.values()) for (const el of els) el.remove();
+    this.renderedTabPresence.clear();
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      var _a2, _b2, _c;
+      const path = (_b2 = (_a2 = leaf == null ? void 0 : leaf.view) == null ? void 0 : _a2.file) == null ? void 0 : _b2.path;
+      if (!path) return;
+      const users = fileUsers.get(path);
+      if (!users || users.length === 0) return;
+      const header = this.tabHeaderForLeaf(leaf);
+      if (!header) return;
+      const target = ((_c = header.querySelector(".workspace-tab-header-inner-title")) == null ? void 0 : _c.parentElement) || header.querySelector(".workspace-tab-header-inner") || header;
+      const host = document.createElement("span");
+      host.className = "collab-tab-presence-host";
+      renderPresenceAvatars(host, users, "tab");
+      target.appendChild(host);
+      this.renderedTabPresence.set(`${this.histShareId}:${path}:${this.renderedTabPresence.size}`, [host]);
+    });
+  }
+  tabHeaderForLeaf(leaf) {
+    var _a2, _b2, _c;
+    const direct = (leaf == null ? void 0 : leaf.tabHeaderEl) || ((_a2 = leaf == null ? void 0 : leaf.tabHeader) == null ? void 0 : _a2.el) || ((_c = (_b2 = leaf == null ? void 0 : leaf.tabHeaderInnerTitleEl) == null ? void 0 : _b2.parentElement) == null ? void 0 : _c.parentElement);
+    if (isElementLike(direct)) return direct;
+    const parent = leaf == null ? void 0 : leaf.parent;
+    const children = Array.isArray(parent == null ? void 0 : parent.children) ? parent.children : Array.isArray(parent == null ? void 0 : parent.leaves) ? parent.leaves : [];
+    const idx = children.indexOf(leaf);
+    const container = parent == null ? void 0 : parent.containerEl;
+    if (idx < 0 || !isElementLike(container)) return null;
+    const headers = Array.from(container.querySelectorAll(".workspace-tab-header"));
+    const header = headers[idx];
+    return isElementLike(header) ? header : null;
+  }
+  clearPresenceUi() {
+    for (const els of this.renderedPresence.values()) for (const el of els) el.remove();
+    this.renderedPresence.clear();
+    for (const els of this.renderedTabPresence.values()) for (const el of els) el.remove();
+    this.renderedTabPresence.clear();
+    this.lastPresenceSig = "";
   }
   /** Stop syncing this share */
   async destroy() {
-    for (const els of this.renderedPresence.values()) for (const el of els) el.remove();
-    this.renderedPresence.clear();
+    this.clearPresenceUi();
     for (const [, fp] of this.fileProviders) fp.destroy();
     this.fileProviders.clear();
     if (this.manifestProvider) this.manifestProvider.destroy();
@@ -12011,6 +12221,31 @@ var SyncManager = class {
     return file.extension.toLowerCase() === "md";
   }
 };
+function renderPresenceAvatars(parent, users, surface) {
+  users.forEach((user, i) => {
+    const av = document.createElement("span");
+    av.className = `collab-presence-avatar ${surface}` + (i > 0 ? " stacked" : "") + (user.isSelf ? " self" : "") + (user.hasCaret ? " live" : "") + (user.typing ? " typing" : "");
+    av.style.backgroundColor = user.color;
+    av.textContent = presenceInitial(user.name);
+    const label = presenceLabel(user);
+    av.setAttribute("aria-label", label);
+    av.title = label;
+    if (user.typing) av.appendChild(makeTypingDots());
+    parent.appendChild(av);
+  });
+}
+function makeTypingDots() {
+  const pill = document.createElement("span");
+  pill.className = "collab-typing-pill";
+  for (let i = 0; i < 3; i++) {
+    const dot = document.createElement("span");
+    pill.appendChild(dot);
+  }
+  return pill;
+}
+function isElementLike(value) {
+  return !!value && typeof value === "object" && "querySelector" in value && "appendChild" in value;
+}
 
 // src/collab/InstanceWatch.ts
 var import_obsidian4 = require("obsidian");
@@ -13138,7 +13373,6 @@ function makePanel(_view, onJump) {
   const dom = document.createElement("div");
   dom.className = "collab-facepile";
   const render = (roster) => {
-    var _a2, _b2;
     dom.replaceChildren();
     if (roster.length === 0) {
       dom.addClass("empty");
@@ -13149,10 +13383,10 @@ function makePanel(_view, onJump) {
       const av = document.createElement("button");
       av.className = "collab-facepile-avatar" + (u.hasCaret ? " live" : "") + (u.typing ? " typing" : "") + (u.isSelf ? " self" : "");
       av.style.backgroundColor = u.color;
-      av.textContent = (((_b2 = (_a2 = u.name) == null ? void 0 : _a2.trim()) == null ? void 0 : _b2[0]) || "?").toUpperCase();
-      const status = u.typing ? "typing\u2026" : u.hasCaret ? "editing" : "viewing";
-      av.title = u.isSelf ? `${u.name} (you) \u2014 connected` : `${u.name}${u.device ? ` (${u.device})` : ""} \u2014 ${status}` + (u.hasCaret ? " \xB7 click to jump" : "");
+      av.textContent = presenceInitial(u.name);
+      av.title = presenceLabel(u) + (u.hasCaret && !u.isSelf ? " - click to jump" : "");
       av.setAttribute("aria-label", av.title);
+      if (u.typing) av.appendChild(makeTypingDots2());
       if (u.hasCaret && !u.isSelf) av.onclick = () => onJump(u.presenceKey);
       else av.disabled = true;
       dom.appendChild(av);
@@ -13219,31 +13453,13 @@ var PresenceController = class {
     const caretKeys = /* @__PURE__ */ new Set();
     this.fileAwareness.getStates().forEach((s, clientId) => {
       var _a2;
-      if (((_a2 = s == null ? void 0 : s.user) == null ? void 0 : _a2.uid) && (s == null ? void 0 : s.cursor)) caretKeys.add(presenceKey(s, clientId));
+      if (((_a2 = s == null ? void 0 : s.user) == null ? void 0 : _a2.uid) && (s == null ? void 0 : s.cursor)) caretKeys.add(presenceKeyFromState(s, clientId));
     });
-    const roster = [];
-    const seen = /* @__PURE__ */ new Set();
-    const myClientId = this.manifestAwareness.clientID;
-    this.manifestAwareness.getStates().forEach((s, clientId) => {
-      const u = s == null ? void 0 : s.user;
-      const p = s == null ? void 0 : s.presence;
-      if (!(u == null ? void 0 : u.uid)) return;
-      if (!p || p.activeFile !== this.relPath) return;
-      const key = presenceKey(s, clientId);
-      if (seen.has(key)) return;
-      seen.add(key);
-      roster.push({
-        presenceKey: key,
-        uid: u.uid,
-        name: u.name || "Anonymous",
-        color: u.color || "#888",
-        device: u.device,
-        typing: !!p.typing,
-        hasCaret: caretKeys.has(key),
-        isSelf: clientId === myClientId
-      });
+    const roster = collectPresenceDevices({
+      manifestAwareness: this.manifestAwareness,
+      relPath: this.relPath,
+      caretKeys
     });
-    roster.sort((a, b) => a.isSelf === b.isSelf ? a.name.localeCompare(b.name) : a.isSelf ? -1 : 1);
     this.view.dispatch({ effects: setRoster.of(roster) });
   }
   /** Jump to a collaborator's caret on this file (focused peers only). */
@@ -13251,7 +13467,7 @@ var PresenceController = class {
     var _a2;
     let target = null;
     this.fileAwareness.getStates().forEach((s, clientId) => {
-      if (presenceKey(s, clientId) === targetKey && (s == null ? void 0 : s.cursor)) target = s.cursor;
+      if (presenceKeyFromState(s, clientId) === targetKey && (s == null ? void 0 : s.cursor)) target = s.cursor;
     });
     if (!target) return;
     const idx = resolveAwarenessCursor((_a2 = target.head) != null ? _a2 : target.anchor, this.doc);
@@ -13260,11 +13476,6 @@ var PresenceController = class {
     this.view.dispatch({ effects: import_view3.EditorView.scrollIntoView(pos, { y: "center" }) });
   }
 };
-function presenceKey(state, clientId) {
-  var _a2, _b2;
-  const uid = ((_a2 = state == null ? void 0 : state.user) == null ? void 0 : _a2.uid) || "unknown";
-  return `${uid}:${((_b2 = state == null ? void 0 : state.user) == null ? void 0 : _b2.deviceId) || clientId}`;
-}
 function resolveAwarenessCursor(rel, doc2) {
   if (rel == null) return null;
   try {
@@ -13279,6 +13490,115 @@ function resolveAwarenessCursor(rel, doc2) {
       return null;
     }
   }
+}
+function makeTypingDots2() {
+  const pill = document.createElement("span");
+  pill.className = "collab-typing-pill";
+  for (let i = 0; i < 3; i++) {
+    const dot = document.createElement("span");
+    pill.appendChild(dot);
+  }
+  return pill;
+}
+
+// src/collab/SelfSelection.ts
+var import_state4 = require("@codemirror/state");
+var import_view4 = require("@codemirror/view");
+function selfSelectionExtension(user) {
+  return [
+    selfSelectionTheme,
+    import_view4.ViewPlugin.define((view) => new SelfSelectionPlugin(view, user), {
+      decorations: (v) => v.decorations
+    })
+  ];
+}
+var selfSelectionTheme = import_view4.EditorView.baseTheme({
+  ".cm-collab-self-selection": {
+    opacity: "0.35"
+  },
+  ".cm-collab-self-caret": {
+    display: "inline-block",
+    position: "relative",
+    width: "0",
+    height: "1.15em",
+    borderLeft: "2px solid",
+    marginLeft: "-1px",
+    marginRight: "-1px",
+    verticalAlign: "text-top",
+    pointerEvents: "none"
+  },
+  ".cm-collab-self-caret-label": {
+    position: "absolute",
+    top: "-1.45em",
+    left: "-1px",
+    padding: "1px 4px",
+    borderRadius: "3px 3px 3px 0",
+    color: "white",
+    fontFamily: "var(--font-interface)",
+    fontSize: "0.72em",
+    fontWeight: "600",
+    whiteSpace: "nowrap",
+    lineHeight: "1.1",
+    opacity: "0.92"
+  }
+});
+var SelfSelectionPlugin = class {
+  constructor(view, user) {
+    this.user = user;
+    this.decorations = import_view4.Decoration.none;
+    this.rebuild(view);
+  }
+  update(update) {
+    if (update.docChanged || update.selectionSet || update.viewportChanged || update.focusChanged) {
+      this.rebuild(update.view);
+    }
+  }
+  rebuild(view) {
+    const builder = new import_state4.RangeSetBuilder();
+    const sel = view.state.selection.main;
+    const from2 = Math.min(sel.from, sel.to);
+    const to = Math.max(sel.from, sel.to);
+    const color = this.user.color || "var(--interactive-accent)";
+    if (to > from2) {
+      builder.add(from2, to, import_view4.Decoration.mark({
+        class: "cm-collab-self-selection",
+        attributes: { style: `background-color: ${alphaColor(color, "44")}` }
+      }));
+    }
+    builder.add(sel.head, sel.head, import_view4.Decoration.widget({
+      side: sel.head >= sel.anchor ? 1 : -1,
+      widget: new SelfCaretWidget(this.user.name || "You", color)
+    }));
+    this.decorations = builder.finish();
+  }
+};
+var SelfCaretWidget = class extends import_view4.WidgetType {
+  constructor(name, color) {
+    super();
+    this.name = name;
+    this.color = color;
+  }
+  toDOM() {
+    const el = document.createElement("span");
+    el.className = "cm-collab-self-caret";
+    el.style.borderColor = this.color;
+    const label = document.createElement("span");
+    label.className = "cm-collab-self-caret-label";
+    label.style.backgroundColor = this.color;
+    label.textContent = this.name;
+    el.appendChild(label);
+    return el;
+  }
+  eq(other) {
+    return this.name === other.name && this.color === other.color;
+  }
+  ignoreEvent() {
+    return true;
+  }
+};
+function alphaColor(color, alphaHex) {
+  if (/^#[0-9a-f]{6}$/i.test(color)) return `${color}${alphaHex}`;
+  return color;
 }
 
 // src/ui/CommentsView.ts
@@ -13671,6 +13991,9 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
       this.app.workspace.on("active-leaf-change", () => void this.handleActiveLeafChange())
     );
     this.registerEvent(
+      this.app.workspace.on("layout-change", () => this.eachManager((m) => m.refreshPresenceUi()))
+    );
+    this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
         if (file instanceof import_obsidian9.TFolder) {
           menu.addItem(
@@ -13853,7 +14176,8 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
     const relPath = manager ? manager.toRel(path) : path;
     const presence = manifestAwareness && manager ? new PresenceController(ev, provider.getDoc(), manifestAwareness, awareness, relPath) : null;
     const role = (manager == null ? void 0 : manager.role) || "editor";
-    const extras = [session.extension()];
+    const selfColor = this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName);
+    const extras = [session.extension(), selfSelectionExtension({ name: this.settings.displayName || "You", color: selfColor })];
     if (presence) extras.push(presence.extension());
     if (role !== "editor") extras.push(readOnlyExtension());
     await provider.setEditorBound(true);
@@ -13969,12 +14293,12 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
           return [];
         }
       },
-      load: async (hash) => {
+      load: async (hash2) => {
         var _a3;
         const t = await token();
         if (!t) return null;
         try {
-          const r = await fetch(`${base}/version?share=${encodeURIComponent(histShareId)}&path=${encodeURIComponent(relPath)}&hash=${encodeURIComponent(hash)}&token=${encodeURIComponent(t)}${roleQ}`);
+          const r = await fetch(`${base}/version?share=${encodeURIComponent(histShareId)}&path=${encodeURIComponent(relPath)}&hash=${encodeURIComponent(hash2)}&token=${encodeURIComponent(t)}${roleQ}`);
           if (!r.ok) return null;
           return (_a3 = (await r.json()).content) != null ? _a3 : null;
         } catch (e) {

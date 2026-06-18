@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit && node esbuild.config.mjs production",
-    "test": "tsx test/loop-sim.test.mjs && tsx test/manifest.test.mjs && tsx test/textdiff.test.mjs && node test/run-integration.mjs"
+    "test": "tsx test/loop-sim.test.mjs && tsx test/manifest.test.mjs && tsx test/textdiff.test.mjs && tsx test/presence.test.mjs && node test/run-integration.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

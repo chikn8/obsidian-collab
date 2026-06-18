@@ -164,7 +164,9 @@ legacy `/admin/revoke` raises it and disconnects live revoked clients with close
   caps: `maxPayload`, a per-connection inbound rate limit, and `bufferedAmount` backpressure (a
   hopelessly backed-up slow peer is closed to avoid OOM). Socket close cleanup uses a per-connection
   room index rather than scanning every active room. `/metrics` exposes counters, runtime memory, and
-  room/file metadata, so it is protected by `METRICS_TOKEN` whenever auth is enabled.
+  room/file metadata, so it is protected by `METRICS_TOKEN` whenever auth is enabled. The hot relay path
+  emits redacted structured logs for joins/leaves, rejected writes, mux room rejections, rate limits,
+  backpressure closes, suspicious update sizes, and awareness debug rows when `SYNC_DEBUG_LOG=true`.
 - **`persistence.ts`** — atomic `.yjs` saves (tmp + rename), one global dirty-room save sweep,
   last-disconnect saves, and SIGTERM flush; corrupt files are renamed aside and the room starts empty
   (one bad file never denies a room); `getPersistenceHealth()` powers `/health`.

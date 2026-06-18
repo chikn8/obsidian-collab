@@ -305,14 +305,17 @@ function closeRoomIfIdle(roomName: string, doc: WSSharedDoc): void {
       }
       doc.destroy();
       docs.delete(roomName);
-      console.log(`[rooms] room ${roomName} closed and persisted`);
       logEvent("info", "room.closed", {
         room: roomName,
         ...roomInfo(roomName),
       });
     })
     .catch((e) => {
-      console.error("[rooms] persistence error:", e);
+      logEvent("error", "room.close_persist_failed", {
+        room: roomName,
+        ...roomInfo(roomName),
+        error: e,
+      });
     });
 }
 
@@ -375,11 +378,16 @@ async function getOrCreateDoc(roomName: string): Promise<WSSharedDoc> {
 export async function saveAllDocs(reason = "manual"): Promise<void> {
   const entries = Array.from(docs.entries());
   if (entries.length === 0) return;
-  console.log(`[rooms] saving ${entries.length} active room(s): ${reason}`);
+  logEvent("info", "rooms.save_all_start", { rooms: entries.length, reason });
   const results = await Promise.allSettled(entries.map(([roomName, doc]) => saveState(roomName, doc)));
   for (const [i, result] of results.entries()) {
     if (result.status === "rejected") {
-      console.error(`[rooms] final save failed for ${entries[i][0]}:`, result.reason);
+      logEvent("error", "rooms.save_all_failed", {
+        room: entries[i][0],
+        ...roomInfo(entries[i][0]),
+        reason,
+        error: result.reason,
+      });
     }
   }
 }
@@ -423,9 +431,6 @@ async function joinRoom(conn: WebSocket, req: IncomingMessage, roomName: string,
   doc.conns.set(conn, new Set());
   rememberConnRoom(conn, roomName);
 
-  console.log(
-    `[rooms] client connected to ${roomName} (${doc.conns.size} total)`
-  );
   logEvent("info", "room.connect", {
     room: roomName,
     ...roomInfo(roomName),
@@ -496,7 +501,7 @@ export function closeRevokedConnections(shareId: string, minEpoch: number): numb
       }
     }
   }
-  if (closed > 0) console.log(`[rooms] closed ${closed} revoked connection(s) for share ${shareId}`);
+  if (closed > 0) logEvent("warn", "share.revoked_connections_closed", { shareId, minEpoch, closed });
   return closed;
 }
 
@@ -515,7 +520,7 @@ export function closeInviteConnections(shareId: string, inviteId: string): numbe
       }
     }
   }
-  if (closed > 0) console.log(`[rooms] closed ${closed} invite connection(s) for share ${shareId}`);
+  if (closed > 0) logEvent("warn", "share.invite_connections_closed", { shareId, inviteId, closed });
   return closed;
 }
 
@@ -537,18 +542,40 @@ function send(conn: WebSocket, message: Uint8Array, roomName?: string): void {
   // unbounded send data → OOM. Close it; it reconnects and re-syncs cleanly.
   if (conn.bufferedAmount > SEND_BUFFER_LIMIT) {
     backpressureClosedCount++;
-    console.warn(`[rooms] backpressure: closing slow connection (buffered ${conn.bufferedAmount})`);
+    logEvent("warn", "ws.backpressure_closed", {
+      room: roomName,
+      ...(roomName ? roomInfo(roomName) : {}),
+      connId: (conn as any).collabConnId,
+      bufferedAmount: conn.bufferedAmount,
+      limit: SEND_BUFFER_LIMIT,
+      mux: !!(conn as any).collabMux,
+    });
     closeConn(conn);
     return;
   }
   try {
     conn.send(out, (err) => {
       if (err) {
-        console.error("[rooms] send error:", err);
+        logEvent("error", "ws.send_failed", {
+          room: roomName,
+          ...(roomName ? roomInfo(roomName) : {}),
+          connId: (conn as any).collabConnId,
+          bytes: out.byteLength,
+          mux: !!(conn as any).collabMux,
+          error: err,
+        });
         closeConn(conn);
       }
     });
   } catch (e) {
+    logEvent("error", "ws.send_threw", {
+      room: roomName,
+      ...(roomName ? roomInfo(roomName) : {}),
+      connId: (conn as any).collabConnId,
+      bytes: out.byteLength,
+      mux: !!(conn as any).collabMux,
+      error: e,
+    });
     closeConn(conn);
   }
 }
@@ -577,6 +604,16 @@ function handleMessage(
         const role = (conn as any).collabRole || "editor";
         if (role !== "editor") {
           if (subtype === 1 || subtype === 2) {
+            logEvent("warn", "sync.write_rejected", {
+              room: doc.name,
+              ...roomInfo(doc.name),
+              connId: (conn as any).collabConnId,
+              role,
+              subtype: syncSubtypeName(subtype),
+              messageBytes: message.byteLength,
+              uid: (conn as any).collabIdentity?.uid,
+              mux: !!(conn as any).collabMux,
+            });
             return; // viewer/commenter write — ignore
           }
         }
@@ -590,7 +627,8 @@ function handleMessage(
         break;
       }
       case MESSAGE_AWARENESS: {
-        const filtered = filterAndStampAwarenessUpdate(doc, conn, decoding.readVarUint8Array(decoder));
+        const rawUpdate = decoding.readVarUint8Array(decoder);
+        const filtered = filterAndStampAwarenessUpdate(doc, conn, rawUpdate);
         if (!filtered) return;
         awarenessProtocol.applyAwarenessUpdate(doc.awareness, filtered.update, conn);
         const controlled = doc.conns.get(conn);
@@ -599,6 +637,17 @@ function handleMessage(
             if (entry.state === null) controlled.delete(entry.clientId);
             else controlled.add(entry.clientId);
           }
+        }
+        if (SYNC_DEBUG_LOG) {
+          logEvent("debug", "awareness.update", {
+            room: doc.name,
+            ...roomInfo(doc.name),
+            connId: (conn as any).collabConnId,
+            entries: filtered.entries.length,
+            rawBytes: rawUpdate.byteLength,
+            clients: doc.awareness.getStates().size,
+            controlled: controlled?.size ?? 0,
+          });
         }
         break;
       }
@@ -614,7 +663,12 @@ function handleMessage(
             fromUid: identity.uid,
             fromName: identity.name,
           }, Date.now()).catch((e) => {
-            console.error("[rooms] notify failed:", e);
+            logEvent("error", "notify.failed", {
+              shareId,
+              connId: (conn as any).collabConnId,
+              uid: identity.uid,
+              error: e,
+            });
           });
         } catch { /* ignore */ }
         break;
@@ -626,16 +680,35 @@ function handleMessage(
           const identity = (conn as any).collabIdentity as CollabIdentity;
           const shareId = (conn as any).collabShareId ?? null;
           void registerTopic(shareId, identity.uid, p.topic).catch((e) => {
-            console.error("[rooms] topic register failed:", e);
+            logEvent("error", "topic.register_failed", {
+              shareId,
+              connId: (conn as any).collabConnId,
+              uid: identity.uid,
+              error: e,
+            });
           });
         } catch { /* ignore */ }
         break;
       }
       default:
-        console.warn("[rooms] unknown message type:", messageType);
+        logEvent("warn", "ws.unknown_message_type", {
+          room: doc.name,
+          ...roomInfo(doc.name),
+          connId: (conn as any).collabConnId,
+          messageType,
+          messageBytes: message.byteLength,
+          mux: !!(conn as any).collabMux,
+        });
     }
   } catch (e) {
-    console.error("[rooms] message handling error:", e);
+    logEvent("error", "ws.message_failed", {
+      room: doc.name,
+      ...roomInfo(doc.name),
+      connId: (conn as any).collabConnId,
+      messageBytes: message.byteLength,
+      mux: !!(conn as any).collabMux,
+      error: e,
+    });
   }
 }
 
@@ -715,9 +788,6 @@ function closeConn(conn: WebSocket): void {
       null
     );
 
-    console.log(
-      `[rooms] client disconnected from ${roomName} (${doc.conns.size} remaining)`
-    );
     logEvent("info", "room.disconnect", {
       room: roomName,
       ...roomInfo(roomName),
@@ -762,7 +832,7 @@ export async function setupWSConnection(
   const roomName = decodeURIComponent(url.pathname.slice(1).split("?")[0]);
 
   if (!roomName) {
-    console.error("[rooms] no room name provided");
+    logEvent("warn", "ws.bad_request", { reason: "missing-room", remote: req.socket.remoteAddress || "" });
     void auditEvent("ws.bad_request", { reason: "missing-room", remote: req.socket.remoteAddress || "" });
     conn.close(4000, "No room name");
     return;
@@ -775,7 +845,14 @@ export async function setupWSConnection(
   conn.on("message", (data: RawData) => {
     // Drop messages from a connection exceeding its rate budget (flood guard).
     if (!allowMessage(conn)) {
-      if (++rateLimitedCount % 100 === 1) console.warn(`[rooms] rate-limited a connection on ${roomName}`);
+      if (++rateLimitedCount % 100 === 1) {
+        logEvent("warn", "ws.rate_limited", {
+          room: roomName,
+          ...roomInfo(roomName),
+          connId: (conn as any).collabConnId,
+          count: rateLimitedCount,
+        });
+      }
       return;
     }
     const message = rawDataToUint8Array(data);
@@ -788,7 +865,12 @@ export async function setupWSConnection(
   });
 
   conn.on("error", (err) => {
-    console.error("[rooms] connection error:", err);
+    logEvent("error", "ws.connection_error", {
+      room: roomName,
+      ...roomInfo(roomName),
+      connId: (conn as any).collabConnId,
+      error: err,
+    });
     closeConn(conn);
   });
 
@@ -827,7 +909,6 @@ export async function setupMuxConnection(
   ensureConnectionIdentity(conn, req, url);
   activeMuxConnections.add(conn);
 
-  console.log(`[rooms] mux client connected for share ${(conn as any).collabShareId || "unknown"}`);
   logEvent("info", "mux.connect", {
     connId: (conn as any).collabConnId,
     shareId: (conn as any).collabShareId || undefined,
@@ -845,7 +926,13 @@ export async function setupMuxConnection(
 
   conn.on("message", (data: RawData) => {
     if (!allowMessage(conn)) {
-      if (++rateLimitedCount % 100 === 1) console.warn(`[rooms] rate-limited a mux connection`);
+      if (++rateLimitedCount % 100 === 1) {
+        logEvent("warn", "mux.rate_limited", {
+          connId: (conn as any).collabConnId,
+          shareId: (conn as any).collabShareId || undefined,
+          count: rateLimitedCount,
+        });
+      }
       return;
     }
     void (async () => {
@@ -854,11 +941,23 @@ export async function setupMuxConnection(
         const decoder = decoding.createDecoder(message);
         const outerType = decoding.readVarUint(decoder);
         if (outerType !== MESSAGE_MUX) {
-          console.warn("[rooms] unknown mux outer message type:", outerType);
+          logEvent("warn", "mux.unknown_outer_message_type", {
+            connId: (conn as any).collabConnId,
+            shareId: (conn as any).collabShareId || undefined,
+            outerType,
+            messageBytes: message.byteLength,
+          });
           return;
         }
         const roomName = decoding.readVarString(decoder);
         if (!muxRoomAllowed(conn, roomName)) {
+          logEvent("warn", "mux.room_rejected", {
+            room: roomName,
+            ...roomInfo(roomName),
+            shareId: (conn as any).collabShareId || undefined,
+            connId: (conn as any).collabConnId,
+            reason: "share-mismatch",
+          });
           void auditEvent("mux.room.rejected", {
             room: roomName,
             shareId: (conn as any).collabShareId || undefined,
@@ -873,7 +972,11 @@ export async function setupMuxConnection(
         if (!doc) return;
         handleMessage(conn, doc, inner);
       } catch (e) {
-        console.error("[rooms] mux message handling error:", e);
+        logEvent("error", "mux.message_failed", {
+          connId: (conn as any).collabConnId,
+          shareId: (conn as any).collabShareId || undefined,
+          error: e,
+        });
       }
     })();
   });
@@ -884,7 +987,11 @@ export async function setupMuxConnection(
   });
 
   conn.on("error", (err) => {
-    console.error("[rooms] mux connection error:", err);
+    logEvent("error", "mux.connection_error", {
+      connId: (conn as any).collabConnId,
+      shareId: (conn as any).collabShareId || undefined,
+      error: err,
+    });
     closeConn(conn);
   });
 

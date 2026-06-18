@@ -272,6 +272,49 @@ class WSSharedDoc extends Y.Doc {
 // Room registry
 const docs: Map<string, WSSharedDoc> = new Map();
 const docLoads: Map<string, Promise<WSSharedDoc>> = new Map();
+const connRooms: WeakMap<WebSocket, Set<string>> = new WeakMap();
+
+function rememberConnRoom(conn: WebSocket, roomName: string): void {
+  let rooms = connRooms.get(conn);
+  if (!rooms) {
+    rooms = new Set();
+    connRooms.set(conn, rooms);
+  }
+  rooms.add(roomName);
+}
+
+function takeConnRooms(conn: WebSocket): string[] {
+  const rooms = connRooms.get(conn);
+  if (!rooms) return [];
+  connRooms.delete(conn);
+  return Array.from(rooms);
+}
+
+function closeRoomIfIdle(roomName: string, doc: WSSharedDoc): void {
+  if (doc.conns.size !== 0) return;
+  stopPeriodicSave(roomName);
+  saveState(roomName, doc)
+    .then(() => {
+      if (docs.get(roomName) !== doc || doc.conns.size > 0) {
+        logEvent("info", "room.close_aborted", {
+          room: roomName,
+          ...roomInfo(roomName),
+          conns: doc.conns.size,
+        });
+        return;
+      }
+      doc.destroy();
+      docs.delete(roomName);
+      console.log(`[rooms] room ${roomName} closed and persisted`);
+      logEvent("info", "room.closed", {
+        room: roomName,
+        ...roomInfo(roomName),
+      });
+    })
+    .catch((e) => {
+      console.error("[rooms] persistence error:", e);
+    });
+}
 
 /** Lightweight server metrics for /metrics (reads live in-memory state). */
 export function getMetrics() {
@@ -358,13 +401,27 @@ function muxRoomAllowed(conn: WebSocket, roomName: string): boolean {
   return roomName.startsWith(`@${shareId}:`);
 }
 
-async function joinRoom(conn: WebSocket, req: IncomingMessage, roomName: string, url: URL): Promise<WSSharedDoc> {
+async function joinRoom(conn: WebSocket, req: IncomingMessage, roomName: string, url: URL): Promise<WSSharedDoc | null> {
   ensureConnectionIdentity(conn, req, url);
   const doc = await getOrCreateDoc(roomName);
+  if (conn.readyState !== WebSocket.OPEN) {
+    logEvent("info", "room.join_aborted_closed", {
+      room: roomName,
+      ...roomInfo(roomName),
+      connId: (conn as any).collabConnId,
+      mux: !!(conn as any).collabMux,
+    });
+    closeRoomIfIdle(roomName, doc);
+    return null;
+  }
   startPeriodicSave(roomName, doc);
-  if (doc.conns.has(conn)) return doc;
+  if (doc.conns.has(conn)) {
+    rememberConnRoom(conn, roomName);
+    return doc;
+  }
 
   doc.conns.set(conn, new Set());
+  rememberConnRoom(conn, roomName);
 
   console.log(
     `[rooms] client connected to ${roomName} (${doc.conns.size} total)`
@@ -642,7 +699,9 @@ function recordSyncMessage(
  */
 function closeConn(conn: WebSocket): void {
   let closedAny = false;
-  for (const [roomName, doc] of docs) {
+  for (const roomName of takeConnRooms(conn)) {
+    const doc = docs.get(roomName);
+    if (!doc) continue;
     const controlledIds = doc.conns.get(conn);
     if (!controlledIds) continue;
     closedAny = true;
@@ -678,30 +737,7 @@ function closeConn(conn: WebSocket): void {
     });
 
     // If no clients remain, persist and clean up
-    if (doc.conns.size === 0) {
-      stopPeriodicSave(roomName);
-      saveState(roomName, doc)
-        .then(() => {
-          if (docs.get(roomName) !== doc || doc.conns.size > 0) {
-            logEvent("info", "room.close_aborted", {
-              room: roomName,
-              ...roomInfo(roomName),
-              conns: doc.conns.size,
-            });
-            return;
-          }
-          doc.destroy();
-          docs.delete(roomName);
-          console.log(`[rooms] room ${roomName} closed and persisted`);
-          logEvent("info", "room.closed", {
-            room: roomName,
-            ...roomInfo(roomName),
-          });
-        })
-        .catch((e) => {
-          console.error("[rooms] persistence error:", e);
-        });
-    }
+    closeRoomIfIdle(roomName, doc);
   }
 
   if (closedAny) {
@@ -733,6 +769,7 @@ export async function setupWSConnection(
   }
 
   const doc = await joinRoom(conn, req, roomName, url);
+  if (!doc) return;
 
   // Handle incoming messages
   conn.on("message", (data: RawData) => {
@@ -833,6 +870,7 @@ export async function setupMuxConnection(
         }
         const inner = decoding.readVarUint8Array(decoder);
         const doc = await joinRoom(conn, req, roomName, url);
+        if (!doc) return;
         handleMessage(conn, doc, inner);
       } catch (e) {
         console.error("[rooms] mux message handling error:", e);

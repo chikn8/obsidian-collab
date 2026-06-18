@@ -314,8 +314,10 @@ a legacy fallback for old servers.
 revoked-owner rejection, live invite revocation, and signed invite identity binding.
 
 ### 3.3 — Memory-pressure room eviction + process tuning (L)
-**Fix.** LRU room eviction under a memory ceiling (persist + drop idle rooms); `--max-old-space-size`;
-Railway `restartPolicy` tuning; replace `closeConn`'s O(rooms) scan with a per-connection back-reference.
+**Status.** `closeConn` now uses a per-connection room back-reference instead of scanning every active room,
+and aborted joins clean up the empty room they loaded.
+**Remaining.** LRU room eviction under a memory ceiling (persist + drop idle rooms); `--max-old-space-size`;
+Railway `restartPolicy` tuning.
 
 ### 3.4 — Move durable state off the local volume for HA (XL)
 **Fix.** Postgres / y-redis backing so stateless replicas can run behind Railway (HA + zero-downtime deploys);

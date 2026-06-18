@@ -177,6 +177,7 @@ Settings → Real-Time Collaboration:
 | `METRICS_TOKEN` | = `ADMIN_SECRET` | Bearer/query token required for `/metrics` when auth is enabled |
 | `SHARE_MINT_TOKEN` | = `ADMIN_SECRET` | Bearer token allowed to create new shares without exposing `SERVER_SECRET` |
 | `SHARE_OWNER_SECRET` | = `ADMIN_SECRET` | Derives per-share owner keys for link minting/revocation |
+| `*_PREVIOUS` secret vars | — | Temporary comma-separated rotation grace vars for `SERVER_SECRET`, `AUTH_TOKEN`, `ADMIN_SECRET`, `SHARE_MINT_TOKEN`, and `SHARE_OWNER_SECRET` |
 | `AUDIT_LOG_PATH` | `$PERSIST_DIR/audit.jsonl` | Append-only JSONL audit log for share/link/revoke/join/security events |
 | `REQUIRE_AUTH` | `true` if `NODE_ENV=production` | Refuse to start without strong secrets |
 | `MIN_SECRET_LENGTH` | `16` | Minimum secret length enforced when `REQUIRE_AUTH` |
@@ -277,6 +278,9 @@ manual installs but violates Obsidian's current community-directory naming rule 
 - **Backups:** set `SNAPSHOT_GIT_REMOTE` (push history) **and** `PERSIST_BACKUP_COMMAND` (full-corpus
   archive), then set `REQUIRE_SNAPSHOT_REMOTE=true` and `REQUIRE_PERSIST_BACKUP=true`. Without these,
   all data lives on one volume — see the warning in `server/RECOVERY.md`.
+- **Secret rotation:** set the new primary secret, put the old value in that secret's `*_PREVIOUS` env
+  var, redeploy, then revoke/re-share affected shares so new codes use the new primary. Remove previous
+  secrets after the grace window.
 - **Blob GC:** `POST /admin/blob-gc?dryRun=true` with `Authorization: Bearer $ADMIN_SECRET` previews
   orphan attachment cleanup. Use `dryRun=false` to delete unreferenced blobs older than
   `BLOB_GC_GRACE_MS`, or set `BLOB_GC_INTERVAL_MS` for scheduled sweeps.

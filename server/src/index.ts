@@ -5,15 +5,14 @@ import { setupMuxConnection, setupWSConnection, getMetrics, saveAllDocs, closeRe
 import { BLOB_MAX_BYTES, loadBlob, readBlobBody, safeBlobHash, safeBlobRelPath, storeBlob } from "./blobs.js";
 import { BLOB_GC_GRACE_MS, startBlobGc, stopBlobGc, sweepOrphanBlobs } from "./blobGc.js";
 import {
-  authenticate,
   timingSafeEqualStr,
-  verifyShareAccess,
-  verifyInviteAccess,
+  verifyShareAccessAny,
+  verifyInviteAccessAny,
   adminToken,
   ownerKey,
   roleKey,
   inviteKey,
-  verifyOwnerAccess,
+  verifyOwnerAccessAny,
   verifyIdentitySignature,
   isIdentityUid,
   ROLES,
@@ -38,9 +37,36 @@ const ADMIN_SECRET = process.env.ADMIN_SECRET || SERVER_SECRET;
 const METRICS_TOKEN = process.env.METRICS_TOKEN || ADMIN_SECRET;
 const SHARE_MINT_TOKEN = process.env.SHARE_MINT_TOKEN || ADMIN_SECRET;
 const SHARE_OWNER_SECRET = process.env.SHARE_OWNER_SECRET || ADMIN_SECRET;
+const SERVER_SECRET_PREVIOUS = process.env.SERVER_SECRET_PREVIOUS || "";
+const ADMIN_SECRET_PREVIOUS =
+  process.env.ADMIN_SECRET_PREVIOUS || (process.env.ADMIN_SECRET ? "" : SERVER_SECRET_PREVIOUS);
+const SHARE_OWNER_SECRET_PREVIOUS =
+  process.env.SHARE_OWNER_SECRET_PREVIOUS || (process.env.SHARE_OWNER_SECRET ? "" : ADMIN_SECRET_PREVIOUS);
+const SHARE_MINT_TOKEN_PREVIOUS =
+  process.env.SHARE_MINT_TOKEN_PREVIOUS || (process.env.SHARE_MINT_TOKEN ? "" : ADMIN_SECRET_PREVIOUS);
+const AUTH_TOKEN_PREVIOUS = process.env.AUTH_TOKEN_PREVIOUS || "";
 const REQUIRE_AUTH = process.env.REQUIRE_AUTH === "true" || process.env.NODE_ENV === "production";
 const DISABLE_LEGACY_ROOMS = process.env.DISABLE_LEGACY_ROOMS === "true";
 const MIN_SECRET_LENGTH = Number(process.env.MIN_SECRET_LENGTH || 16);
+
+function secretList(primary: string, previous: string, includeEmptyPrimary = false): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const [i, raw] of [primary, ...previous.split(",")].entries()) {
+    const secret = raw.trim();
+    if ((!secret && !(includeEmptyPrimary && i === 0)) || seen.has(secret)) continue;
+    seen.add(secret);
+    out.push(secret);
+  }
+  return out;
+}
+
+const SERVER_SECRETS = secretList(SERVER_SECRET, SERVER_SECRET_PREVIOUS, !REQUIRE_AUTH);
+const ADMIN_SECRETS = secretList(ADMIN_SECRET, ADMIN_SECRET_PREVIOUS, !REQUIRE_AUTH);
+const METRICS_TOKENS = secretList(METRICS_TOKEN, "");
+const SHARE_MINT_TOKENS = secretList(SHARE_MINT_TOKEN, SHARE_MINT_TOKEN_PREVIOUS);
+const SHARE_OWNER_SECRETS = secretList(SHARE_OWNER_SECRET, SHARE_OWNER_SECRET_PREVIOUS, !REQUIRE_AUTH);
+const AUTH_TOKENS = secretList(AUTH_TOKEN, AUTH_TOKEN_PREVIOUS);
 
 function strongSecret(secret: string): boolean {
   return secret.trim().length >= MIN_SECRET_LENGTH;
@@ -55,6 +81,17 @@ if (REQUIRE_AUTH) {
   if (!strongSecret(SHARE_OWNER_SECRET)) problems.push(`SHARE_OWNER_SECRET must be at least ${MIN_SECRET_LENGTH} chars`);
   if (!DISABLE_LEGACY_ROOMS && !strongSecret(AUTH_TOKEN)) {
     problems.push(`AUTH_TOKEN must be at least ${MIN_SECRET_LENGTH} chars, or set DISABLE_LEGACY_ROOMS=true`);
+  }
+  for (const [label, secrets] of [
+    ["SERVER_SECRET_PREVIOUS", secretList("", SERVER_SECRET_PREVIOUS)],
+    ["ADMIN_SECRET_PREVIOUS", secretList("", ADMIN_SECRET_PREVIOUS)],
+    ["SHARE_OWNER_SECRET_PREVIOUS", secretList("", SHARE_OWNER_SECRET_PREVIOUS)],
+    ["SHARE_MINT_TOKEN_PREVIOUS", secretList("", SHARE_MINT_TOKEN_PREVIOUS)],
+    ["AUTH_TOKEN_PREVIOUS", secretList("", AUTH_TOKEN_PREVIOUS)],
+  ] as const) {
+    for (const secret of secrets) {
+      if (!strongSecret(secret)) problems.push(`${label} entries must be at least ${MIN_SECRET_LENGTH} chars`);
+    }
   }
   if (problems.length > 0) {
     console.error(`[auth] refusing to start in ${process.env.NODE_ENV || "production-required"} mode:\n- ${problems.join("\n- ")}`);
@@ -75,18 +112,28 @@ function bearerOrQueryToken(req: http.IncomingMessage, url: URL): string {
 function metricsAuthorized(req: http.IncomingMessage, url: URL): boolean {
   if (!REQUIRE_AUTH && !METRICS_TOKEN) return true;
   const provided = bearerOrQueryToken(req, url);
-  return !!provided && !!METRICS_TOKEN && timingSafeEqualStr(provided, METRICS_TOKEN);
+  return tokenMatchesAny(provided, METRICS_TOKENS);
 }
 
 function adminAuthorized(req: http.IncomingMessage, url: URL): boolean {
   if (!REQUIRE_AUTH && !ADMIN_SECRET) return true;
   const provided = bearerOrQueryToken(req, url);
-  return !!provided && !!ADMIN_SECRET && timingSafeEqualStr(provided, ADMIN_SECRET);
+  return tokenMatchesAny(provided, ADMIN_SECRETS);
 }
 
 function mintAuthorized(req: http.IncomingMessage, url: URL): boolean {
   const provided = bearerOrQueryToken(req, url);
-  return !!provided && !!SHARE_MINT_TOKEN && timingSafeEqualStr(provided, SHARE_MINT_TOKEN);
+  return tokenMatchesAny(provided, SHARE_MINT_TOKENS);
+}
+
+function tokenMatchesAny(provided: string, expected: string[]): boolean {
+  if (expected.length === 0) return true;
+  return !!provided && expected.some((secret) => timingSafeEqualStr(provided, secret));
+}
+
+function adminHmacAuthorized(token: string, shareId: string, epoch: number): boolean {
+  const secrets = ADMIN_SECRETS.length > 0 ? ADMIN_SECRETS : [""];
+  return secrets.some((secret) => timingSafeEqualStr(token, adminToken(secret, shareId, epoch)));
 }
 
 function remoteAddress(req: http.IncomingMessage): string {
@@ -134,8 +181,8 @@ async function verifyNamespacedAccess(args: {
 }): Promise<Role | null> {
   const min = await getMinEpoch(args.shareId);
   if (args.inviteId) {
-    const granted = verifyInviteAccess(
-      SERVER_SECRET,
+    const granted = verifyInviteAccessAny(
+      SERVER_SECRETS,
       args.shareId,
       args.token,
       args.role,
@@ -155,7 +202,7 @@ async function verifyNamespacedAccess(args: {
     if (!(await bindInviteIdentity(args.shareId, args.inviteId, args.identityUid, args.identityPublicKey))) return null;
     return granted;
   }
-  return verifyShareAccess(SERVER_SECRET, args.shareId, args.token, args.role, args.epoch, min);
+  return verifyShareAccessAny(SERVER_SECRETS, args.shareId, args.token, args.role, args.epoch, min);
 }
 
 const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
@@ -231,7 +278,7 @@ const server = http.createServer(async (req, res) => {
       const identity = identityParams(url);
       if (!shareId || !safeBlobHash(hash)) return json(400, { error: "bad request" });
       const granted =
-        shareId === "legacy" && !DISABLE_LEGACY_ROOMS && authenticate(token, AUTH_TOKEN)
+        shareId === "legacy" && !DISABLE_LEGACY_ROOMS && tokenMatchesAny(token, AUTH_TOKENS)
           ? "editor"
           : await verifyNamespacedAccess({ shareId, token, role, epoch, inviteId, expiresAt, ...identity });
       if (!granted) return json(401, { error: "unauthorized" });
@@ -291,7 +338,7 @@ const server = http.createServer(async (req, res) => {
       const token = bearerOrQueryToken(req, url);
       if (!shareId || !isRole(role)) return json(400, { error: "bad request" });
       const min = await getMinEpoch(shareId);
-      if (!verifyOwnerAccess(SHARE_OWNER_SECRET, shareId, token, epoch, min)) {
+      if (!verifyOwnerAccessAny(SHARE_OWNER_SECRETS, shareId, token, epoch, min)) {
         void auditEvent("share.link.rejected", { shareId, role, epoch, remote: remoteAddress(req), reason: "owner-auth" });
         return json(401, { error: "unauthorized" });
       }
@@ -311,7 +358,7 @@ const server = http.createServer(async (req, res) => {
       const token = bearerOrQueryToken(req, url);
       if (!shareId || !isRole(role) || epoch === undefined || !Number.isFinite(epoch)) return json(400, { error: "bad request" });
       const min = await getMinEpoch(shareId);
-      if (!verifyOwnerAccess(SHARE_OWNER_SECRET, shareId, token, epoch, min)) {
+      if (!verifyOwnerAccessAny(SHARE_OWNER_SECRETS, shareId, token, epoch, min)) {
         void auditEvent("share.invite.rejected", { shareId, role, epoch, remote: remoteAddress(req), reason: "owner-auth" });
         return json(401, { error: "unauthorized" });
       }
@@ -355,7 +402,7 @@ const server = http.createServer(async (req, res) => {
       const token = bearerOrQueryToken(req, url);
       if (!shareId || !inviteId || epoch === undefined || !Number.isFinite(epoch)) return json(400, { error: "bad request" });
       const min = await getMinEpoch(shareId);
-      if (!verifyOwnerAccess(SHARE_OWNER_SECRET, shareId, token, epoch, min)) {
+      if (!verifyOwnerAccessAny(SHARE_OWNER_SECRETS, shareId, token, epoch, min)) {
         void auditEvent("share.invite.revoke_rejected", { shareId, inviteId, epoch, remote: remoteAddress(req), reason: "owner-auth" });
         return json(401, { error: "unauthorized" });
       }
@@ -372,7 +419,7 @@ const server = http.createServer(async (req, res) => {
       const token = bearerOrQueryToken(req, url);
       if (!shareId || epoch === undefined || !Number.isFinite(epoch)) return json(400, { error: "bad request" });
       const min = await getMinEpoch(shareId);
-      if (!verifyOwnerAccess(SHARE_OWNER_SECRET, shareId, token, epoch, min)) {
+      if (!verifyOwnerAccessAny(SHARE_OWNER_SECRETS, shareId, token, epoch, min)) {
         void auditEvent("share.revoke.rejected", { shareId, epoch, remote: remoteAddress(req), reason: "owner-auth" });
         return json(401, { error: "unauthorized" });
       }
@@ -401,7 +448,7 @@ const server = http.createServer(async (req, res) => {
       const expiresAt = inviteExpiresAt(url);
       const identity = identityParams(url);
       const granted =
-        shareId === "legacy" && !DISABLE_LEGACY_ROOMS && authenticate(token, AUTH_TOKEN)
+        shareId === "legacy" && !DISABLE_LEGACY_ROOMS && tokenMatchesAny(token, AUTH_TOKENS)
           ? "editor"
           : shareId
             ? await verifyNamespacedAccess({ shareId, token, role, epoch, inviteId, expiresAt, ...identity })
@@ -421,7 +468,7 @@ const server = http.createServer(async (req, res) => {
       const epoch = Number(url.searchParams.get("epoch"));
       const token = bearerOrQueryToken(req, url);
       if (!shareId || !Number.isFinite(epoch)) return json(400, { error: "bad request" });
-      if (!timingSafeEqualStr(token, adminToken(ADMIN_SECRET, shareId, epoch))) {
+      if (!adminHmacAuthorized(token, shareId, epoch)) {
         void auditEvent("admin.revoke.rejected", { shareId, epoch, remote: remoteAddress(req), reason: "admin-auth" });
         return json(401, { error: "unauthorized" });
       }
@@ -493,7 +540,7 @@ server.on("upgrade", async (request, socket, head) => {
     ok = role !== null;
     if (role) grantedRole = role;
   } else {
-    ok = !DISABLE_LEGACY_ROOMS && authenticate(token, AUTH_TOKEN);
+    ok = !DISABLE_LEGACY_ROOMS && tokenMatchesAny(token, AUTH_TOKENS);
   }
 
   if (!ok) {

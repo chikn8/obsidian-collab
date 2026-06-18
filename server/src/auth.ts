@@ -86,6 +86,16 @@ export function verifyOwnerAccess(
   return timingSafeEqualStr(token, ownerKey(secret, shareId, epoch));
 }
 
+export function verifyOwnerAccessAny(
+  secrets: string[],
+  shareId: string,
+  token: string,
+  epoch: number | undefined,
+  minEpoch: number
+): boolean {
+  return secrets.some((secret) => verifyOwnerAccess(secret, shareId, token, epoch, minEpoch));
+}
+
 /**
  * Validate a connection's access to a namespaced share. Back-compatible:
  *  - role/epoch absent  → legacy/plain key HMAC(secret, shareId), treated as editor.
@@ -111,6 +121,21 @@ export function verifyShareAccess(
   return null;
 }
 
+export function verifyShareAccessAny(
+  secrets: string[],
+  shareId: string,
+  token: string,
+  role: Role | undefined,
+  epoch: number | undefined,
+  minEpoch: number
+): Role | null {
+  for (const secret of secrets) {
+    const granted = verifyShareAccess(secret, shareId, token, role, epoch, minEpoch);
+    if (granted) return granted;
+  }
+  return null;
+}
+
 export function verifyInviteAccess(
   secret: string,
   shareId: string,
@@ -128,6 +153,24 @@ export function verifyInviteAccess(
   if (!ROLES.includes(role)) return null;
   if (expiresAt !== undefined && (!Number.isFinite(expiresAt) || expiresAt <= now)) return null;
   return timingSafeEqualStr(token, inviteKey(secret, shareId, role, epoch, inviteId, expiresAt)) ? role : null;
+}
+
+export function verifyInviteAccessAny(
+  secrets: string[],
+  shareId: string,
+  token: string,
+  role: Role | undefined,
+  epoch: number | undefined,
+  inviteId: string | undefined,
+  expiresAt: number | undefined,
+  minEpoch: number,
+  now = Date.now()
+): Role | null {
+  for (const secret of secrets) {
+    const granted = verifyInviteAccess(secret, shareId, token, role, epoch, inviteId, expiresAt, minEpoch, now);
+    if (granted) return granted;
+  }
+  return null;
 }
 
 const IDENTITY_B64URL_RE = /^[A-Za-z0-9_-]{16,4096}$/;

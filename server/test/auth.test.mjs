@@ -6,8 +6,11 @@ import {
   roleKey,
   verifyIdentitySignature,
   verifyInviteAccess,
+  verifyInviteAccessAny,
   verifyOwnerAccess,
+  verifyOwnerAccessAny,
   verifyShareAccess,
+  verifyShareAccessAny,
 } from "../src/auth.ts";
 
 let failures = 0;
@@ -19,7 +22,9 @@ function check(name, cond, extra = "") {
 console.log("server auth\n");
 
 const serverSecret = "server-secret-for-tests";
+const previousServerSecret = "previous-server-secret-for-tests";
 const ownerSecret = "owner-secret-for-tests";
+const previousOwnerSecret = "previous-owner-secret-for-tests";
 const shareId = "share-abc";
 const epoch = 3;
 const editor = roleKey(serverSecret, shareId, "editor", epoch);
@@ -35,8 +40,14 @@ check("owner key validates only with owner secret", verifyOwnerAccess(ownerSecre
 check("owner key is not a share access token", verifyShareAccess(serverSecret, shareId, owner, "editor", epoch, 1) === null);
 check("revoked epoch rejects owner key", !verifyOwnerAccess(ownerSecret, shareId, owner, epoch, epoch + 1));
 check("wrong share rejects owner key", !verifyOwnerAccess(ownerSecret, "other-share", owner, epoch, 1));
+check("previous owner secret grants during rotation",
+  verifyOwnerAccessAny([ownerSecret, previousOwnerSecret], shareId, ownerKey(previousOwnerSecret, shareId, epoch), epoch, 1));
 check("invite token grants scoped role",
   verifyInviteAccess(serverSecret, shareId, invite, "commenter", epoch, "abc123XYZ", futureExpiry, 1) === "commenter");
+check("previous server secret grants share during rotation",
+  verifyShareAccessAny([serverSecret, previousServerSecret], shareId, roleKey(previousServerSecret, shareId, "editor", epoch), "editor", epoch, 1) === "editor");
+check("previous server secret grants invite during rotation",
+  verifyInviteAccessAny([serverSecret, previousServerSecret], shareId, inviteKey(previousServerSecret, shareId, "commenter", epoch, "abc123XYZ", futureExpiry), "commenter", epoch, "abc123XYZ", futureExpiry, 1) === "commenter");
 check("invite token is invite scoped",
   verifyInviteAccess(serverSecret, shareId, invite, "commenter", epoch, "other123", futureExpiry, 1) === null);
 check("expired invite rejects",

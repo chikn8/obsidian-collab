@@ -17,8 +17,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, "..");
 const distIndex = path.join(serverRoot, "dist", "index.js");
 const SERVER_SECRET = "server-secret-for-e2e-tests";
+const SERVER_SECRET_PREVIOUS = "previous-server-secret-for-e2e-tests";
 const ADMIN_SECRET = "admin-secret-for-e2e-tests";
 const SHARE_OWNER_SECRET = "owner-secret-for-e2e-tests";
+const SHARE_OWNER_SECRET_PREVIOUS = "previous-owner-secret-for-e2e-tests";
 const SHARE_MINT_TOKEN = "mint-token-for-e2e-tests";
 
 let failures = 0;
@@ -39,16 +41,16 @@ function sha256Hex(data) {
   return createHash("sha256").update(data).digest("hex");
 }
 
-function roleKey(shareId, role, epoch) {
-  return hmac(SERVER_SECRET, `${shareId}:${role}:${epoch}`);
+function roleKey(shareId, role, epoch, secret = SERVER_SECRET) {
+  return hmac(secret, `${shareId}:${role}:${epoch}`);
 }
 
 function adminToken(shareId, epoch) {
   return hmac(ADMIN_SECRET, `admin:${shareId}:${epoch}`);
 }
 
-function ownerKey(shareId, epoch) {
-  return hmac(SHARE_OWNER_SECRET, `owner:${shareId}:${epoch}`);
+function ownerKey(shareId, epoch, secret = SHARE_OWNER_SECRET) {
+  return hmac(secret, `owner:${shareId}:${epoch}`);
 }
 
 function identityPayload(uid, publicKey) {
@@ -124,8 +126,10 @@ async function startServer(persistDir) {
     PORT: String(port),
     PERSIST_DIR: persistDir,
     SERVER_SECRET,
+    SERVER_SECRET_PREVIOUS,
     ADMIN_SECRET,
     SHARE_OWNER_SECRET,
+    SHARE_OWNER_SECRET_PREVIOUS,
     SHARE_MINT_TOKEN,
     AUTH_TOKEN: "",
     REQUIRE_AUTH: "true",
@@ -370,9 +374,9 @@ async function expectWsRejected(wsBase, room, params) {
   });
 }
 
-function authParams(role, epoch, shareId) {
+function authParams(role, epoch, shareId, secret = SERVER_SECRET) {
   return {
-    token: roleKey(shareId, role, epoch),
+    token: roleKey(shareId, role, epoch, secret),
     role,
     epoch,
     uid: `uid-${role}-${Math.random().toString(36).slice(2)}`,
@@ -423,6 +427,27 @@ try {
     check("B received A's edit", B.text() === "hello from editor A");
     await A.close();
     await B.close();
+  }
+
+  console.log("Previous rotation secrets remain valid during grace window");
+  {
+    const shareId = "e2e-rotation";
+    const epoch = 1;
+    const room = roomName(shareId, "rotated.md");
+    const oldClient = new SyncClient(server.wsBase, room, authParams("editor", epoch, shareId, SERVER_SECRET_PREVIOUS));
+    await oldClient.ready;
+    oldClient.setText("old key still accepted");
+    await oldClient.waitForText("old key still accepted");
+    check("old server secret can still join", oldClient.text() === "old key still accepted");
+    await oldClient.close();
+
+    const linkRes = await fetch(`${server.httpBase}/share/link?share=${encodeURIComponent(shareId)}&role=viewer&epoch=${epoch}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${ownerKey(shareId, epoch, SHARE_OWNER_SECRET_PREVIOUS)}` },
+    });
+    const link = await linkRes.json();
+    check("old owner key can mint during rotation", linkRes.status === 200 && link?.key, JSON.stringify(link));
+    check("rotation mints new links with current secret", link.key === roleKey(shareId, "viewer", epoch), JSON.stringify(link));
   }
 
   console.log("Multiplexed clients sync multiple rooms over one socket each");

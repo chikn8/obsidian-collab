@@ -307,9 +307,11 @@ only a scoped editor key plus per-share `ownerKey`, and keeps `SERVER_SECRET` on
 and `/share/revoke` require the owner key, so a leaked client config can mint/revoke only that share.
 `/share/invite` adds per-recipient invite ids + optional expiry; `/share/invite/revoke` revokes one invite
 and closes only its live sockets. Invite links are bound to the first signed per-install identity that uses
-them, and a different signed identity is rejected before joining. The old client-side HMAC path remains as
-a legacy fallback for old servers.
-**Remaining.** Add key-rotation windows and account-grade identity semantics.
+them, and a different signed identity is rejected before joining. Secret rotation windows are supported with
+`*_PREVIOUS` env vars: old tokens verify during the grace window, while all newly minted share/link/invite
+tokens use the current primary secrets. The old client-side HMAC path remains as a legacy fallback for old
+servers.
+**Remaining.** Account-grade identity semantics.
 **Verify.** Server auth/share-state tests and real-server e2e cover role/owner/invite separation, expiry,
 revoked-owner rejection, live invite revocation, and signed invite identity binding.
 

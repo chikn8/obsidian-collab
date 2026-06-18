@@ -6,6 +6,7 @@ import {
   tabHeaderForLeaf,
   tabPresenceTarget,
 } from "../src/collab/PresenceDom.ts";
+import { renderFacepileRoster } from "../src/collab/Presence.ts";
 
 let failures = 0;
 function check(name, cond, extra = "") {
@@ -30,8 +31,19 @@ class FakeElement {
         for (const name of names) classes.add(name);
         this.className = Array.from(classes).join(" ");
       },
+      remove: (...names) => {
+        const classes = new Set(this.className.split(/\s+/).filter(Boolean));
+        for (const name of names) classes.delete(name);
+        this.className = Array.from(classes).join(" ");
+      },
       contains: (name) => this.className.split(/\s+/).includes(name),
     };
+  }
+
+  replaceChildren(...children) {
+    for (const child of this.children) child.parentElement = null;
+    this.children = [];
+    for (const child of children) this.appendChild(child);
   }
 
   appendChild(child) {
@@ -145,6 +157,24 @@ console.log("presence dom\n");
   check("avatar title is hover-readable", first.title === "Elijah (desktop) (you) - typing", first.title);
   check("avatar aria mirrors title", first.getAttribute("aria-label") === first.title);
   check("typing pill has three dots", first.children[0]?.className === "collab-typing-pill" && first.children[0].children.length === 3);
+}
+
+{
+  const doc = new FakeDocument();
+  const parent = doc.createElement("div");
+  let jumped = null;
+  renderFacepileRoster(parent, users, (key) => { jumped = key; });
+
+  const self = parent.children[0];
+  const remoteViewing = parent.children[1];
+  check("facepile self avatar is an inert hover target", self.tagName === "SPAN" && self.getAttribute("role") === "img" && self.title.includes("(you)"), self.tagName);
+  check("facepile viewing avatar is not disabled", remoteViewing.tagName === "SPAN" && !remoteViewing.disabled && remoteViewing.title === "Elijah (mobile) - viewing", remoteViewing.title);
+
+  const remoteCaret = { ...users[1], hasCaret: true };
+  renderFacepileRoster(parent, [remoteCaret], (key) => { jumped = key; });
+  const button = parent.children[0];
+  button.onclick?.();
+  check("facepile remote caret avatar is clickable", button.tagName === "BUTTON" && button.type === "button" && jumped === remoteCaret.presenceKey);
 }
 
 {

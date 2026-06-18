@@ -14973,24 +14973,7 @@ function makePanel(_view, onJump) {
   const dom = document.createElement("div");
   dom.className = "collab-facepile";
   const render = (roster) => {
-    dom.replaceChildren();
-    if (roster.length === 0) {
-      dom.addClass("empty");
-      return;
-    }
-    dom.removeClass("empty");
-    for (const u of roster) {
-      const av = document.createElement("button");
-      av.className = "collab-facepile-avatar" + (u.hasCaret ? " live" : "") + (u.typing ? " typing" : "") + (u.isSelf ? " self" : "");
-      av.style.backgroundColor = u.color;
-      av.textContent = presenceInitial(u.name);
-      av.title = presenceLabel(u) + (u.hasCaret && !u.isSelf ? " - click to jump" : "");
-      av.setAttribute("aria-label", av.title);
-      if (u.typing) av.appendChild(makeTypingDots());
-      if (u.hasCaret && !u.isSelf) av.onclick = () => onJump(u.presenceKey);
-      else av.disabled = true;
-      dom.appendChild(av);
-    }
+    renderFacepileRoster(dom, roster, onJump);
   };
   render([]);
   return {
@@ -15002,6 +14985,32 @@ function makePanel(_view, onJump) {
       }
     }
   };
+}
+function renderFacepileRoster(dom, roster, onJump) {
+  const doc2 = dom.ownerDocument || document;
+  dom.replaceChildren();
+  if (roster.length === 0) {
+    dom.classList.add("empty");
+    return;
+  }
+  dom.classList.remove("empty");
+  for (const u of roster) {
+    const canJump = u.hasCaret && !u.isSelf;
+    const av = doc2.createElement(canJump ? "button" : "span");
+    av.className = "collab-facepile-avatar" + (u.hasCaret ? " live" : "") + (u.typing ? " typing" : "") + (u.isSelf ? " self" : "");
+    av.style.backgroundColor = u.color;
+    av.textContent = presenceInitial(u.name);
+    av.title = presenceLabel(u) + (canJump ? " - click to jump" : "");
+    av.setAttribute("aria-label", av.title);
+    if (u.typing) av.appendChild(makeTypingDots(doc2));
+    if (canJump) {
+      av.type = "button";
+      av.onclick = () => onJump(u.presenceKey);
+    } else {
+      av.setAttribute("role", "img");
+    }
+    dom.appendChild(av);
+  }
 }
 var PresenceController = class {
   constructor(view, doc2, manifestAwareness, fileAwareness, relPath) {

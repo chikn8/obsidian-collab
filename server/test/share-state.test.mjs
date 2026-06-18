@@ -25,10 +25,24 @@ await putInvite("share-1", {
 check("invite can be read back", (await getInvite("share-1", "InviteABC123"))?.recipient === "Mira");
 const keyA = "A".repeat(100);
 const keyB = "B".repeat(100);
+const keyC = "C".repeat(100);
 check("invite identity binds on first use", await bindInviteIdentity("share-1", "InviteABC123", "uid-a", keyA));
 check("bound identity is persisted", (await getInvite("share-1", "InviteABC123"))?.identityPublicKey === keyA);
 check("same invite identity is accepted", await bindInviteIdentity("share-1", "InviteABC123", "uid-a", keyA));
 check("different invite identity is rejected", !(await bindInviteIdentity("share-1", "InviteABC123", "uid-b", keyB)));
+
+await putInvite("share-1", {
+  id: "InviteTwoDevices",
+  role: "editor",
+  epoch: 1,
+  createdAt: 20,
+  recipient: "Mira",
+  maxDevices: 2,
+});
+check("multi-device invite accepts first identity", await bindInviteIdentity("share-1", "InviteTwoDevices", "uid-a", keyA));
+check("multi-device invite accepts configured second identity", await bindInviteIdentity("share-1", "InviteTwoDevices", "uid-b", keyB));
+check("multi-device invite rejects over-limit identity", !(await bindInviteIdentity("share-1", "InviteTwoDevices", "uid-c", keyC)));
+check("multi-device invite persists identities", (await getInvite("share-1", "InviteTwoDevices"))?.identities?.length === 2);
 
 await setMinEpoch("share-1", 2);
 check("epoch bump preserves invite", (await getInvite("share-1", "InviteABC123"))?.role === "editor");

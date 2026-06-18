@@ -35,6 +35,7 @@ export interface ShareInvite {
   recipient?: string;
   createdAt?: number;
   expiresAt?: number;
+  maxDevices?: number;
   revokedAt?: number;
 }
 

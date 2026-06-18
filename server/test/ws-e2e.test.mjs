@@ -673,34 +673,45 @@ try {
         Authorization: `Bearer ${ownerKey(shareId, epoch)}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ recipient: "Mira", expiresAt: Date.now() + 60_000 }),
+      body: JSON.stringify({ recipient: "Mira", expiresAt: Date.now() + 60_000, maxDevices: 2 }),
     });
     const invite = await inviteRes.json();
-    check("invite mint HTTP succeeds", inviteRes.status === 200 && !!invite.inviteId, `status=${inviteRes.status}`);
+    check("invite mint HTTP succeeds", inviteRes.status === 200 && !!invite.inviteId && invite.maxDevices === 2, `status=${inviteRes.status}`);
     const identity = await makeIdentity("invite-user-a");
     const invited = new SyncClient(server.wsBase, room, inviteAuthParams(invite, identity));
     await invited.ready;
     invited.setText("invite can edit until revoked");
     await sleep(300);
     const otherIdentity = await makeIdentity("invite-user-b");
-    const rejected = await expectWsRejected(server.wsBase, room, inviteAuthParams(invite, otherIdentity));
-    check("same invite rejects another signed identity", rejected.ok, rejected.reason);
+    const secondInvited = new SyncClient(server.wsBase, room, inviteAuthParams(invite, otherIdentity));
+    await secondInvited.ready;
+    await secondInvited.waitForText("invite can edit until revoked");
+    secondInvited.setText("second configured device can edit");
+    await invited.waitForText("second configured device can edit");
+    const thirdIdentity = await makeIdentity("invite-user-c");
+    const rejected = await expectWsRejected(server.wsBase, room, inviteAuthParams(invite, thirdIdentity));
+    check("same invite rejects identities over the configured device limit", rejected.ok, rejected.reason);
     const revokeRes = await fetch(`${server.httpBase}/share/invite/revoke?share=${encodeURIComponent(shareId)}&invite=${encodeURIComponent(invite.inviteId)}&epoch=${epoch}`, {
       method: "POST",
       headers: { Authorization: `Bearer ${ownerKey(shareId, epoch)}` },
     });
     check("invite revoke HTTP succeeds", revokeRes.status === 200, `status=${revokeRes.status}`);
-    const closed = await Promise.race([
+    const closedFirst = await Promise.race([
       invited.closed,
       sleep(5000).then(() => null),
     ]);
-    check("revoked invite socket closed with 4003", closed?.code === 4003, `code=${closed?.code}`);
+    const closedSecond = await Promise.race([
+      secondInvited.closed,
+      sleep(5000).then(() => null),
+    ]);
+    check("revoked invite sockets closed with 4003", closedFirst?.code === 4003 && closedSecond?.code === 4003, `first=${closedFirst?.code} second=${closedSecond?.code}`);
     const metricsRes = await fetch(`${server.httpBase}/metrics`, {
       headers: { Authorization: `Bearer ${ADMIN_SECRET}` },
     });
     const metrics = await metricsRes.json();
     check("revocations increment metrics counter", metrics.counters?.revocations >= 2, JSON.stringify(metrics.counters));
     invited.doc.destroy();
+    secondInvited.doc.destroy();
   }
 } finally {
   await stopServer(server);

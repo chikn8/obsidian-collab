@@ -235,8 +235,9 @@ See `server/.env.example` for a copy-paste template, and `server/RECOVERY.md` fo
   link. The join modal pre-fills the code and suggests a friendly local folder/label.
 - **Roles:** share an *editor*, *commenter*, or *viewer* link. Viewers/commenters can't write the file
   (enforced on the server). Use **Invite…** for a named/expiring recipient link that can be revoked by
-  itself; invite links are bound to the first signed local install that uses them. Use **Revoke all
-  links** to bump the share epoch and disconnect every old link.
+  itself. Invite links default to one signed local install; raise **Max devices** when the same recipient
+  should join from a laptop plus phone. Use **Revoke all links** to bump the share epoch and disconnect
+  every old link.
 - **Comments:** select text → right-click → *Add comment*. Open the comments panel from the ribbon.
 - **Version history:** right-click a synced note → *Version history*, or `Cmd+P` → *Open version
   history*. Preview and restore any snapshot (a pre-restore backup is saved).
@@ -330,9 +331,9 @@ community-directory naming rule against ids containing `obsidian`. New installs 
 ## Project status
 
 The reliability core (loops, lost-content, deletes/renames, offline, folder ops) is implemented and
-test-covered; backend durability and security hardening are largely in place. Remaining work
-(scale/HA, account-grade identity semantics, object-store polish, and the human device-matrix test) is
-tracked in **[ROADMAP-v2-hardening.md](ROADMAP-v2-hardening.md)**.
+test-covered; backend durability, invite isolation, and security hardening are largely in place. Remaining
+work (scale/HA, true account/login recovery semantics, object-store polish, and the human device-matrix
+test) is tracked in **[ROADMAP-v2-hardening.md](ROADMAP-v2-hardening.md)**.
 
 **Before trusting it with important notes:** exclude the shared folder from Obsidian Sync, confirm an
 off-box backup is configured, and run one deliberate two-person + mobile break-it session.

@@ -399,6 +399,12 @@ const server = http.createServer(async (req, res) => {
       if (expiresAt !== undefined && (!Number.isFinite(expiresAt) || expiresAt <= Date.now())) {
         return json(400, { error: "bad expiry" });
       }
+      const maxDevices = body?.maxDevices === undefined || body?.maxDevices === null || body?.maxDevices === ""
+        ? 1
+        : Number(body.maxDevices);
+      if (!Number.isInteger(maxDevices) || maxDevices < 1 || maxDevices > 10) {
+        return json(400, { error: "bad max devices" });
+      }
       const inviteId = generateShareId(12);
       const createdAt = Date.now();
       await putInvite(shareId, {
@@ -408,8 +414,9 @@ const server = http.createServer(async (req, res) => {
         createdAt,
         recipient: recipient || undefined,
         expiresAt,
+        maxDevices,
       });
-      void auditEvent("share.invite.created", { shareId, inviteId, role, epoch, recipient: recipient || undefined, expiresAt, remote: remoteAddress(req) });
+      void auditEvent("share.invite.created", { shareId, inviteId, role, epoch, recipient: recipient || undefined, expiresAt, maxDevices, remote: remoteAddress(req) });
       return json(200, {
         id: shareId,
         inviteId,
@@ -417,6 +424,7 @@ const server = http.createServer(async (req, res) => {
         epoch,
         recipient: recipient || undefined,
         expiresAt,
+        maxDevices,
         createdAt,
         key: inviteKey(SERVER_SECRET, shareId, role, epoch, inviteId, expiresAt),
       });

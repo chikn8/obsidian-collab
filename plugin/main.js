@@ -14231,6 +14231,7 @@ var CollabSettingsTab = class extends import_obsidian7.PluginSettingTab {
               fields: [
                 { key: "recipient", label: "Recipient label", placeholder: "e.g. Mira laptop" },
                 { key: "role", label: "Role", placeholder: "viewer, commenter, or editor", value: "editor" },
+                { key: "maxDevices", label: "Max devices", placeholder: "1", value: "1" },
                 { key: "expiresHours", label: "Expires in hours", placeholder: "Leave blank for no expiry" }
               ]
             });
@@ -14246,8 +14247,14 @@ var CollabSettingsTab = class extends import_obsidian7.PluginSettingTab {
               new import_obsidian7.Notice("Expiry must be a positive number of hours.");
               return;
             }
+            const maxDevicesRaw = (res.maxDevices || "1").trim();
+            const maxDevices = maxDevicesRaw ? Number(maxDevicesRaw) : 1;
+            if (!Number.isInteger(maxDevices) || maxDevices < 1 || maxDevices > 10) {
+              new import_obsidian7.Notice("Max devices must be a whole number from 1 to 10.");
+              return;
+            }
             const expiresAt = hours > 0 ? Date.now() + hours * 60 * 6e4 : void 0;
-            const code = await this.plugin.generateShareInviteCode(share, role2, res.recipient.trim(), expiresAt);
+            const code = await this.plugin.generateShareInviteCode(share, role2, res.recipient.trim(), expiresAt, maxDevices);
             if (code) await copyToClipboard(code, "Invite link copied");
             this.display();
           })
@@ -14276,6 +14283,7 @@ var CollabSettingsTab = class extends import_obsidian7.PluginSettingTab {
         const label = invite.recipient || invite.id;
         const meta = [
           invite.role,
+          `${invite.maxDevices || 1} device${(invite.maxDevices || 1) === 1 ? "" : "s"}`,
           invite.expiresAt ? `expires ${new Date(invite.expiresAt).toLocaleString()}` : "no expiry",
           invite.revokedAt ? `revoked ${new Date(invite.revokedAt).toLocaleString()}` : null
         ].filter(Boolean).join(" \xB7 ");
@@ -17004,7 +17012,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     new import_obsidian11.Notice("This device does not have owner access for that share.");
     return null;
   }
-  async generateShareInviteCode(share, role, recipient, expiresAt) {
+  async generateShareInviteCode(share, role, recipient, expiresAt, maxDevices = 1) {
     var _a2, _b2;
     if (share.legacy) {
       new import_obsidian11.Notice("Invite links require a non-legacy share.");
@@ -17018,7 +17026,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     try {
       const res = await postJson(
         `${httpBase(this.settings.serverUrl)}/share/invite?share=${encodeURIComponent(share.id)}&role=${encodeURIComponent(role)}&epoch=${epoch}`,
-        { recipient, expiresAt },
+        { recipient, expiresAt, maxDevices },
         bearerHeaders(share.ownerKey)
       );
       if (!res.ok || !((_b2 = res.body) == null ? void 0 : _b2.key) || !res.body.inviteId) {
@@ -17031,7 +17039,8 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
         role: res.body.role,
         recipient: res.body.recipient || recipient || void 0,
         createdAt: res.body.createdAt,
-        expiresAt: res.body.expiresAt
+        expiresAt: res.body.expiresAt,
+        maxDevices: res.body.maxDevices || maxDevices
       };
       share.invites = [invite, ...(share.invites || []).filter((i) => i.id !== invite.id)].slice(0, 50);
       await this.persist();

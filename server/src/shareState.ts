@@ -21,9 +21,11 @@ export interface ShareInviteEntry {
   recipient?: string;
   expiresAt?: number;
   revokedAt?: number;
+  maxDevices?: number;
   identityPublicKey?: string;
   identityUid?: string;
   identityBoundAt?: number;
+  identities?: { uid: string; publicKey: string; boundAt: number }[];
 }
 
 interface ShareEntry {
@@ -71,11 +73,24 @@ function parseState(raw: string): State {
           !Number.isFinite(invite.createdAt) ||
           (invite.expiresAt !== undefined && !Number.isFinite(invite.expiresAt)) ||
           (invite.revokedAt !== undefined && !Number.isFinite(invite.revokedAt)) ||
+          (invite.maxDevices !== undefined &&
+            (!Number.isInteger(invite.maxDevices) || invite.maxDevices < 1 || invite.maxDevices > 10)) ||
           (invite.identityPublicKey !== undefined &&
             (typeof invite.identityPublicKey !== "string" || !IDENTITY_B64URL_RE.test(invite.identityPublicKey))) ||
           (invite.identityUid !== undefined &&
             (typeof invite.identityUid !== "string" || !IDENTITY_UID_RE.test(invite.identityUid))) ||
-          (invite.identityBoundAt !== undefined && !Number.isFinite(invite.identityBoundAt))
+          (invite.identityBoundAt !== undefined && !Number.isFinite(invite.identityBoundAt)) ||
+          (invite.identities !== undefined &&
+            (!Array.isArray(invite.identities) ||
+              invite.identities.some((identity: any) =>
+                !identity ||
+                typeof identity !== "object" ||
+                typeof identity.uid !== "string" ||
+                !IDENTITY_UID_RE.test(identity.uid) ||
+                typeof identity.publicKey !== "string" ||
+                !IDENTITY_B64URL_RE.test(identity.publicKey) ||
+                !Number.isFinite(identity.boundAt)
+              )))
         ) {
           throw new Error(`invalid invite ${inviteId} for ${shareId}`);
         }
@@ -190,15 +205,38 @@ export async function bindInviteIdentity(
     const s = await load();
     const invite = s[shareId]?.invites?.[inviteId];
     if (!invite || invite.revokedAt) return false;
+    const bound = boundIdentities(invite);
+    if (bound.some((identity) => identity.uid === uid && identity.publicKey === publicKey)) return true;
+    const maxDevices = Math.max(1, Math.min(10, Math.floor(invite.maxDevices || 1)));
+    if (bound.length >= maxDevices) return false;
+
+    const next = { uid, publicKey, boundAt };
     if (!invite.identityPublicKey) {
       invite.identityPublicKey = publicKey;
       invite.identityUid = uid;
       invite.identityBoundAt = boundAt;
-      await save();
-      return true;
     }
-    return invite.identityPublicKey === publicKey && invite.identityUid === uid;
+    invite.identities = [...bound, next];
+    await save();
+    return true;
   });
+}
+
+function boundIdentities(invite: ShareInviteEntry): { uid: string; publicKey: string; boundAt: number }[] {
+  const out: { uid: string; publicKey: string; boundAt: number }[] = [];
+  const seen = new Set<string>();
+  const add = (identity: { uid?: string; publicKey?: string; boundAt?: number }) => {
+    if (!identity.uid || !identity.publicKey) return;
+    const key = `${identity.uid}\0${identity.publicKey}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ uid: identity.uid, publicKey: identity.publicKey, boundAt: identity.boundAt || 0 });
+  };
+  if (invite.identityUid && invite.identityPublicKey) {
+    add({ uid: invite.identityUid, publicKey: invite.identityPublicKey, boundAt: invite.identityBoundAt });
+  }
+  for (const identity of invite.identities || []) add(identity);
+  return out;
 }
 
 export function getShareStateHealth() {

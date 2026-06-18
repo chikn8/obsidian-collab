@@ -149,9 +149,10 @@ plus a scoped `ownerKey` for that share. Later role links are minted through `/s
 uses `/share/revoke`; both require the share's owner key and cannot derive keys for other shares.
 Per-recipient invites are minted through `/share/invite`; their HMAC includes role, epoch, invite id, and
 optional expiry. Invite joins and invite-authenticated history reads also carry a signed per-install
-identity (`uid`, P-256 public key, signature). The first valid install to use an invite binds that invite;
-later uses must present the same uid + public key. `/share/invite/revoke` disables one invite and
-disconnects only sockets using that invite.
+identity (`uid`, P-256 public key, signature). The first valid install to use an invite binds that invite.
+By default later uses must present the same uid + public key; the creator can raise `maxDevices` on the
+invite to allow a bounded set of signed installs for the same recipient. `/share/invite/revoke` disables
+one invite and disconnects only sockets using that invite.
 
 Secret rotation is a grace-window model. The current primary env vars mint all new share/link/invite
 tokens. Optional comma-separated `*_PREVIOUS` env vars (`SERVER_SECRET_PREVIOUS`, `AUTH_TOKEN_PREVIOUS`,

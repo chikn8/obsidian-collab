@@ -867,7 +867,7 @@ export default class CollabPlugin extends Plugin {
     return null;
   }
 
-  async generateShareInviteCode(share: Share, role: Role, recipient: string, expiresAt?: number): Promise<string | null> {
+  async generateShareInviteCode(share: Share, role: Role, recipient: string, expiresAt?: number, maxDevices = 1): Promise<string | null> {
     if (share.legacy) {
       new Notice("Invite links require a non-legacy share.");
       return null;
@@ -887,10 +887,11 @@ export default class CollabPlugin extends Plugin {
         epoch: number;
         recipient?: string;
         expiresAt?: number;
+        maxDevices?: number;
         createdAt?: number;
       }>(
         `${httpBase(this.settings.serverUrl)}/share/invite?share=${encodeURIComponent(share.id)}&role=${encodeURIComponent(role)}&epoch=${epoch}`,
-        { recipient, expiresAt },
+        { recipient, expiresAt, maxDevices },
         bearerHeaders(share.ownerKey)
       );
       if (!res.ok || !res.body?.key || !res.body.inviteId) {
@@ -905,6 +906,7 @@ export default class CollabPlugin extends Plugin {
         recipient: res.body.recipient || recipient || undefined,
         createdAt: res.body.createdAt,
         expiresAt: res.body.expiresAt,
+        maxDevices: res.body.maxDevices || maxDevices,
       };
       share.invites = [invite, ...(share.invites || []).filter((i) => i.id !== invite.id)].slice(0, 50);
       await this.persist();

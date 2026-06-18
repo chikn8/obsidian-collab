@@ -35,7 +35,8 @@ createFileProvider in-flight reservation · comment-anchor quote-verify + re-mat
 real-server WebSocket e2e for convergence, viewer write rejection, restart durability, and revocation ·
 mixed-version v1↔v2 manifest migration coverage.
 **Tier 3 foundation**: signed per-install identities bind invite links on first use; invite reuse from a
-different signed install is rejected before joining the room.
+different signed install is rejected before joining the room unless the creator explicitly raises that
+invite's bounded `maxDevices` limit for laptop+phone style use.
 **Tier 4 foundation**: binary attachments sync through content-addressed `/blob` uploads/downloads and
 manifest `kind:"binary"` entries; attachment/delete conflict copies are stamped and reviewable from the
 history panel.
@@ -44,7 +45,8 @@ per client/share; server e2e verifies two rooms over two mux sockets; server per
 dirty-room global save sweep instead of one interval per active room.
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
-(ops, not code) · account-grade identity semantics · true HA storage/fan-out · human device-matrix test.
+(ops, not code) · true account/login recovery semantics · true HA storage/fan-out · human device-matrix
+test.
 
 ---
 
@@ -336,17 +338,19 @@ only a scoped editor key plus per-share `ownerKey`, and keeps `SERVER_SECRET` on
 and `/share/revoke` require the owner key, so a leaked client config can mint/revoke only that share.
 `/share/invite` adds per-recipient invite ids + optional expiry; `/share/invite/revoke` revokes one invite
 and closes only its live sockets. Invite links are bound to the first signed per-install identity that uses
-them, and a different signed identity is rejected before joining. Secret rotation windows are supported with
-`*_PREVIOUS` env vars: old tokens verify during the grace window, while all newly minted share/link/invite
-tokens use the current primary secrets. The old client-side HMAC path remains as a legacy fallback for old
-servers.
+them by default; creators can set `maxDevices` on an invite to allow a bounded set of signed installs for
+one recipient, and identities beyond that limit are rejected before joining. Secret rotation windows are
+supported with `*_PREVIOUS` env vars: old tokens verify during the grace window, while all newly minted
+share/link/invite tokens use the current primary secrets. The old client-side HMAC path remains as a legacy
+fallback for old servers.
 Per-device awareness now carries both a base color and a device-scoped color, so multiple installs for the
 same visible name render as separate, consistently colored cursors/selections/badges without requiring a
 real account system. Mention autocomplete groups live same-name installs into one visible person row and
 fans notifications out to each live uid behind that name.
-**Remaining.** Account-grade identity semantics.
+**Remaining.** True account/login recovery semantics.
 **Verify.** Server auth/share-state tests and real-server e2e cover role/owner/invite separation, expiry,
-revoked-owner rejection, live invite revocation, and signed invite identity binding.
+revoked-owner rejection, live invite revocation, signed invite identity binding, and bounded multi-device
+invite use.
 
 ### 3.3 — Memory-pressure room eviction + process tuning (L)
 **Status.** `closeConn` now uses a per-connection room back-reference instead of scanning every active room,
@@ -363,6 +367,8 @@ a shared relay (Redis/NATS) for cross-instance fan-out. Unlocks horizontal scale
 ### 3.5 — Per-recipient revocable invites + expiring codes (implemented)
 **Status.** Invite codes include role, epoch, invite id, and optional expiry in the HMAC. The server stores
 invite state, rejects expired/revoked invites, and can revoke one invite without epoch-bumping everyone.
+Invites default to one signed install, with an owner-selected `maxDevices` limit for same-recipient
+multi-device use.
 A persisted audit log of joins/revokes/security rejections also exists.
 
 ---

@@ -285,7 +285,7 @@
 .collab-history-row.selected { background: var(--background-modifier-hover); }
 .collab-history-when { font-weight: 600; }
 .collab-history-author { color: var(--text-muted); }
-.collab-history-actions { display: flex; gap: 8px; margin-top: 4px; }
+.collab-history-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 .collab-history-deleted { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--background-modifier-border); }
 .collab-history-subtitle { font-weight: 600; font-size: 0.85em; color: var(--text-muted); margin-bottom: 4px; }
 .collab-history-deleted .collab-history-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: default; }
@@ -325,4 +325,64 @@
   min-width: 0;
   padding: 1px 6px;
   overflow-wrap: anywhere;
+}
+.collab-history-side-diff {
+  margin-top: 6px;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary-alt);
+  font-family: var(--font-monospace);
+  font-size: 0.74em;
+}
+.collab-history-side-head,
+.collab-history-side-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.collab-history-side-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-family: var(--font-interface);
+  font-size: 0.95em;
+  font-weight: 600;
+}
+.collab-history-side-title,
+.collab-history-side-cell {
+  min-width: 0;
+  border-right: 1px solid var(--background-modifier-border);
+}
+.collab-history-side-title:last-child,
+.collab-history-side-cell:last-child { border-right: 0; }
+.collab-history-side-title { padding: 3px 6px; }
+.collab-history-side-cell {
+  display: grid;
+  grid-template-columns: 3.2em minmax(0, 1fr);
+  min-height: 1.45em;
+  white-space: pre-wrap;
+}
+.collab-history-side-line.add .new { background: rgba(46, 160, 67, 0.16); }
+.collab-history-side-line.remove .old { background: rgba(248, 81, 73, 0.16); }
+.collab-history-side-num {
+  user-select: none;
+  color: var(--text-faint);
+  text-align: right;
+  padding: 1px 6px 1px 2px;
+  border-right: 1px solid var(--background-modifier-border);
+}
+.collab-history-side-text {
+  min-width: 0;
+  padding: 1px 6px;
+  overflow-wrap: anywhere;
+}
+.collab-history-side-omitted {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  padding: 2px 6px;
+  text-align: center;
 }

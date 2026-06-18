@@ -42,7 +42,7 @@ dirty-room global save sweep instead of one interval per active room.
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
 (ops, not code) · account-grade identity/key rotation · HA/process tuning · object-store polish ·
-side-by-side diff polish · human device-matrix test.
+human device-matrix test.
 
 ---
 
@@ -340,11 +340,13 @@ recovery, dry-run by default through `/admin/blob-gc`, and optionally run on an 
 **Remaining.** Object-store offload for very large vaults, richer conflict UI for same binary changed on
 two devices, and human mobile testing with real images/PDFs.
 
-### 4.2 — Inline / side-by-side version diff (M)
+### 4.2 — Inline / side-by-side version diff (implemented)
 **Status.** History preview is no longer only a raw 4000-char dump: the sidebar can compare a saved
-version with the current local note, render an inline line diff, and restore either the whole version or
-one selected change hunk. Hunk restore refuses to apply if the note changed since the diff loaded.
-**Remaining.** Richer side-by-side editor view.
+version with the current local note, render inline or side-by-side line diffs, and restore either the
+whole version or one selected change hunk. Hunk restore refuses to apply if the note changed since the
+diff loaded.
+**Remaining.** A full editor-grade compare view would still be nicer for very large files, but the main
+diff workflow is covered in the sidebar.
 
 ### 4.3 — @mention autocomplete + working deep-link (M)
 CM6 `EditorSuggest` from the share roster; the push's tap opens the file. Today mentions need exact

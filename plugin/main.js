@@ -14853,7 +14853,17 @@ var HistoryView = class extends import_obsidian9.ItemView {
             new import_obsidian9.Notice("Couldn't load this version.");
             return;
           }
-          this.showDiff(root, v, content);
+          this.showDiff(root, v, content, "inline");
+        };
+        const sideDiff = actions.createEl("button", { text: "Side by side", cls: "collab-comment-btn" });
+        sideDiff.onclick = async (e) => {
+          e.stopPropagation();
+          const content = await this.ctx.load(v.hash);
+          if (content == null) {
+            new import_obsidian9.Notice("Couldn't load this version.");
+            return;
+          }
+          this.showDiff(root, v, content, "side");
         };
         const restore = actions.createEl("button", { cls: "collab-comment-btn" });
         (0, import_obsidian9.setIcon)(restore, "rotate-ccw");
@@ -14906,7 +14916,7 @@ var HistoryView = class extends import_obsidian9.ItemView {
     box.createEl("div", { text: `Preview \u2014 ${relTime(v.date)}`, cls: "collab-history-when" });
     box.createEl("pre", { text: content.slice(0, 4e3) + (content.length > 4e3 ? "\n\u2026" : "") });
   }
-  showDiff(root, v, savedContent) {
+  showDiff(root, v, savedContent, mode) {
     var _a2, _b2;
     const existing = root.querySelector(".collab-history-output");
     existing == null ? void 0 : existing.remove();
@@ -14914,7 +14924,8 @@ var HistoryView = class extends import_obsidian9.ItemView {
     const diff = buildInlineDiff(savedContent, current, { contextLines: 3 });
     const hunks = buildRestoreHunks(savedContent, current);
     const box = root.createDiv({ cls: "collab-history-preview collab-history-output" });
-    const title = `Diff \u2014 ${relTime(v.date)} to current (+${diff.added}/-${diff.removed})`;
+    const label = mode === "side" ? "Side-by-side diff" : "Diff";
+    const title = `${label} \u2014 ${relTime(v.date)} to current (+${diff.added}/-${diff.removed})`;
     box.createEl("div", { text: title, cls: "collab-history-when" });
     if (diff.added === 0 && diff.removed === 0) {
       box.createEl("p", { text: "No differences from the current note.", cls: "collab-comments-empty" });
@@ -14924,8 +14935,12 @@ var HistoryView = class extends import_obsidian9.ItemView {
     if (diff.truncated) {
       box.createEl("p", { text: "Large diff truncated for display.", cls: "collab-comments-empty" });
     }
-    const table = box.createDiv({ cls: "collab-history-diff" });
-    for (const row of diff.rows) this.renderDiffRow(table, row);
+    if (mode === "side") {
+      this.renderSideBySideDiff(box, diff.rows);
+    } else {
+      const table = box.createDiv({ cls: "collab-history-diff" });
+      for (const row of diff.rows) this.renderDiffRow(table, row);
+    }
   }
   renderHunkActions(box, baselineCurrent, hunks) {
     if (!this.ctx || hunks.length === 0) return;
@@ -14960,6 +14975,39 @@ var HistoryView = class extends import_obsidian9.ItemView {
     el.createSpan({ text: row.newLine ? String(row.newLine) : "", cls: "collab-history-diff-num" });
     const sign = row.kind === "add" ? "+ " : row.kind === "remove" ? "- " : "  ";
     el.createSpan({ text: sign + ((_b2 = row.text) != null ? _b2 : ""), cls: "collab-history-diff-text" });
+  }
+  renderSideBySideDiff(box, rows2) {
+    var _a2, _b2, _c, _d, _e;
+    const table = box.createDiv({ cls: "collab-history-side-diff" });
+    const head = table.createDiv({ cls: "collab-history-side-head" });
+    head.createSpan({ text: "Saved version", cls: "collab-history-side-title" });
+    head.createSpan({ text: "Current note", cls: "collab-history-side-title" });
+    for (const row of rows2) {
+      if (row.kind === "omitted") {
+        const omitted = table.createDiv({ cls: "collab-history-side-omitted" });
+        omitted.createSpan({ text: `... ${(_a2 = row.count) != null ? _a2 : 0} unchanged line${row.count === 1 ? "" : "s"} ...` });
+        continue;
+      }
+      const line = table.createDiv({ cls: `collab-history-side-line ${row.kind}` });
+      const left = line.createDiv({ cls: "collab-history-side-cell old" });
+      const right = line.createDiv({ cls: "collab-history-side-cell new" });
+      if (row.kind === "remove") {
+        left.createSpan({ text: row.oldLine ? String(row.oldLine) : "", cls: "collab-history-side-num" });
+        left.createSpan({ text: (_b2 = row.text) != null ? _b2 : "", cls: "collab-history-side-text" });
+        right.createSpan({ text: "", cls: "collab-history-side-num" });
+        right.createSpan({ text: "", cls: "collab-history-side-text" });
+      } else if (row.kind === "add") {
+        left.createSpan({ text: "", cls: "collab-history-side-num" });
+        left.createSpan({ text: "", cls: "collab-history-side-text" });
+        right.createSpan({ text: row.newLine ? String(row.newLine) : "", cls: "collab-history-side-num" });
+        right.createSpan({ text: (_c = row.text) != null ? _c : "", cls: "collab-history-side-text" });
+      } else {
+        left.createSpan({ text: row.oldLine ? String(row.oldLine) : "", cls: "collab-history-side-num" });
+        left.createSpan({ text: (_d = row.text) != null ? _d : "", cls: "collab-history-side-text" });
+        right.createSpan({ text: row.newLine ? String(row.newLine) : "", cls: "collab-history-side-num" });
+        right.createSpan({ text: (_e = row.text) != null ? _e : "", cls: "collab-history-side-text" });
+      }
+    }
   }
 };
 function relTime(iso) {

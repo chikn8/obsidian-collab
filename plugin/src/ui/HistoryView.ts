@@ -95,7 +95,14 @@ export class HistoryView extends ItemView {
           e.stopPropagation();
           const content = await this.ctx!.load(v.hash);
           if (content == null) { new Notice("Couldn't load this version."); return; }
-          this.showDiff(root, v, content);
+          this.showDiff(root, v, content, "inline");
+        };
+        const sideDiff = actions.createEl("button", { text: "Side by side", cls: "collab-comment-btn" });
+        sideDiff.onclick = async (e) => {
+          e.stopPropagation();
+          const content = await this.ctx!.load(v.hash);
+          if (content == null) { new Notice("Couldn't load this version."); return; }
+          this.showDiff(root, v, content, "side");
         };
         const restore = actions.createEl("button", { cls: "collab-comment-btn" });
         setIcon(restore, "rotate-ccw"); restore.appendText(" Restore");
@@ -148,14 +155,15 @@ export class HistoryView extends ItemView {
     box.createEl("pre", { text: content.slice(0, 4000) + (content.length > 4000 ? "\n…" : "") });
   }
 
-  private showDiff(root: HTMLElement, v: Version, savedContent: string): void {
+  private showDiff(root: HTMLElement, v: Version, savedContent: string, mode: "inline" | "side"): void {
     const existing = root.querySelector(".collab-history-output");
     existing?.remove();
     const current = this.ctx?.currentText() ?? "";
     const diff = buildInlineDiff(savedContent, current, { contextLines: 3 });
     const hunks = buildRestoreHunks(savedContent, current);
     const box = root.createDiv({ cls: "collab-history-preview collab-history-output" });
-    const title = `Diff — ${relTime(v.date)} to current (+${diff.added}/-${diff.removed})`;
+    const label = mode === "side" ? "Side-by-side diff" : "Diff";
+    const title = `${label} — ${relTime(v.date)} to current (+${diff.added}/-${diff.removed})`;
     box.createEl("div", { text: title, cls: "collab-history-when" });
 
     if (diff.added === 0 && diff.removed === 0) {
@@ -169,8 +177,12 @@ export class HistoryView extends ItemView {
       box.createEl("p", { text: "Large diff truncated for display.", cls: "collab-comments-empty" });
     }
 
-    const table = box.createDiv({ cls: "collab-history-diff" });
-    for (const row of diff.rows) this.renderDiffRow(table, row);
+    if (mode === "side") {
+      this.renderSideBySideDiff(box, diff.rows);
+    } else {
+      const table = box.createDiv({ cls: "collab-history-diff" });
+      for (const row of diff.rows) this.renderDiffRow(table, row);
+    }
   }
 
   private renderHunkActions(box: HTMLElement, baselineCurrent: string, hunks: RestoreHunk[]): void {
@@ -207,6 +219,42 @@ export class HistoryView extends ItemView {
     el.createSpan({ text: row.newLine ? String(row.newLine) : "", cls: "collab-history-diff-num" });
     const sign = row.kind === "add" ? "+ " : row.kind === "remove" ? "- " : "  ";
     el.createSpan({ text: sign + (row.text ?? ""), cls: "collab-history-diff-text" });
+  }
+
+  private renderSideBySideDiff(box: HTMLElement, rows: DiffRow[]): void {
+    const table = box.createDiv({ cls: "collab-history-side-diff" });
+    const head = table.createDiv({ cls: "collab-history-side-head" });
+    head.createSpan({ text: "Saved version", cls: "collab-history-side-title" });
+    head.createSpan({ text: "Current note", cls: "collab-history-side-title" });
+
+    for (const row of rows) {
+      if (row.kind === "omitted") {
+        const omitted = table.createDiv({ cls: "collab-history-side-omitted" });
+        omitted.createSpan({ text: `... ${row.count ?? 0} unchanged line${row.count === 1 ? "" : "s"} ...` });
+        continue;
+      }
+
+      const line = table.createDiv({ cls: `collab-history-side-line ${row.kind}` });
+      const left = line.createDiv({ cls: "collab-history-side-cell old" });
+      const right = line.createDiv({ cls: "collab-history-side-cell new" });
+
+      if (row.kind === "remove") {
+        left.createSpan({ text: row.oldLine ? String(row.oldLine) : "", cls: "collab-history-side-num" });
+        left.createSpan({ text: row.text ?? "", cls: "collab-history-side-text" });
+        right.createSpan({ text: "", cls: "collab-history-side-num" });
+        right.createSpan({ text: "", cls: "collab-history-side-text" });
+      } else if (row.kind === "add") {
+        left.createSpan({ text: "", cls: "collab-history-side-num" });
+        left.createSpan({ text: "", cls: "collab-history-side-text" });
+        right.createSpan({ text: row.newLine ? String(row.newLine) : "", cls: "collab-history-side-num" });
+        right.createSpan({ text: row.text ?? "", cls: "collab-history-side-text" });
+      } else {
+        left.createSpan({ text: row.oldLine ? String(row.oldLine) : "", cls: "collab-history-side-num" });
+        left.createSpan({ text: row.text ?? "", cls: "collab-history-side-text" });
+        right.createSpan({ text: row.newLine ? String(row.newLine) : "", cls: "collab-history-side-num" });
+        right.createSpan({ text: row.text ?? "", cls: "collab-history-side-text" });
+      }
+    }
   }
 }
 

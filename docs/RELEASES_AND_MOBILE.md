@@ -73,8 +73,10 @@ Expected to work on mobile:
 
 Known mobile differences:
 
-- File-explorer and tab-header badges are desktop-only right now. Obsidian mobile uses a different
-  navigation DOM, so `SyncManager.renderPresence()` skips those badges on `Platform.isMobile`.
+- File-explorer and tab-header badges are opportunistic on mobile. The renderer now runs on every
+  platform, but Obsidian mobile uses different navigation drawers across app versions; if compatible
+  `.nav-file-title` / `.workspace-tab-header` anchors are not present, the in-editor facepile remains the
+  reliable presence surface.
 - Background execution is not guaranteed. If the mobile app is suspended, live WebSocket presence and
   sync resume when Obsidian is foregrounded again.
 - OS-level push notifications are not provided by Obsidian plugins. The existing ntfy path is external.

@@ -344,7 +344,6 @@ export default class CollabPlugin extends Plugin {
 
   private startPresenceDomObserver(): void {
     if (
-      Platform.isMobile ||
       typeof document === "undefined" ||
       typeof HTMLElement === "undefined" ||
       typeof MutationObserver === "undefined" ||

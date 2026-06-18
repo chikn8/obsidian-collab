@@ -13,7 +13,8 @@ Each **share** (one local folder ↔ one namespaced room set) is synced by three
    doc and its disk round-trip.
 2. **A per-share manifest** — a single `Y.Map("files")` keyed by relative path, describing the file
    tree. `SyncManager` (`plugin/src/collab/SyncManager.ts`) owns the manifest doc, all the file
-   providers for the share, and file-explorer presence. The plugin runs one `SyncManager` per share.
+   providers for the share, and file-explorer/tab presence where Obsidian exposes compatible DOM anchors.
+   The plugin runs one `SyncManager` per share.
 3. **Content-addressed blobs** — binary attachments are uploaded to `/blob` by SHA-256 hash and referenced
    from manifest entries (`kind:"binary"`, `blobHash`, `blobSize`). They are last-writer-wins, not CRDT
    merged.

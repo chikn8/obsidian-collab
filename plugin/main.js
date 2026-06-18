@@ -13128,14 +13128,13 @@ var SyncManager = class {
    * who have a file in THIS share open. Diffed (skips when nothing changed) and
    * called on a debounce, so awareness churn doesn't thrash the DOM.
    *
-   * Desktop-only: mobile uses a different file-explorer (WorkspaceMobileDrawer)
-   * without the `.nav-file-title[data-path]` nodes, so we skip the explorer
-   * avatars there entirely. The in-editor CM6 facepile (PresenceController)
-   * works on every platform, so presence is never lost — just rendered elsewhere.
+   * Opportunistic outside the editor: desktop has stable enough file/tree tab
+   * anchors, while mobile may expose different drawers across app versions. If
+   * the expected anchors are absent, this logs missing targets and the in-editor
+   * CM6 facepile still carries presence on every platform.
    */
   renderPresence() {
     if (!this.manifestProvider) return;
-    if (import_obsidian4.Platform.isMobile) return;
     try {
       this.renderPresenceDesktop();
     } catch (e) {
@@ -15966,7 +15965,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     }
   }
   startPresenceDomObserver() {
-    if (import_obsidian11.Platform.isMobile || typeof document === "undefined" || typeof HTMLElement === "undefined" || typeof MutationObserver === "undefined" || !document.body) {
+    if (typeof document === "undefined" || typeof HTMLElement === "undefined" || typeof MutationObserver === "undefined" || !document.body) {
       return;
     }
     const relevant = ".workspace-tab-header, .nav-file-title";

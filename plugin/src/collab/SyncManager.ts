@@ -1,4 +1,4 @@
-import { App, TFile, TFolder, Notice, Platform, debounce } from "obsidian";
+import { App, TFile, TFolder, Notice, debounce } from "obsidian";
 import * as Y from "yjs";
 import { createProvider } from "./YjsProvider";
 import { FileProvider } from "./FileProvider";
@@ -1270,14 +1270,13 @@ export class SyncManager {
    * who have a file in THIS share open. Diffed (skips when nothing changed) and
    * called on a debounce, so awareness churn doesn't thrash the DOM.
    *
-   * Desktop-only: mobile uses a different file-explorer (WorkspaceMobileDrawer)
-   * without the `.nav-file-title[data-path]` nodes, so we skip the explorer
-   * avatars there entirely. The in-editor CM6 facepile (PresenceController)
-   * works on every platform, so presence is never lost — just rendered elsewhere.
+   * Opportunistic outside the editor: desktop has stable enough file/tree tab
+   * anchors, while mobile may expose different drawers across app versions. If
+   * the expected anchors are absent, this logs missing targets and the in-editor
+   * CM6 facepile still carries presence on every platform.
    */
   private renderPresence(): void {
     if (!this.manifestProvider) return;
-    if (Platform.isMobile) return; // no file-explorer DOM to attach to
     try {
       this.renderPresenceDesktop();
     } catch (e) {

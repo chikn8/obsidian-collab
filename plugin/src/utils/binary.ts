@@ -6,6 +6,7 @@ export const SYNCABLE_BINARY_EXTENSIONS = [
 ] as const;
 
 export const MAX_SYNCABLE_BINARY_BYTES = 25 * 1024 * 1024;
+export type BinaryRemoteDecision = "apply-remote" | "keep-local" | "conflict-copy";
 
 export function binaryExtension(path: string): string {
   return path.split("/").pop()?.split(".").pop()?.toLowerCase() || "";
@@ -30,4 +31,12 @@ export function buffersEqual(a: ArrayBuffer, b: ArrayBuffer): boolean {
 
 export function isLocalBinaryNewer(localMtime: number, remoteUpdatedAt: number, skewMs = 2000): boolean {
   return Number.isFinite(localMtime) && Number.isFinite(remoteUpdatedAt) && localMtime > remoteUpdatedAt + skewMs;
+}
+
+export function binaryRemoteDecision(localMtime: number, remoteUpdatedAt: number, skewMs = 2000): BinaryRemoteDecision {
+  if (!Number.isFinite(localMtime) || !Number.isFinite(remoteUpdatedAt)) return "apply-remote";
+  const delta = localMtime - remoteUpdatedAt;
+  if (delta > skewMs) return "keep-local";
+  if (Math.abs(delta) <= skewMs) return "conflict-copy";
+  return "apply-remote";
 }

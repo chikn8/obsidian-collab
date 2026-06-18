@@ -16,8 +16,9 @@ Each **share** (one local folder ↔ one namespaced room set) is synced by three
    providers for the share, and file-explorer/tab presence where Obsidian exposes compatible DOM anchors.
    The plugin runs one `SyncManager` per share.
 3. **Content-addressed blobs** — binary attachments are uploaded to `/blob` by SHA-256 hash and referenced
-   from manifest entries (`kind:"binary"`, `blobHash`, `blobSize`). They are last-writer-wins, not CRDT
-   merged.
+   from manifest entries (`kind:"binary"`, `blobHash`, `blobSize`). They are not CRDT merged: clearly newer
+   local files are re-published, clearly older files accept the remote blob, and skew-window collisions keep
+   a visible `(... binary conflict ...).ext` sibling before the original path is updated.
 
 The **active editor** additionally binds to its file's `Y.Text` via `yCollab` (`EditorBinding.ts`),
 which is what makes typing feel instant and renders remote cursors/selections natively. Background

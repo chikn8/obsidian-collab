@@ -361,10 +361,12 @@ blob validation, editor upload, viewer download, viewer upload rejection, filesy
 S3/R2-compatible storage. Orphan blob GC can scan persisted manifests, keep referenced tombstone blobs for
 recovery, dry-run by default through `/admin/blob-gc`, and optionally run on an interval against the
 configured blob store.
-Live binary apply now keeps and republishes a newer local attachment instead of overwriting it with an
-older remote blob.
-**Remaining.** Richer conflict UI/history for same binary changed on two devices, and human mobile testing
-with real images/PDFs.
+Live binary apply now keeps and republishes a clearly newer local attachment instead of overwriting it with
+an older remote blob. Ambiguous same-time updates inside the skew window create a visible
+`(... binary conflict ...).ext` sibling before the original path is updated to the remote blob, which gives
+attachment collisions the same recovery shape as delete-vs-edit conflicts.
+**Remaining.** Editor-grade conflict review/history for attachments, and human mobile testing with real
+images/PDFs.
 
 ### 4.2 — Inline / side-by-side version diff (implemented)
 **Status.** History preview is no longer only a raw 4000-char dump: the sidebar can compare a saved

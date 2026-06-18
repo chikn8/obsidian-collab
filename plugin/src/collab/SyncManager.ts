@@ -6,7 +6,7 @@ import { EchoGuard, beginRemoteApply, endRemoteApply, isApplyingRemote } from ".
 import { manifestRoom, fileRoom, shareToken, shareAuthParams, httpBase } from "../utils/roomName";
 import { sendFrame, MSG_NOTIFY, MSG_TOPIC_REGISTER } from "../utils/frames";
 import { getBinary, putBinary } from "../utils/http";
-import { buffersEqual, isLocalBinaryNewer, isSyncableBinaryPath, MAX_SYNCABLE_BINARY_BYTES, sha256Hex } from "../utils/binary";
+import { binaryRemoteDecision, buffersEqual, isSyncableBinaryPath, MAX_SYNCABLE_BINARY_BYTES, sha256Hex } from "../utils/binary";
 import { log, trace } from "../utils/log";
 import { rewriteObsidianLinks } from "../utils/wikiLinks";
 import {
@@ -342,8 +342,19 @@ export class SyncManager {
           const info = file instanceof TFile ? await this.readBinaryInfo(file) : null;
           if (info && (info.hash !== entry.blobHash || info.size !== entry.blobSize)) {
             const localMtime = file instanceof TFile ? file.stat.mtime : 0;
-            if (isLocalBinaryNewer(localMtime, entry.blobUpdatedAt || entry.lastModified || 0)) {
+            const remoteUpdatedAt = entry.blobUpdatedAt || entry.lastModified || 0;
+            const decision = binaryRemoteDecision(localMtime, remoteUpdatedAt);
+            if (decision === "keep-local") {
               await this.publishBinaryFile(relPath, filePath, entry, "startup-offline");
+            } else if (decision === "conflict-copy" && file instanceof TFile) {
+              trace("blob", "startup-binary-conflict-deferred", {
+                shareId: this.histShareId,
+                relPath,
+                localHash: info.hash,
+                remoteHash: entry.blobHash,
+                localMtime,
+                remoteUpdatedAt,
+              });
             }
           }
         }
@@ -358,7 +369,7 @@ export class SyncManager {
       if (!entry.exists) continue;
       const fullPath = this.toFullPath(safeRel);
       if (this.entryKind(safeRel, entry) === "binary") {
-        await this.applyRemoteBinary(safeRel, entry);
+        await this.applyRemoteBinary(safeRel, entry, "startup");
         continue;
       }
       const file = this.app.vault.getAbstractFileByPath(fullPath);
@@ -620,6 +631,51 @@ export class SyncManager {
   }
 
   private nextDeleteConflictRelPath(safeRel: string): string | null {
+    return this.nextConflictRelPath(safeRel, "delete conflict", "delete conflict copy");
+  }
+
+  private async createBinaryConflictCopy(
+    safeRel: string,
+    file: TFile,
+    data: ArrayBuffer,
+    remoteEntry: ManifestEntry | undefined,
+    reason: "startup" | "live"
+  ): Promise<string | null> {
+    const conflictRel = this.nextConflictRelPath(safeRel, "binary conflict", "binary conflict copy");
+    if (!conflictRel) return null;
+
+    const conflictFullPath = this.toFullPath(conflictRel);
+    const dir = conflictFullPath.substring(0, conflictFullPath.lastIndexOf("/"));
+    if (dir) await this.ensureFolder(dir);
+
+    try {
+      await this.app.vault.createBinary(conflictFullPath, data.slice(0));
+      await this.publishBinaryFile(conflictRel, conflictFullPath, undefined, `binary-conflict-${reason}`);
+      trace("blob", "binary-conflict-copy", {
+        shareId: this.histShareId,
+        relPath: safeRel,
+        conflictRel,
+        localMtime: file.stat.mtime,
+        remoteUpdatedAt: remoteEntry?.blobUpdatedAt || remoteEntry?.lastModified || 0,
+        remoteHash: remoteEntry?.blobHash,
+        reason,
+      });
+      log("blob", "created binary conflict copy", safeRel, "->", conflictRel);
+      return conflictRel;
+    } catch (e) {
+      trace("blob", "binary-conflict-copy-failed", {
+        shareId: this.histShareId,
+        relPath: safeRel,
+        conflictRel,
+        error: e,
+        reason,
+      });
+      log("blob", "binary conflict copy failed", safeRel, e);
+      return null;
+    }
+  }
+
+  private nextConflictRelPath(safeRel: string, label: string, context: string): string | null {
     const slash = safeRel.lastIndexOf("/");
     const dir = slash >= 0 ? safeRel.slice(0, slash + 1) : "";
     const name = slash >= 0 ? safeRel.slice(slash + 1) : safeRel;
@@ -630,8 +686,8 @@ export class SyncManager {
 
     for (let i = 0; i < 100; i++) {
       const suffix = i === 0 ? "" : ` ${i + 1}`;
-      const candidate = `${dir}${base} (delete conflict ${stamp}${suffix})${ext}`;
-      const safeCandidate = this.safeManifestRelPath(candidate, "delete conflict copy");
+      const candidate = `${dir}${base} (${label} ${stamp}${suffix})${ext}`;
+      const safeCandidate = this.safeManifestRelPath(candidate, context);
       if (!safeCandidate) continue;
       if (this.manifestMap?.has(safeCandidate)) continue;
       if (this.app.vault.getAbstractFileByPath(this.toFullPath(safeCandidate))) continue;
@@ -640,6 +696,7 @@ export class SyncManager {
     trace("manifest", "tombstone-conflict-path-exhausted", {
       shareId: this.histShareId,
       relPath: safeRel,
+      label,
     });
     return null;
   }
@@ -769,7 +826,7 @@ export class SyncManager {
     trace("blob", "published", { shareId: this.histShareId, relPath: safeRel, hash: info.hash, size: info.size, reason });
   }
 
-  private async applyRemoteBinary(relPath: string, entry: ManifestEntry): Promise<void> {
+  private async applyRemoteBinary(relPath: string, entry: ManifestEntry, reason: "startup" | "live" = "live"): Promise<void> {
     const safeRel = this.safeManifestRelPath(relPath, "remote binary");
     if (!safeRel || !entry.blobHash) return;
     const fullPath = this.toFullPath(safeRel);
@@ -777,18 +834,38 @@ export class SyncManager {
     if (existing instanceof TFile) {
       const local = await this.readBinaryInfo(existing);
       if (local?.hash === entry.blobHash && local.size === entry.blobSize) return;
-      if (local && this.role === "editor" && isLocalBinaryNewer(existing.stat.mtime, entry.blobUpdatedAt || entry.lastModified || 0)) {
-        trace("blob", "kept-local-newer", {
-          shareId: this.histShareId,
-          relPath: safeRel,
-          localHash: local.hash,
-          remoteHash: entry.blobHash,
-          localMtime: existing.stat.mtime,
-          remoteUpdatedAt: entry.blobUpdatedAt || entry.lastModified || 0,
-        });
-        new Notice(`Kept newer local attachment "${existing.name}" and re-published it.`);
-        await this.publishBinaryFile(safeRel, fullPath, entry, "live-local-newer");
-        return;
+      if (local && this.role === "editor") {
+        const remoteUpdatedAt = entry.blobUpdatedAt || entry.lastModified || 0;
+        const decision = binaryRemoteDecision(existing.stat.mtime, remoteUpdatedAt);
+        if (decision === "keep-local") {
+          trace("blob", "kept-local-newer", {
+            shareId: this.histShareId,
+            relPath: safeRel,
+            localHash: local.hash,
+            remoteHash: entry.blobHash,
+            localMtime: existing.stat.mtime,
+            remoteUpdatedAt,
+          });
+          new Notice(`Kept newer local attachment "${existing.name}" and re-published it.`);
+          await this.publishBinaryFile(safeRel, fullPath, entry, "live-local-newer");
+          return;
+        }
+        if (decision === "conflict-copy") {
+          const conflictRel = await this.createBinaryConflictCopy(safeRel, existing, local.data, entry, reason);
+          trace("blob", "binary-conflict-copy-before-apply", {
+            shareId: this.histShareId,
+            relPath: safeRel,
+            conflictRel,
+            localHash: local.hash,
+            remoteHash: entry.blobHash,
+            localMtime: existing.stat.mtime,
+            remoteUpdatedAt,
+            reason,
+          });
+          if (conflictRel) {
+            new Notice(`Attachment "${existing.name}" changed near a remote update — kept a conflict copy at "${conflictRel}".`);
+          }
+        }
       }
     }
 

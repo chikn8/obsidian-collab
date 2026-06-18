@@ -1,5 +1,6 @@
 import { webcrypto } from "node:crypto";
 import {
+  binaryRemoteDecision,
   buffersEqual,
   isLocalBinaryNewer,
   isSyncableBinaryPath,
@@ -27,6 +28,10 @@ check("compares equal buffers", buffersEqual(data, data.slice(0)));
 check("compares different buffers", !buffersEqual(data, new TextEncoder().encode("other").buffer));
 check("detects local binary newer outside skew", isLocalBinaryNewer(5001, 3000));
 check("does not treat skew-window binary as newer", !isLocalBinaryNewer(4999, 3000));
+check("binary decision keeps local outside skew", binaryRemoteDecision(5001, 3000) === "keep-local");
+check("binary decision conflict-copies inside skew after remote", binaryRemoteDecision(4999, 3000) === "conflict-copy");
+check("binary decision conflict-copies inside skew before remote", binaryRemoteDecision(2500, 3000) === "conflict-copy");
+check("binary decision applies remote when local is clearly older", binaryRemoteDecision(999, 3000) === "apply-remote");
 
 console.log("");
 if (failures > 0) { console.error(`FAILED — ${failures} assertion(s) failed`); process.exit(1); }

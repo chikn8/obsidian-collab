@@ -11639,8 +11639,12 @@ function buffersEqual(a, b) {
   for (let i = 0; i < av.length; i++) if (av[i] !== bv[i]) return false;
   return true;
 }
-function isLocalBinaryNewer(localMtime, remoteUpdatedAt, skewMs = 2e3) {
-  return Number.isFinite(localMtime) && Number.isFinite(remoteUpdatedAt) && localMtime > remoteUpdatedAt + skewMs;
+function binaryRemoteDecision(localMtime, remoteUpdatedAt, skewMs = 2e3) {
+  if (!Number.isFinite(localMtime) || !Number.isFinite(remoteUpdatedAt)) return "apply-remote";
+  const delta = localMtime - remoteUpdatedAt;
+  if (delta > skewMs) return "keep-local";
+  if (Math.abs(delta) <= skewMs) return "conflict-copy";
+  return "apply-remote";
 }
 
 // src/utils/wikiLinks.ts
@@ -12326,8 +12330,19 @@ var SyncManager = class {
           const info = file instanceof import_obsidian4.TFile ? await this.readBinaryInfo(file) : null;
           if (info && (info.hash !== entry.blobHash || info.size !== entry.blobSize)) {
             const localMtime = file instanceof import_obsidian4.TFile ? file.stat.mtime : 0;
-            if (isLocalBinaryNewer(localMtime, entry.blobUpdatedAt || entry.lastModified || 0)) {
+            const remoteUpdatedAt = entry.blobUpdatedAt || entry.lastModified || 0;
+            const decision = binaryRemoteDecision(localMtime, remoteUpdatedAt);
+            if (decision === "keep-local") {
               await this.publishBinaryFile(relPath, filePath, entry, "startup-offline");
+            } else if (decision === "conflict-copy" && file instanceof import_obsidian4.TFile) {
+              trace("blob", "startup-binary-conflict-deferred", {
+                shareId: this.histShareId,
+                relPath,
+                localHash: info.hash,
+                remoteHash: entry.blobHash,
+                localMtime,
+                remoteUpdatedAt
+              });
             }
           }
         }
@@ -12340,7 +12355,7 @@ var SyncManager = class {
       if (!entry.exists) continue;
       const fullPath = this.toFullPath(safeRel);
       if (this.entryKind(safeRel, entry) === "binary") {
-        await this.applyRemoteBinary(safeRel, entry);
+        await this.applyRemoteBinary(safeRel, entry, "startup");
         continue;
       }
       const file = this.app.vault.getAbstractFileByPath(fullPath);
@@ -12564,6 +12579,41 @@ var SyncManager = class {
     }
   }
   nextDeleteConflictRelPath(safeRel) {
+    return this.nextConflictRelPath(safeRel, "delete conflict", "delete conflict copy");
+  }
+  async createBinaryConflictCopy(safeRel, file, data, remoteEntry, reason) {
+    const conflictRel = this.nextConflictRelPath(safeRel, "binary conflict", "binary conflict copy");
+    if (!conflictRel) return null;
+    const conflictFullPath = this.toFullPath(conflictRel);
+    const dir = conflictFullPath.substring(0, conflictFullPath.lastIndexOf("/"));
+    if (dir) await this.ensureFolder(dir);
+    try {
+      await this.app.vault.createBinary(conflictFullPath, data.slice(0));
+      await this.publishBinaryFile(conflictRel, conflictFullPath, void 0, `binary-conflict-${reason}`);
+      trace("blob", "binary-conflict-copy", {
+        shareId: this.histShareId,
+        relPath: safeRel,
+        conflictRel,
+        localMtime: file.stat.mtime,
+        remoteUpdatedAt: (remoteEntry == null ? void 0 : remoteEntry.blobUpdatedAt) || (remoteEntry == null ? void 0 : remoteEntry.lastModified) || 0,
+        remoteHash: remoteEntry == null ? void 0 : remoteEntry.blobHash,
+        reason
+      });
+      log("blob", "created binary conflict copy", safeRel, "->", conflictRel);
+      return conflictRel;
+    } catch (e) {
+      trace("blob", "binary-conflict-copy-failed", {
+        shareId: this.histShareId,
+        relPath: safeRel,
+        conflictRel,
+        error: e,
+        reason
+      });
+      log("blob", "binary conflict copy failed", safeRel, e);
+      return null;
+    }
+  }
+  nextConflictRelPath(safeRel, label, context) {
     var _a2;
     const slash = safeRel.lastIndexOf("/");
     const dir = slash >= 0 ? safeRel.slice(0, slash + 1) : "";
@@ -12574,8 +12624,8 @@ var SyncManager = class {
     const stamp2 = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
     for (let i = 0; i < 100; i++) {
       const suffix = i === 0 ? "" : ` ${i + 1}`;
-      const candidate = `${dir}${base} (delete conflict ${stamp2}${suffix})${ext}`;
-      const safeCandidate = this.safeManifestRelPath(candidate, "delete conflict copy");
+      const candidate = `${dir}${base} (${label} ${stamp2}${suffix})${ext}`;
+      const safeCandidate = this.safeManifestRelPath(candidate, context);
       if (!safeCandidate) continue;
       if ((_a2 = this.manifestMap) == null ? void 0 : _a2.has(safeCandidate)) continue;
       if (this.app.vault.getAbstractFileByPath(this.toFullPath(safeCandidate))) continue;
@@ -12583,7 +12633,8 @@ var SyncManager = class {
     }
     trace("manifest", "tombstone-conflict-path-exhausted", {
       shareId: this.histShareId,
-      relPath: safeRel
+      relPath: safeRel,
+      label
     });
     return null;
   }
@@ -12699,7 +12750,7 @@ var SyncManager = class {
     }));
     trace("blob", "published", { shareId: this.histShareId, relPath: safeRel, hash: info.hash, size: info.size, reason });
   }
-  async applyRemoteBinary(relPath, entry) {
+  async applyRemoteBinary(relPath, entry, reason = "live") {
     const safeRel = this.safeManifestRelPath(relPath, "remote binary");
     if (!safeRel || !entry.blobHash) return;
     const fullPath = this.toFullPath(safeRel);
@@ -12707,18 +12758,38 @@ var SyncManager = class {
     if (existing instanceof import_obsidian4.TFile) {
       const local = await this.readBinaryInfo(existing);
       if ((local == null ? void 0 : local.hash) === entry.blobHash && local.size === entry.blobSize) return;
-      if (local && this.role === "editor" && isLocalBinaryNewer(existing.stat.mtime, entry.blobUpdatedAt || entry.lastModified || 0)) {
-        trace("blob", "kept-local-newer", {
-          shareId: this.histShareId,
-          relPath: safeRel,
-          localHash: local.hash,
-          remoteHash: entry.blobHash,
-          localMtime: existing.stat.mtime,
-          remoteUpdatedAt: entry.blobUpdatedAt || entry.lastModified || 0
-        });
-        new import_obsidian4.Notice(`Kept newer local attachment "${existing.name}" and re-published it.`);
-        await this.publishBinaryFile(safeRel, fullPath, entry, "live-local-newer");
-        return;
+      if (local && this.role === "editor") {
+        const remoteUpdatedAt = entry.blobUpdatedAt || entry.lastModified || 0;
+        const decision = binaryRemoteDecision(existing.stat.mtime, remoteUpdatedAt);
+        if (decision === "keep-local") {
+          trace("blob", "kept-local-newer", {
+            shareId: this.histShareId,
+            relPath: safeRel,
+            localHash: local.hash,
+            remoteHash: entry.blobHash,
+            localMtime: existing.stat.mtime,
+            remoteUpdatedAt
+          });
+          new import_obsidian4.Notice(`Kept newer local attachment "${existing.name}" and re-published it.`);
+          await this.publishBinaryFile(safeRel, fullPath, entry, "live-local-newer");
+          return;
+        }
+        if (decision === "conflict-copy") {
+          const conflictRel = await this.createBinaryConflictCopy(safeRel, existing, local.data, entry, reason);
+          trace("blob", "binary-conflict-copy-before-apply", {
+            shareId: this.histShareId,
+            relPath: safeRel,
+            conflictRel,
+            localHash: local.hash,
+            remoteHash: entry.blobHash,
+            localMtime: existing.stat.mtime,
+            remoteUpdatedAt,
+            reason
+          });
+          if (conflictRel) {
+            new import_obsidian4.Notice(`Attachment "${existing.name}" changed near a remote update \u2014 kept a conflict copy at "${conflictRel}".`);
+          }
+        }
       }
     }
     const url = `${httpBase(this.settings.serverUrl)}/blob?${this.blobQuery({

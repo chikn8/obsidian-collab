@@ -104,7 +104,9 @@ races. Your own devices are just "more clients on the share" — the plugin alre
   Namespaced shares tunnel these rooms over one multiplexed WebSocket per share; legacy shares keep the
   original one-room-per-socket transport.
 - **Binary attachments** (images, PDFs, audio/video) are uploaded as content-addressed blobs and referenced
-  from the manifest by SHA-256 hash. They are not merged like text; the newest manifest entry wins.
+  from the manifest by SHA-256 hash. They are not merged like text; clearly newer local attachments are
+  re-published, and same-time clock-skew cases create a visible sibling conflict copy before the original
+  path is updated to the remote blob.
 - **Per-share manifest** is a `Y.Map("files")` keyed by relative path, tracking the file tree as
   schema-v2 entries (`fileId`, `exists`, tombstone fields). `SyncManager` owns it and the per-file
   providers.

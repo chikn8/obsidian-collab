@@ -32,18 +32,19 @@ notify hardening (per-share registry, connection-derived sender, viewer gate, sa
 move/rename/delete handling · `stampEdit` moved to a separate `edits` map (no delete-clobber) ·
 createFileProvider in-flight reservation · comment-anchor quote-verify + re-match (no mis-highlight).
 **Tier 2**: real-`FileProvider` integration test (fake vault/IDB/WS via esbuild alias) wired into CI ·
-real-server WebSocket e2e for convergence, viewer write rejection, restart durability, and revocation.
+real-server WebSocket e2e for convergence, viewer write rejection, restart durability, and revocation ·
+mixed-version v1↔v2 manifest migration coverage.
 **Tier 3 foundation**: signed per-install identities bind invite links on first use; invite reuse from a
 different signed install is rejected before joining the room.
 **Tier 4 foundation**: binary attachments sync through content-addressed `/blob` uploads/downloads and
-manifest `kind:"binary"` entries.
+manifest `kind:"binary"` entries; attachment/delete conflict copies are stamped and reviewable from the
+history panel.
 **Scale foundation**: namespaced shares multiplex manifest + file Yjs rooms over one physical WebSocket
 per client/share; server e2e verifies two rooms over two mux sockets; server persistence uses one
 dirty-room global save sweep instead of one interval per active room.
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
-(ops, not code) · account-grade identity semantics · true HA storage/fan-out · richer binary conflict
-history · human device-matrix test.
+(ops, not code) · account-grade identity semantics · true HA storage/fan-out · human device-matrix test.
 
 ---
 
@@ -263,12 +264,13 @@ fake vault adapter; drive the **real** `FileProvider`/`SyncManager` through loop
 clients against the real relay. It asserts two-editor convergence, **viewer write must not persist**,
 restart durability, and revoked-epoch → 4003 close. CI runs it after the server build.
 
-### 2.3 — Mixed-version v1↔v2 manifest migration test (MEDIUM, M)
+### 2.3 — Mixed-version v1↔v2 manifest migration test (implemented)
 **Problem.** The highest-risk real-world window is cofounders upgrading at different times (old client writes
 entries without `fileId`; new client migrates). No test covers it.
-**Fix.** Headless test: old-shaped and new-shaped entries syncing both directions converge; migration is
-idempotent; old clients ignore unknown fields.
-**Verify.** Asserted convergence + no field loss across the version boundary.
+**Status.** Headless coverage now checks concurrent v1→v2 migration plus an old-shaped create arriving
+after a new-schema client has joined. It asserts migration idempotence, old/new convergence, and no loss of
+unknown v2 fields during old-client round trips.
+**Verify.** `plugin/test/manifest.test.mjs` covers the version boundary.
 
 ### 2.4 — Structured logging + cumulative metrics + alerting (implemented foundation; ops follow-ups remain)
 **Problem.** Server logs are `console.*` only; `/metrics` is in-memory (lost on restart, no series).
@@ -369,8 +371,10 @@ Live binary apply now keeps and republishes a clearly newer local attachment ins
 an older remote blob. Ambiguous same-time updates inside the skew window create a visible
 `(... binary conflict ...).ext` sibling before the original path is updated to the remote blob, which gives
 attachment collisions the same recovery shape as delete-vs-edit conflicts.
-**Remaining.** Editor-grade conflict review/history for attachments, and human mobile testing with real
-images/PDFs.
+**Status update.** Conflict copies now carry structured `conflict*` manifest metadata and the history panel
+lists them with Open actions, covering delete/edit and attachment skew cases.
+**Remaining.** Human mobile testing with real images/PDFs, and a richer binary diff/preview workflow if that
+becomes worth the complexity.
 
 ### 4.2 — Inline / side-by-side version diff (implemented)
 **Status.** History preview is no longer only a raw 4000-char dump: the sidebar can compare a saved

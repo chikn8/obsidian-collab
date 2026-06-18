@@ -89,7 +89,53 @@ console.log("Manifest fileId migration converges (concurrent v1→v2)");
   check("schema migration is additive (entry still exists)", c1.getMap("files").get("note.md").exists === true);
 }
 
-// ── 3. Delete is a retained tombstone, not a hard delete ──────────────────────
+// ── 3. Mixed-version old↔new manifest writes converge ────────────────────────
+console.log("Mixed-version manifest migration");
+{
+  const newClient = new Y.Doc();
+  const newFiles = newClient.getMap("files");
+  newFiles.set("new-client.md", {
+    exists: true,
+    lastModified: 10,
+    fileId: "id-new-client",
+    mutationId: "new-mutation",
+  });
+
+  const oldClient = new Y.Doc();
+  Y.applyUpdate(oldClient, Y.encodeStateAsUpdate(newClient));
+  check("old client round-trip preserves unknown v2 fields",
+    oldClient.getMap("files").get("new-client.md").fileId === "id-new-client");
+
+  // Simulate an old client creating a valid v1-shaped entry after it has joined.
+  oldClient.getMap("files").set("old-client.md", { exists: true, lastModified: 20, createdBy: "Old" });
+  Y.applyUpdate(newClient, Y.encodeStateAsUpdate(oldClient));
+
+  const migrateV2 = (doc, ids) => {
+    const files = doc.getMap("files");
+    doc.transact(() => {
+      files.forEach((entry, relPath) => {
+        if (entry && !entry.fileId) files.set(relPath, { ...entry, fileId: ids[relPath] });
+      });
+      doc.getMap("meta").set("schemaVersion", 2);
+    });
+  };
+  migrateV2(newClient, { "old-client.md": "id-migrated-old-client" });
+  migrateV2(newClient, { "old-client.md": "id-should-not-replace" });
+  Y.applyUpdate(oldClient, Y.encodeStateAsUpdate(newClient));
+
+  const migratedNew = newClient.getMap("files").get("old-client.md");
+  const migratedOld = oldClient.getMap("files").get("old-client.md");
+  check("new client migrates old-shaped entry",
+    migratedNew.fileId === "id-migrated-old-client" && migratedNew.exists === true);
+  check("migration is idempotent",
+    migratedNew.fileId !== "id-should-not-replace");
+  check("old and new clients converge after migration",
+    migratedOld.fileId === migratedNew.fileId && migratedOld.createdBy === "Old");
+  check("schema version marker is additive",
+    newClient.getMap("meta").get("schemaVersion") === 2);
+}
+
+// ── 4. Delete is a retained tombstone, not a hard delete ──────────────────────
 console.log("Delete = retained tombstone");
 {
   const m = new Y.Doc();
@@ -108,7 +154,7 @@ console.log("Delete = retained tombstone");
   check("deleted-files scan finds the tombstone", deleted.length === 1 && deleted[0] === "x.md");
 }
 
-// ── 4. Tombstone decision (delete-vs-edit) ────────────────────────────────────
+// ── 5. Tombstone decision (delete-vs-edit) ────────────────────────────────────
 console.log("Delete-vs-edit tombstone decision");
 {
   const deletedAt = 100_000;
@@ -150,7 +196,7 @@ console.log("Delete-vs-edit tombstone decision");
     tombstoneLocalDecision({ localMtime: deletedAt + 999999, deletedAt, renamedTo: "new.md" }) === "delete");
 }
 
-// ── 5. Startup reconciliation must not publish tombstoned local files ─────────
+// ── 6. Startup reconciliation must not publish tombstoned local files ─────────
 console.log("Startup tombstone ordering helpers");
 {
   const tombstone = {
@@ -170,7 +216,7 @@ console.log("Startup tombstone ordering helpers");
     shouldPublishLocalOnStartup(tombstone) === false);
 }
 
-// ── 6. Live entry cleanup strips stale tombstone/rename metadata ───────────────
+// ── 7. Live entry cleanup strips stale tombstone/rename metadata ───────────────
 console.log("Live entry cleanup");
 {
   const prior = {
@@ -220,7 +266,7 @@ console.log("Live entry cleanup");
     live.mutationDevice === "mobile");
 }
 
-// ── 7. Deleted-files list should exclude rename-away tombstones ────────────────
+// ── 8. Deleted-files list should exclude rename-away tombstones ────────────────
 console.log("Recoverable tombstone filter");
 {
   check("normal delete is recoverable",
@@ -231,7 +277,7 @@ console.log("Recoverable tombstone filter");
     isRecoverableTombstone({ exists: true, lastModified: 1 }) === false);
 }
 
-// ── 8. Conflict-copy manifest metadata powers the review list ────────────────
+// ── 9. Conflict-copy manifest metadata powers the review list ────────────────
 console.log("Conflict-copy manifest metadata");
 {
   const entry = liveManifestEntry(undefined, "assets/photo (binary conflict 2026).png", "id-conflict", "Me", {
@@ -258,7 +304,7 @@ console.log("Conflict-copy manifest metadata");
     conflictFileFromManifest("old.md", { ...entry, exists: false, deleted: true }) === null);
 }
 
-// ── 9. Manifest relpaths are validated before touching the vault ───────────────
+// ── 10. Manifest relpaths are validated before touching the vault ──────────────
 console.log("Safe manifest paths");
 {
   check("accepts nested markdown path",

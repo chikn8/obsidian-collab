@@ -15235,6 +15235,7 @@ var PresenceController = class {
     this.fileAwareness.on("change", onChange2);
     this.cleanup.push(() => this.manifestAwareness.off("change", onChange2));
     this.cleanup.push(() => this.fileAwareness.off("change", onChange2));
+    this.setTyping(false);
     this.refresh();
   }
   stop() {

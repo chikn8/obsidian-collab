@@ -112,6 +112,7 @@ export class PresenceController {
     this.fileAwareness.on("change", onChange);
     this.cleanup.push(() => this.manifestAwareness.off("change", onChange));
     this.cleanup.push(() => this.fileAwareness.off("change", onChange));
+    this.setTyping(false);
     this.refresh();
   }
 

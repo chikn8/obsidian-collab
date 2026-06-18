@@ -37,7 +37,7 @@ namespaced set of rooms plus a manifest.
 | **Editing** | Live multi-cursor editing (CRDT), remote selections, instant sync via CodeMirror 6 |
 | **Sharing** | Per-folder shares; mount the same share at any local path; multiple independent shares |
 | **Roles** | `editor` / `commenter` / `viewer`, enforced server-side; signed per-recipient invites + revoke-all |
-| **Presence** | Top-of-editor facepile, file-explorer/tab avatars where Obsidian exposes anchors, click-to-jump, per-device identity |
+| **Presence** | Top-of-editor facepile with self avatar, file-explorer/tab avatars where Obsidian exposes anchors, click-to-jump, per-device identity |
 | **Attachments** | Images/PDF/audio/video sync as content-addressed blobs referenced from the manifest |
 | **Comments** | Threaded, anchored to text, replies + emoji reactions, unread inbox; mention/thread pushes |
 | **History** | Server-side git snapshots per file; browse, diff, restore whole versions or individual changes |

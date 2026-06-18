@@ -3,6 +3,7 @@ import {
   deviceColor,
   presenceLabel,
 } from "../src/collab/PresenceModel.ts";
+import { PresenceController } from "../src/collab/Presence.ts";
 
 let failures = 0;
 function check(name, cond, extra = "") {
@@ -17,6 +18,27 @@ class FakeAwareness {
   }
   getStates() {
     return this.states;
+  }
+}
+
+class MutableAwareness extends FakeAwareness {
+  constructor(clientID, states) {
+    super(clientID, states);
+    this.handlers = new Set();
+  }
+  getLocalState() {
+    return this.states.get(this.clientID) || null;
+  }
+  setLocalStateField(field, value) {
+    const cur = this.getLocalState() || {};
+    this.states.set(this.clientID, { ...cur, [field]: value });
+    for (const handler of this.handlers) handler();
+  }
+  on(_event, handler) {
+    this.handlers.add(handler);
+  }
+  off(_event, handler) {
+    this.handlers.delete(handler);
   }
 }
 
@@ -71,6 +93,30 @@ console.log("presence model\n");
   const users = collectPresenceDevices({ manifestAwareness: awareness, relPath: "note.md" });
   check("device-scoped awareness color is not jittered twice", users[0].color === scoped, `${users[0].color} vs ${scoped}`);
   check("base color remains available for grouping", users[0].baseColor === base, users[0].baseColor);
+}
+
+{
+  const manifestAwareness = new MutableAwareness(1, [[
+    1,
+    {
+      user: { uid: "same-user", deviceId: "desktop-1", name: "Elijah", displayName: "Elijah", color: "#54a0ff", device: "desktop" },
+    },
+  ]]);
+  const fileAwareness = new MutableAwareness(1, []);
+  const dispatches = [];
+  const controller = new PresenceController(
+    { dispatch(effect) { dispatches.push(effect); } },
+    {},
+    manifestAwareness,
+    fileAwareness,
+    "note.md"
+  );
+  controller.start();
+  const presence = manifestAwareness.getLocalState()?.presence;
+  check("presence controller advertises active file on start", presence?.activeFile === "note.md", JSON.stringify(presence));
+  check("presence controller starts non-typing", presence?.typing === false, JSON.stringify(presence));
+  check("presence controller refreshes roster on start", dispatches.length > 0);
+  controller.stop();
 }
 
 console.log("");

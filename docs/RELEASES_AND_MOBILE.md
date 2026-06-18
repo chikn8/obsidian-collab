@@ -64,7 +64,8 @@ Expected to work on mobile:
 
 - Text sync through Yjs/WebSocket.
 - Offline local Yjs persistence through IndexedDB.
-- Editor cursors, selections, self-selection overlay, and in-editor facepile.
+- Editor cursors, selections, self-selection overlay, and in-editor facepile. The bound editor advertises
+  the current device immediately so the self avatar is visible even before typing.
 - Comments and version-history HTTP calls.
 - Binary attachment upload/download through Obsidian HTTP APIs, subject to mobile memory/network limits.
 - Multi-device presence: each phone/tablet/desktop install has its own `deviceId`, color variant, and

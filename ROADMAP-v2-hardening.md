@@ -412,6 +412,8 @@ tracks per-device read timestamps and opens the target note/thread.
 local file. The active-editor facepile still jumps to a peer's caret in the same file. Remote rename now
 repairs `[[wikilinks]]`/embeds in synced Markdown notes as a CRDT edit, preserving aliases/subpaths and
 skipping code.
+The active-editor presence controller advertises the local active file immediately on bind, so the self
+avatar/typing states are visible even in solo testing.
 
 ### 4.6 — Join-by-code UX (implemented)
 Deep-links open the join modal with the code pre-filled. New share codes carry an optional label, and

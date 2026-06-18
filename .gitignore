@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Build output (server only — plugin/main.js is the distributable, keep it tracked)
+server/dist/
+
+# Runtime data
+server/collab-data/
+
+# Env / secrets
+.env
+.env.local
+*.log
+.collab-token
+.collab-subdomain
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp

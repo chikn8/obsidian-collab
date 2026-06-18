@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-collab",
+  "name": "Real-Time Collaboration",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Real-time collaborative editing via Yjs CRDTs with cursor awareness.",
+  "author": "Saket Sambaraju",
+  "authorUrl": "https://github.com/fittedleader",
+  "isDesktopOnly": false
+}

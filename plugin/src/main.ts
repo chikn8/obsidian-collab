@@ -1,0 +1,711 @@
+import { Plugin, TFile, TFolder, MarkdownView, Notice, debounce } from "obsidian";
+import type { EditorView } from "@codemirror/view";
+import { SyncManager } from "./collab/SyncManager";
+import { FileProvider } from "./collab/FileProvider";
+import { InstanceWatch } from "./collab/InstanceWatch";
+import { StatusBarWidget } from "./ui/StatusBarWidget";
+import { CollabSettingsTab } from "./ui/SettingsTab";
+import { collabEditorExtension, getEditorView, bindEditor, unbindEditor, readOnlyExtension } from "./collab/EditorBinding";
+import { CommentStore } from "./collab/CommentStore";
+import { CommentSession } from "./collab/CommentLayer";
+import { PresenceController } from "./collab/Presence";
+import { CommentsView, COMMENTS_VIEW_TYPE } from "./ui/CommentsView";
+import { promptModal } from "./ui/modals";
+import { log, err, setDebug } from "./utils/log";
+import {
+  encodeShareCode,
+  decodeShareCode,
+  generateShareId,
+  deriveRoleKey,
+  deriveAdminToken,
+  httpBase,
+} from "./utils/roomName";
+import { HistoryView, HISTORY_VIEW_TYPE, type HistoryContext } from "./ui/HistoryView";
+import type { CollabPluginSettings, SyncStatus, ConnectedUser, Share, Role } from "./types";
+import { DEFAULT_SETTINGS, LEGACY_SHARE_ID } from "./types";
+
+export default class CollabPlugin extends Plugin {
+  settings: CollabPluginSettings = DEFAULT_SETTINGS;
+  private statusBar!: StatusBarWidget;
+  private instanceWatch: InstanceWatch | null = null;
+  private syncManagers: Map<string, SyncManager> = new Map();
+  private modifyDebounceMap: Map<string, ReturnType<typeof debounce>> = new Map();
+  private debouncedRestart = debounce(() => this.restartShares(), 800, false);
+
+  // Active editor binding state
+  private boundView: EditorView | null = null;
+  private boundProvider: FileProvider | null = null;
+  private boundPath: string | null = null;
+  private boundStore: CommentStore | null = null;
+  private boundSession: CommentSession | null = null;
+  private boundPresence: PresenceController | null = null;
+
+  async onload(): Promise<void> {
+    await this.loadSettings();
+    setDebug(this.settings.debugLogging);
+    log("load", "starting; uid=", this.settings.uid?.slice(0, 8), "shares=", this.settings.shares.length);
+
+    this.statusBar = new StatusBarWidget(this.addStatusBarItem());
+    this.addSettingTab(new CollabSettingsTab(this.app, this));
+
+    // Comments sidebar (first ItemView in the plugin)
+    this.registerView(COMMENTS_VIEW_TYPE, (leaf) => new CommentsView(leaf));
+    this.addRibbonIcon("message-square", "Collab comments", () => this.openCommentsPanel());
+    this.addCommand({ id: "open-comments", name: "Open comments panel", callback: () => this.openCommentsPanel() });
+
+    // Version-history sidebar
+    this.registerView(HISTORY_VIEW_TYPE, (leaf) => new HistoryView(leaf));
+    this.addCommand({ id: "open-history", name: "Open version history", callback: () => this.openHistoryPanel() });
+
+    // Register the (initially empty) yCollab compartment for the active editor
+    this.registerEditorExtension([collabEditorExtension]);
+
+    // Clean up old backup snapshots (>7 days) and trashed deletions (>30 days)
+    FileProvider.cleanupSnapshots(this.app, 7, 30).catch(() => {});
+
+    // Warn if the same vault is open in another Obsidian instance (loop risk).
+    this.instanceWatch = new InstanceWatch(this.app, (id) => this.registerInterval(id));
+    this.instanceWatch.start().catch(() => {});
+
+    await this.startAllShares();
+    // Bind the already-open editor (if any). Providers connect async, so the
+    // retry loop in bindActiveEditor waits for the owning provider to be ready.
+    this.handleActiveLeafChange();
+
+    // Vault events — routed to every manager (each ignores paths outside its folder)
+    this.registerEvent(
+      this.app.vault.on("create", (file) => {
+        if (file instanceof TFile) this.eachManager((m) => m.onFileCreate(file));
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        if (!(file instanceof TFile)) return;
+        let fn = this.modifyDebounceMap.get(file.path);
+        if (!fn) {
+          fn = debounce((f: TFile) => this.eachManager((m) => m.onFileModify(f)), 50, true);
+          this.modifyDebounceMap.set(file.path, fn);
+        }
+        fn(file);
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("delete", (file) => {
+        if (file instanceof TFile) this.eachManager((m) => m.onFileDelete(file));
+        // Obsidian may fire only ONE folder-delete event (no per-child events on
+        // some platforms) — tombstone everything under the folder as a backstop.
+        else if (file instanceof TFolder) this.eachManager((m) => m.onFolderDelete(file.path));
+        this.modifyDebounceMap.delete((file as TFile).path);
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => {
+        if (file instanceof TFile) this.eachManager((m) => m.onFileRename(file, oldPath));
+        // A folder move fires ONE event for the folder (no per-child renames), so
+        // re-derive each descendant file's rename to preserve content + lineage.
+        else if (file instanceof TFolder) this.eachManager((m) => m.onFolderRename(file, oldPath));
+        this.modifyDebounceMap.delete(oldPath);
+      })
+    );
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", () => this.handleActiveLeafChange())
+    );
+
+    // File/folder context-menu
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu, file) => {
+        if (file instanceof TFolder) {
+          menu.addItem((item) =>
+            item
+              .setTitle("Share this folder (collab)")
+              .setIcon("users")
+              .onClick(() => this.shareFolderInteractive(file.path))
+          );
+        } else if (file instanceof TFile && this.managerOwning(file.path)) {
+          menu.addItem((item) =>
+            item.setTitle("Version history (collab)").setIcon("history").onClick(() => this.openHistoryPanel())
+          );
+        }
+      })
+    );
+
+    // Editor context-menu: "Add comment" on a selection in a synced file
+    this.registerEvent(
+      this.app.workspace.on("editor-menu", (menu, editor, info) => {
+        const file = (info as any)?.file as TFile | undefined;
+        if (!file || !this.managerOwning(file.path)) return;
+        if (!editor.getSelection()) return;
+        menu.addItem((item) =>
+          item.setTitle("Add comment").setIcon("message-square").onClick(() => this.addCommentForSelection(file, info))
+        );
+      })
+    );
+
+    // Deep link: obsidian://collab-add?code=...
+    this.registerObsidianProtocolHandler("collab-add", async (params) => {
+      if (params.code) await this.addShareFromCode(params.code);
+    });
+
+    // Commands
+    this.addCommand({
+      id: "share-folder",
+      name: "Share a folder…",
+      callback: () => this.shareFolderInteractive(),
+    });
+    this.addCommand({
+      id: "add-shared-folder",
+      name: "Add a shared folder (paste code)…",
+      callback: () => this.addShareFromCodeInteractive(),
+    });
+    this.addCommand({
+      id: "force-resync",
+      name: "Force re-sync all folders",
+      callback: async () => {
+        await this.stopAllShares();
+        await this.startAllShares();
+      },
+    });
+    this.addCommand({
+      id: "reconnect",
+      name: "Reconnect now (all folders)",
+      callback: () => {
+        this.eachManager((m) => m.reconnect());
+        new Notice("Reconnecting…");
+        log("reconnect", "manual reconnect of", this.syncManagers.size, "shares");
+      },
+    });
+
+    console.log("Obsidian Collab plugin loaded (multi-share mode)");
+  }
+
+  // ── Share lifecycle ────────────────────────────────────────────
+
+  private async startAllShares(): Promise<void> {
+    for (const share of this.settings.shares) await this.startShare(share);
+  }
+
+  private async startShare(share: Share): Promise<void> {
+    if (this.syncManagers.has(share.id)) return;
+    const m = new SyncManager(
+      this.app,
+      this.settings,
+      share,
+      (status: SyncStatus, fileCount: number, pending: number) =>
+        this.statusBar.setShare(share.id, { label: share.label, status, fileCount, pending }),
+      (_users: ConnectedUser[]) => {}
+    );
+    this.syncManagers.set(share.id, m);
+    await m.start();
+    log("share", "started", share.legacy ? "legacy" : share.id, "->", share.localFolder);
+  }
+
+  private async stopShare(id: string): Promise<void> {
+    const m = this.syncManagers.get(id);
+    if (m) {
+      await m.destroy();
+      this.syncManagers.delete(id);
+    }
+    this.statusBar.removeShare(id);
+  }
+
+  private async stopAllShares(): Promise<void> {
+    for (const id of Array.from(this.syncManagers.keys())) await this.stopShare(id);
+  }
+
+  private async restartShares(): Promise<void> {
+    await this.stopAllShares();
+    await this.startAllShares();
+  }
+
+  private eachManager(fn: (m: SyncManager) => void | Promise<void>): void {
+    for (const m of this.syncManagers.values()) {
+      // Vault handlers are fire-and-forget; swallow async rejections so a
+      // single share's error never surfaces as an unhandled promise rejection.
+      try {
+        const r = fn(m) as unknown;
+        if (r instanceof Promise) r.catch((e) => err("vault", e));
+      } catch (e) {
+        err("vault", e);
+      }
+    }
+  }
+
+  // ── Active editor binding (perf: yCollab) ──────────────────────
+
+  private handleActiveLeafChange(): void {
+    // Presence + editor binding follow the actively-FOCUSED markdown view, not
+    // getActiveFile() — the latter lingers on the last note when you focus a
+    // non-note pane (terminal, graph) or close the tab, leaving a stale presence
+    // avatar on a note you're no longer viewing. null when no note is focused.
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const activeFile = view?.file ?? null;
+    this.eachManager((m) => m.setPresence(activeFile));
+    this.bindActiveEditor(activeFile, 0);
+    // Keep an open history panel in sync with the active file.
+    this.getHistoryView()?.setContext(this.buildHistoryContext());
+  }
+
+  private bindActiveEditor(activeFile: TFile | null, attempt: number): void {
+    // Ignore stale retries fired after the user already switched files.
+    if (attempt > 0 && (this.app.workspace.getActiveFile()?.path ?? null) !== (activeFile?.path ?? null)) {
+      return;
+    }
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const ev = view ? getEditorView(view) : null;
+    const path = activeFile?.path ?? null;
+
+    // Unbind the previous editor if we've moved away from it
+    if (this.boundView && (this.boundPath !== path || this.boundView !== ev)) {
+      this.boundSession?.detach();
+      this.boundPresence?.stop();
+      try { unbindEditor(this.boundView); } catch { /* view may be gone */ }
+      this.boundProvider?.setEditorBound(false);
+      this.boundView = null;
+      this.boundProvider = null;
+      this.boundPath = null;
+      this.boundStore = null;
+      this.boundSession = null;
+      this.boundPresence = null;
+    }
+
+    if (!ev || !path || !activeFile) { this.refreshCommentsContext(); return; }
+    if (this.boundPath === path) return; // already bound
+
+    // Find the provider owning this file
+    let provider: FileProvider | null = null;
+    for (const m of this.syncManagers.values()) {
+      provider = m.getFileProvider(path);
+      if (provider) break;
+    }
+    if (!provider) { this.refreshCommentsContext(); return; } // not a synced file
+
+    if (!provider.isReady()) {
+      // Provider still connecting/seeding — retry (headless still works meanwhile).
+      // ~6s budget covers a cold WebSocket connect + initial sync.
+      if (attempt < 20) setTimeout(() => this.bindActiveEditor(activeFile, attempt + 1), 300);
+      return;
+    }
+
+    const ytext = provider.getYText();
+    const awareness = provider.getAwareness();
+    if (!ytext || !awareness) return;
+
+    const store = new CommentStore(provider.getDoc());
+    const session = new CommentSession(store, (id) => this.openThread(id));
+
+    // Presence facepile (needs the owning share's manifest awareness)
+    const manager = this.managerOwning(path);
+    const manifestAwareness = manager?.getManifestAwareness();
+    const relPath = manager ? manager.toRel(path) : path;
+    const presence =
+      manifestAwareness && manager
+        ? new PresenceController(ev, provider.getDoc(), manifestAwareness, awareness, relPath)
+        : null;
+
+    const role = manager?.role || "editor";
+    const extras = [session.extension()];
+    if (presence) extras.push(presence.extension());
+    if (role !== "editor") extras.push(readOnlyExtension());
+
+    provider.setEditorBound(true);
+    bindEditor(ev, ytext, awareness, extras);
+    session.attach(ev);
+    presence?.start();
+
+    this.boundView = ev;
+    this.boundProvider = provider;
+    this.boundPath = path;
+    this.boundStore = store;
+    this.boundSession = session;
+    this.boundPresence = presence;
+    this.refreshCommentsContext();
+    log("bind", "bound editor", path, "comments=", store.openCount());
+  }
+
+  // ── Comments wiring ─────────────────────────────────────────────
+
+  private getCommentsView(): CommentsView | null {
+    const leaves = this.app.workspace.getLeavesOfType(COMMENTS_VIEW_TYPE);
+    return (leaves[0]?.view as CommentsView) ?? null;
+  }
+
+  private async openCommentsPanel(): Promise<void> {
+    let leaf = this.app.workspace.getLeavesOfType(COMMENTS_VIEW_TYPE)[0];
+    if (!leaf) {
+      leaf = this.app.workspace.getRightLeaf(false)!;
+      await leaf.setViewState({ type: COMMENTS_VIEW_TYPE, active: true });
+    }
+    this.app.workspace.revealLeaf(leaf);
+    this.refreshCommentsContext();
+  }
+
+  private refreshCommentsContext(): void {
+    const view = this.getCommentsView();
+    if (!view) return;
+    if (this.boundStore && this.boundPath) {
+      const fileName = this.boundPath.split("/").pop() || this.boundPath;
+      view.setContext({
+        store: this.boundStore,
+        session: this.boundSession,
+        fileName,
+        me: { uid: this.settings.uid, name: this.settings.displayName },
+        now: () => Date.now(),
+        notifyFromText: (text) => this.notifyMentionsInText(text, fileName),
+      });
+    } else {
+      view.setContext(null);
+    }
+  }
+
+  private openThread(threadId: string): void {
+    this.boundSession?.reveal(threadId);
+    this.openCommentsPanel();
+  }
+
+  private managerOwning(path: string): SyncManager | null {
+    for (const m of this.syncManagers.values()) if (m.isInLinkedFolder(path)) return m;
+    return null;
+  }
+
+  /** Detect "@Name" mentions of collaborators in `text` and push them a notification. */
+  private notifyMentionsInText(text: string, fileName: string): void {
+    if (!text.includes("@") || !this.boundPath) return;
+    const m = this.managerOwning(this.boundPath);
+    if (!m) return;
+    const roster = m.roster();
+    const seen = new Set<string>();
+    for (const c of roster) {
+      // match @Name or @"Full Name" (case-insensitive, word-ish boundary)
+      const re = new RegExp(`@"?${escapeRegExp(c.name)}"?`, "i");
+      if (re.test(text) && !seen.has(c.uid)) {
+        seen.add(c.uid);
+        m.sendMention(c.uid, `${this.settings.displayName} mentioned you in ${fileName}`, text.slice(0, 300));
+        log("mention", "notified", c.name, c.uid);
+      }
+    }
+  }
+
+  // ── Version history wiring ──────────────────────────────────────
+
+  private getHistoryView(): HistoryView | null {
+    return (this.app.workspace.getLeavesOfType(HISTORY_VIEW_TYPE)[0]?.view as HistoryView) ?? null;
+  }
+
+  private async openHistoryPanel(): Promise<void> {
+    let leaf = this.app.workspace.getLeavesOfType(HISTORY_VIEW_TYPE)[0];
+    if (!leaf) {
+      leaf = this.app.workspace.getRightLeaf(false)!;
+      await leaf.setViewState({ type: HISTORY_VIEW_TYPE, active: true });
+    }
+    this.app.workspace.revealLeaf(leaf);
+    this.getHistoryView()?.setContext(this.buildHistoryContext());
+  }
+
+  private buildHistoryContext(): HistoryContext | null {
+    const file = this.app.workspace.getActiveFile();
+    if (!file) return null;
+    const m = this.managerOwning(file.path);
+    if (!m) return null;
+    const share = this.settings.shares.find((s) => s.id === m.shareId);
+    if (!share) return null;
+
+    const base = httpBase(this.settings.serverUrl);
+    const relPath = m.toRel(file.path);
+    const histShareId = share.legacy ? "legacy" : share.id;
+    const roleQ = share.legacy ? "" : `&role=${share.role || "editor"}&epoch=${share.epoch ?? 1}`;
+    const token = async (): Promise<string | null> =>
+      share.legacy ? (this.settings.serverPassword || null) : share.key;
+
+    return {
+      fileName: file.name,
+      list: async () => {
+        const t = await token();
+        if (!t) return [];
+        try {
+          const r = await fetch(`${base}/history?share=${encodeURIComponent(histShareId)}&path=${encodeURIComponent(relPath)}&token=${encodeURIComponent(t)}${roleQ}`);
+          if (!r.ok) return [];
+          return (await r.json()).versions || [];
+        } catch (e) { err("history", e); return []; }
+      },
+      load: async (hash: string) => {
+        const t = await token();
+        if (!t) return null;
+        try {
+          const r = await fetch(`${base}/version?share=${encodeURIComponent(histShareId)}&path=${encodeURIComponent(relPath)}&hash=${encodeURIComponent(hash)}&token=${encodeURIComponent(t)}${roleQ}`);
+          if (!r.ok) return null;
+          return (await r.json()).content ?? null;
+        } catch (e) { err("history", e); return null; }
+      },
+      restore: async (text: string) => {
+        if (m.role !== "editor") {
+          new Notice("This share is read-only on this device.");
+          return;
+        }
+        const fp = m.getFileProvider(file.path);
+        if (fp) await fp.restoreFromText(text);
+        else new Notice("Open the note before restoring.");
+      },
+      currentText: () => m.getFileProvider(file.path)?.getYText()?.toString() || "",
+      deletedFiles: () => m.listDeletedFiles(),
+      restoreDeleted: (relPath: string) => m.restoreDeletedFile(relPath),
+    };
+  }
+
+  private async addCommentForSelection(file: TFile, info: any): Promise<void> {
+    const m = this.managerOwning(file.path);
+    const fp = m?.getFileProvider(file.path);
+    if (m && m.role !== "editor") { new Notice("This share is read-only on this device."); return; }
+    if (!fp || !fp.isReady()) { new Notice("This note is still syncing — try again in a moment."); return; }
+
+    const ev = getEditorView(info) || (this.boundPath === file.path ? this.boundView : null);
+    if (!ev) { new Notice("Open the note in the editor to comment."); return; }
+    const sel = ev.state.selection.main;
+    const from = Math.min(sel.from, sel.to);
+    const to = Math.max(sel.from, sel.to);
+    if (to <= from) { new Notice("Select some text to comment on."); return; }
+    const quote = ev.state.doc.sliceString(from, to).slice(0, 200);
+
+    const res = await promptModal(this.app, {
+      title: "Add comment",
+      cta: "Comment",
+      fields: [{ key: "text", label: `On “${quote.slice(0, 40)}${quote.length > 40 ? "…" : ""}”`, placeholder: "Your comment…" }],
+    });
+    if (!res || !res.text.trim()) return;
+
+    const store = this.boundPath === file.path && this.boundStore ? this.boundStore : new CommentStore(fp.getDoc());
+    store.addThread({
+      from, to, quote,
+      authorUid: this.settings.uid,
+      authorName: this.settings.displayName,
+      text: res.text.trim(),
+      at: Date.now(),
+    });
+    this.notifyMentionsInText(res.text.trim(), file.name);
+    await this.openCommentsPanel();
+  }
+
+  // ── Share creation / joining ───────────────────────────────────
+
+  /** Generate a role-scoped share code (requires the server secret to mint keys). */
+  async generateShareCode(share: Share, role: Role): Promise<string | null> {
+    if (share.legacy || !this.settings.serverSecret) return null;
+    const epoch = share.epoch ?? 1;
+    const key =
+      role === (share.role || "editor") ? share.key : await deriveRoleKey(this.settings.serverSecret, share.id, role, epoch);
+    return encodeShareCode(this.settings.serverUrl, share.id, key, role, epoch);
+  }
+
+  /** Revoke ALL outstanding codes for a share by bumping its epoch. */
+  async revokeShareAccess(share: Share): Promise<boolean> {
+    if (share.legacy || !this.settings.serverSecret) {
+      new Notice("Can't revoke this share (needs the server secret).");
+      return false;
+    }
+    const newEpoch = (share.epoch ?? 1) + 1;
+    const token = await deriveAdminToken(this.settings.serverSecret, share.id, newEpoch);
+    try {
+      const res = await fetch(`${httpBase(this.settings.serverUrl)}/admin/revoke?share=${encodeURIComponent(share.id)}&epoch=${newEpoch}&token=${encodeURIComponent(token)}`, { method: "POST" });
+      if (!res.ok) { new Notice("Revoke failed on the server."); return false; }
+    } catch (e) {
+      err("revoke", e); new Notice("Revoke request failed."); return false;
+    }
+    // Re-key ourselves to the new epoch (we're the editor/owner) and restart.
+    share.epoch = newEpoch;
+    share.role = share.role || "editor";
+    share.key = await deriveRoleKey(this.settings.serverSecret, share.id, share.role as Role, newEpoch);
+    await this.persist();
+    await this.stopShare(share.id);
+    await this.startShare(share);
+    log("revoke", "share", share.id, "-> epoch", newEpoch);
+    new Notice("Access revoked. Old links no longer work — re-share to invite again.");
+    return true;
+  }
+
+  private folderOverlaps(path: string): Share | null {
+    for (const s of this.settings.shares) {
+      const a = s.localFolder;
+      if (path === a || path.startsWith(a + "/") || a.startsWith(path + "/")) return s;
+    }
+    return null;
+  }
+
+  async shareFolderInteractive(presetFolder?: string): Promise<void> {
+    if (!this.settings.serverSecret) {
+      new Notice("Set the Server Secret in settings first — it's needed to create shares.");
+      return;
+    }
+    const res = await promptModal(this.app, {
+      title: "Share a folder",
+      cta: "Create share",
+      fields: [
+        { key: "folder", label: "Vault folder to share", placeholder: "Path/To/Folder", value: presetFolder ?? "" },
+        { key: "label", label: "Label (shown to you)", placeholder: "e.g. Game Dev w/ Saket" },
+      ],
+    });
+    if (!res || !res.folder.trim()) return;
+    const folder = res.folder.trim().replace(/\/+$/, "");
+
+    const overlap = this.folderOverlaps(folder);
+    if (overlap) {
+      new Notice(`That folder overlaps an existing share ("${overlap.label}").`);
+      return;
+    }
+    await this.ensureFolder(folder);
+
+    const id = generateShareId();
+    const epoch = 1;
+    const key = await deriveRoleKey(this.settings.serverSecret, id, "editor", epoch);
+    const share: Share = {
+      id,
+      key,
+      role: "editor",
+      epoch,
+      label: res.label.trim() || folder.split("/").pop() || folder,
+      localFolder: folder,
+    };
+    this.settings.shares.push(share);
+    await this.persist();
+    await this.startShare(share);
+
+    // Default to copying an EDITOR link; viewer links are available in settings.
+    const code = await this.generateShareCode(share, "editor");
+    let copied = false;
+    if (code) {
+      try { await navigator.clipboard.writeText(code); copied = true; } catch { /* clipboard may be unavailable on mobile */ }
+    }
+    new Notice(copied
+      ? `Share created — editor link copied. For a view-only link, use “Copy link” in settings.`
+      : `Share created. Copy the editor link from settings (clipboard unavailable here).`);
+  }
+
+  async addShareFromCodeInteractive(): Promise<void> {
+    const res = await promptModal(this.app, {
+      title: "Join a shared folder",
+      cta: "Join",
+      fields: [
+        { key: "code", label: "Share code", placeholder: "Paste the code you were sent" },
+        { key: "folder", label: "Local folder to sync into", placeholder: "Path/To/Folder" },
+      ],
+    });
+    if (!res || !res.code.trim()) return;
+    await this.addShareFromCode(res.code.trim(), res.folder.trim());
+  }
+
+  async addShareFromCode(code: string, localFolder?: string): Promise<void> {
+    const decoded = decodeShareCode(code);
+    if (!decoded) {
+      new Notice("Invalid share code.");
+      return;
+    }
+    if (this.settings.shares.some((s) => s.id === decoded.id)) {
+      new Notice("You already have this shared folder.");
+      return;
+    }
+    // Adopt the server URL from the code if we don't have one yet
+    if (!this.settings.serverUrl || this.settings.serverUrl === DEFAULT_SETTINGS.serverUrl) {
+      this.settings.serverUrl = decoded.s;
+    }
+    const folder = (localFolder || `Shared/${decoded.id}`).replace(/\/+$/, "");
+    const overlap = this.folderOverlaps(folder);
+    if (overlap) {
+      new Notice(`That folder overlaps an existing share ("${overlap.label}").`);
+      return;
+    }
+    await this.ensureFolder(folder);
+
+    const share: Share = {
+      id: decoded.id,
+      key: decoded.k,
+      role: decoded.r,
+      epoch: decoded.e,
+      label: folder.split("/").pop() || folder,
+      localFolder: folder,
+    };
+    this.settings.shares.push(share);
+    await this.persist();
+    await this.startShare(share);
+    log("share", "joined", share.id, "role=", share.role || "editor");
+    new Notice(`Joined shared folder → ${folder}${share.role && share.role !== "editor" ? ` (${share.role})` : ""}`);
+  }
+
+  async removeShare(id: string): Promise<void> {
+    await this.stopShare(id);
+    this.settings.shares = this.settings.shares.filter((s) => s.id !== id);
+    await this.persist();
+  }
+
+  private async ensureFolder(path: string): Promise<void> {
+    const clean = path.replace(/\/+$/, "");
+    if (!clean) return;
+    const parts = clean.split("/").filter(Boolean);
+    let cur = "";
+    for (const part of parts) {
+      cur = cur ? `${cur}/${part}` : part;
+      const existing = this.app.vault.getAbstractFileByPath(cur);
+      if (existing instanceof TFolder) continue;
+      if (existing) throw new Error(`Cannot create folder "${cur}"; a file exists there.`);
+      await this.app.vault.createFolder(cur).catch((e) => {
+        if (!this.app.vault.getAbstractFileByPath(cur)) throw e;
+      });
+    }
+  }
+
+  async onunload(): Promise<void> {
+    this.boundSession?.detach();
+    this.boundPresence?.stop();
+    if (this.boundView) {
+      try { unbindEditor(this.boundView); } catch { /* ignore */ }
+      this.boundProvider?.setEditorBound(false);
+    }
+    await this.instanceWatch?.stop();
+    await this.stopAllShares();
+    console.log("Obsidian Collab plugin unloaded");
+  }
+
+  // ── Settings (with migration) ──────────────────────────────────
+
+  async loadSettings(): Promise<void> {
+    const raw: any = (await this.loadData()) || {};
+    // Migrate the old single-folder shape → a legacy share (zero disruption).
+    if (raw.shares === undefined && (raw.linkedFolder !== undefined || raw.password !== undefined)) {
+      this.settings = {
+        serverUrl: raw.serverUrl ?? DEFAULT_SETTINGS.serverUrl,
+        serverPassword: raw.password ?? "",
+        serverSecret: "",
+        displayName: raw.displayName ?? DEFAULT_SETTINGS.displayName,
+        cursorColor: raw.cursorColor ?? DEFAULT_SETTINGS.cursorColor,
+        uid: raw.uid ?? "",
+        ntfyTopic: raw.ntfyTopic ?? "",
+        debugLogging: raw.debugLogging ?? DEFAULT_SETTINGS.debugLogging,
+        shares: raw.linkedFolder
+          ? [{ id: LEGACY_SHARE_ID, key: "", label: "Synced Obsidian", localFolder: raw.linkedFolder, legacy: true }]
+          : [],
+      };
+      await this.persist();
+    } else {
+      this.settings = Object.assign({}, DEFAULT_SETTINGS, raw);
+    }
+    // Stable per-install identity (joins facepile<->cursor; see types.ts).
+    if (!this.settings.uid) {
+      this.settings.uid =
+        (globalThis.crypto?.randomUUID?.() as string) || generateShareId(24);
+      await this.persist();
+    }
+  }
+
+  /** Persist without touching live sync. */
+  private async persist(): Promise<void> {
+    await this.saveData(this.settings);
+  }
+
+  /** Called by the settings UI. `restart` debounces a full re-sync for connection changes. */
+  async saveSettings(restart = true): Promise<void> {
+    setDebug(this.settings.debugLogging);
+    await this.persist();
+    if (restart) this.debouncedRestart();
+  }
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}

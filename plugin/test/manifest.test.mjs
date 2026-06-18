@@ -1,0 +1,204 @@
+/**
+ * Phase C regression: manifest identity, rename content-transfer, tombstones,
+ * and the delete-vs-edit resurrection predicate. Pure Yjs + the real
+ * shouldResurrect helper — runs headless.
+ *
+ * Run: node test/manifest.test.mjs  (or npm test runs both via the test script)
+ */
+import * as Y from "yjs";
+import {
+  isRecoverableTombstone,
+  liveManifestEntry,
+  safeRelPath,
+  shouldPublishLocalOnStartup,
+  shouldResurrect,
+  RESURRECT_GRACE_MS,
+} from "../src/utils/manifestLogic.ts";
+
+let failures = 0;
+function check(name, cond, extra = "") {
+  if (cond) console.log(`  ✓ ${name}`);
+  else { failures++; console.error(`  ✗ ${name} ${extra}`); }
+}
+
+// ── 1. Rename content-transfer: full Y.Doc clone preserves text + comments ─────
+console.log("Rename content-transfer (full Y.Doc state clone)");
+{
+  const a = new Y.Doc();
+  a.getText("codemirror").insert(0, "the quick brown fox");
+  // a comment thread anchored into the text (mirrors CommentStore shape)
+  const comments = a.getMap("comments");
+  const thread = new Y.Map();
+  thread.set("quote", "quick brown");
+  thread.set("resolved", false);
+  const replies = new Y.Array();
+  const reply = new Y.Map();
+  reply.set("text", "nice phrase");
+  replies.push([reply]);
+  thread.set("replies", replies);
+  comments.set("c1", thread);
+
+  // transfer = encode old doc state, apply into a fresh (new-room) doc
+  const state = Y.encodeStateAsUpdate(a);
+  const b = new Y.Doc();
+  Y.applyUpdate(b, state, "seed");
+
+  check("text transferred", b.getText("codemirror").toString() === "the quick brown fox");
+  const bc = b.getMap("comments").get("c1");
+  check("comment thread transferred", !!bc && bc.get("quote") === "quick brown");
+  check("comment reply transferred",
+    !!bc && bc.get("replies").length === 1 && bc.get("replies").get(0).get("text") === "nice phrase");
+
+  // and the transferred doc still merges future edits with a peer (CRDT intact)
+  const c = new Y.Doc();
+  Y.applyUpdate(c, Y.encodeStateAsUpdate(b));
+  b.getText("codemirror").insert(b.getText("codemirror").length, "!");
+  c.getText("codemirror").insert(0, ">");
+  Y.applyUpdate(b, Y.encodeStateAsUpdate(c));
+  Y.applyUpdate(c, Y.encodeStateAsUpdate(b));
+  check("transferred doc still CRDT-merges", b.getText("codemirror").toString() === c.getText("codemirror").toString(),
+    `b="${b.getText("codemirror")}" c="${c.getText("codemirror")}"`);
+}
+
+// ── 2. fileId migration converges under concurrent assignment (LWW) ────────────
+console.log("Manifest fileId migration converges (concurrent v1→v2)");
+{
+  const base = new Y.Doc();
+  base.getMap("files").set("note.md", { exists: true, lastModified: 1 }); // v1, no fileId
+  const baseState = Y.encodeStateAsUpdate(base);
+
+  const c1 = new Y.Doc(); Y.applyUpdate(c1, baseState);
+  const c2 = new Y.Doc(); Y.applyUpdate(c2, baseState);
+
+  // both clients migrate independently, assigning DIFFERENT ids
+  const e1 = c1.getMap("files").get("note.md");
+  c1.getMap("files").set("note.md", { ...e1, fileId: "id-from-c1" });
+  const e2 = c2.getMap("files").get("note.md");
+  c2.getMap("files").set("note.md", { ...e2, fileId: "id-from-c2" });
+
+  // sync both ways
+  Y.applyUpdate(c1, Y.encodeStateAsUpdate(c2));
+  Y.applyUpdate(c2, Y.encodeStateAsUpdate(c1));
+
+  const f1 = c1.getMap("files").get("note.md").fileId;
+  const f2 = c2.getMap("files").get("note.md").fileId;
+  check("both clients converge to one fileId", f1 === f2 && !!f1, `f1=${f1} f2=${f2}`);
+  check("schema migration is additive (entry still exists)", c1.getMap("files").get("note.md").exists === true);
+}
+
+// ── 3. Delete is a retained tombstone, not a hard delete ──────────────────────
+console.log("Delete = retained tombstone");
+{
+  const m = new Y.Doc();
+  const files = m.getMap("files");
+  files.set("x.md", { exists: true, fileId: "id", lastModified: 1 });
+  // delete = set exists:false (NOT files.delete) so the entry replays + recovers
+  const prev = files.get("x.md");
+  files.set("x.md", { ...prev, exists: false, deleted: true, deletedAt: 5, deletedBy: "A" });
+
+  check("tombstone entry retained", files.has("x.md") === true);
+  check("tombstone marked not-exists", files.get("x.md").exists === false);
+  check("tombstone keeps fileId (identity)", files.get("x.md").fileId === "id");
+  // a "deleted files" scan finds it
+  const deleted = [];
+  files.forEach((e, k) => { if (e && e.exists === false) deleted.push(k); });
+  check("deleted-files scan finds the tombstone", deleted.length === 1 && deleted[0] === "x.md");
+}
+
+// ── 4. Resurrection predicate (delete-vs-edit) ────────────────────────────────
+console.log("Delete-vs-edit resurrection predicate");
+{
+  const deletedAt = 100_000;
+  check("edited well after delete → resurrect",
+    shouldResurrect({ localMtime: deletedAt + RESURRECT_GRACE_MS + 1, deletedAt }) === true);
+  check("untouched since before delete → do not resurrect",
+    shouldResurrect({ localMtime: deletedAt - 5000, deletedAt }) === false);
+  check("edited within grace window → do not resurrect (skew guard)",
+    shouldResurrect({ localMtime: deletedAt + 500, deletedAt }) === false);
+  check("rename tombstone never resurrects",
+    shouldResurrect({ localMtime: deletedAt + 999999, deletedAt, renamedTo: "new.md" }) === false);
+}
+
+// ── 5. Startup reconciliation must not publish tombstoned local files ─────────
+console.log("Startup tombstone ordering helpers");
+{
+  const tombstone = {
+    fileId: "id",
+    path: "x.md",
+    exists: false,
+    deleted: true,
+    deletedAt: 200,
+    deletedBy: "B",
+    lastModified: 200,
+  };
+  check("missing manifest entry may be published",
+    shouldPublishLocalOnStartup(undefined) === true);
+  check("live manifest entry is not re-published",
+    shouldPublishLocalOnStartup({ ...tombstone, exists: true, deleted: false }) === false);
+  check("tombstone is not published before reconciliation",
+    shouldPublishLocalOnStartup(tombstone) === false);
+}
+
+// ── 6. Live entry cleanup strips stale tombstone/rename metadata ───────────────
+console.log("Live entry cleanup");
+{
+  const prior = {
+    fileId: "id",
+    path: "old.md",
+    exists: false,
+    deleted: true,
+    deletedAt: 10,
+    deletedBy: "A",
+    renamedFrom: "older.md",
+    renamedTo: "new.md",
+    restoredBy: "old restore",
+    restoredAt: 11,
+    resurrectedBy: "old resurrect",
+    lastModified: 10,
+    createdBy: "Orig",
+  };
+  const live = liveManifestEntry(prior, "old.md", "id", "Me", { restoredBy: "Me", restoredAt: 20 });
+  check("live entry exists", live.exists === true && live.deleted === false);
+  check("live entry keeps identity", live.fileId === "id" && live.path === "old.md");
+  check("live entry strips stale rename target", live.renamedTo === undefined && live.renamedFrom === undefined);
+  check("live entry strips stale delete metadata", live.deletedAt === undefined && live.deletedBy === undefined);
+  check("live entry applies fresh restore metadata", live.restoredBy === "Me" && live.restoredAt === 20);
+}
+
+// ── 7. Deleted-files list should exclude rename-away tombstones ────────────────
+console.log("Recoverable tombstone filter");
+{
+  check("normal delete is recoverable",
+    isRecoverableTombstone({ exists: false, deleted: true, deletedAt: 1, lastModified: 1 }) === true);
+  check("rename tombstone is not shown as deleted",
+    isRecoverableTombstone({ exists: false, deleted: true, renamedTo: "b.md", deletedAt: 1, lastModified: 1 }) === false);
+  check("live entry is not recoverable tombstone",
+    isRecoverableTombstone({ exists: true, lastModified: 1 }) === false);
+}
+
+// ── 8. Manifest relpaths are validated before touching the vault ───────────────
+console.log("Safe manifest paths");
+{
+  check("accepts nested markdown path",
+    safeRelPath("a/b/note.md", "Shared") === "a/b/note.md");
+  check("rejects parent traversal",
+    safeRelPath("../x.md", "Shared") === null);
+  check("rejects normalized traversal",
+    safeRelPath("a/../../b.md", "Shared") === null);
+  check("rejects absolute path",
+    safeRelPath("/etc/x.md", "Shared") === null);
+  check("rejects windows separator",
+    safeRelPath("..\\b.md", "Shared") === null);
+  check("rejects colon",
+    safeRelPath("a:b.md", "Shared") === null);
+  check("rejects non-markdown file",
+    safeRelPath("note.exe", "Shared") === null);
+  check("rejects empty segment",
+    safeRelPath("a//b.md", "Shared") === null);
+  check("rejects control chars",
+    safeRelPath("bad\u0000name.md", "Shared") === null);
+}
+
+console.log("");
+if (failures > 0) { console.error(`FAILED — ${failures} assertion(s) failed`); process.exit(1); }
+else console.log("ALL PASSED");

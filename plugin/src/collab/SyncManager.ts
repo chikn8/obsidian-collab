@@ -1,0 +1,940 @@
+import { App, TFile, TFolder, Notice, Platform, debounce } from "obsidian";
+import * as Y from "yjs";
+import { createProvider } from "./YjsProvider";
+import { FileProvider } from "./FileProvider";
+import { EchoGuard, beginRemoteApply, endRemoteApply, isApplyingRemote } from "./EchoGuard";
+import { manifestRoom, fileRoom, shareToken, shareAuthParams } from "../utils/roomName";
+import { sendFrame, MSG_NOTIFY, MSG_TOPIC_REGISTER } from "../utils/frames";
+import { log } from "../utils/log";
+import { isRecoverableTombstone, liveManifestEntry, safeRelPath, shouldPublishLocalOnStartup, shouldResurrect } from "../utils/manifestLogic";
+import { colorFor, MANIFEST_SCHEMA_VERSION } from "../types";
+import type { CollabPluginSettings, ConnectedUser, SyncStatus, Share, ManifestEntry } from "../types";
+
+/** Stable file identity. crypto.randomUUID where available, else a random fallback. */
+function newFileId(): string {
+  return (globalThis.crypto?.randomUUID?.() as string) ||
+    `f-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Syncs ONE share (one local folder ↔ one namespaced room set). The plugin
+ * runs one SyncManager per share. Cursors/selections inside the open editor
+ * are handled by yCollab (see EditorBinding); this class owns the folder
+ * manifest, per-file providers, and the file-explorer presence avatars.
+ */
+export class SyncManager {
+  private app: App;
+  private settings: CollabPluginSettings;
+  private share: Share;
+
+  // Manifest
+  private manifestDoc: Y.Doc | null = null;
+  private manifestProvider: any = null;  // WebsocketProvider
+  private manifestMap: Y.Map<any> | null = null;
+  private manifestMeta: Y.Map<any> | null = null; // schemaVersion + future doc-level meta
+  // Volatile "who last edited" stamps live in a SEPARATE map so they merge
+  // independently of the files map's lifecycle (exists/deleted) field — a stamp
+  // can never LWW-clobber a concurrent delete/rename tombstone.
+  private editsMap: Y.Map<any> | null = null;
+  // fileId we last saw per relPath, to detect identity changes (new file at same path).
+  private fileIds: Map<string, string> = new Map();
+
+  // File providers, keyed by relPath
+  private fileProviders: Map<string, FileProvider> = new Map();
+
+  // Guards. EchoGuard fingerprints every plugin-initiated vault write so the
+  // resulting vault event is recognised as our own echo and dropped — no timing
+  // windows (mobile / slow disk safe). See EchoGuard.ts.
+  private echo = new EchoGuard();
+  private processingManifest = false;
+
+  // Status
+  private syncStatus: SyncStatus = "disconnected";
+  private onStatusChange: (status: SyncStatus, fileCount: number, pending: number) => void;
+  private onUsersChange: (users: ConnectedUser[]) => void;
+
+  // Presence indicators (file explorer) — full-path → rendered elements
+  private renderedPresence: Map<string, HTMLElement[]> = new Map();
+  private lastPresenceSig = "";
+  private debouncedPresence: () => void;
+  private debouncedStatus: () => void;
+
+  constructor(
+    app: App,
+    settings: CollabPluginSettings,
+    share: Share,
+    onStatusChange: (status: SyncStatus, fileCount: number, pending: number) => void,
+    onUsersChange: (users: ConnectedUser[]) => void
+  ) {
+    this.app = app;
+    this.settings = settings;
+    this.share = share;
+    this.onStatusChange = onStatusChange;
+    this.onUsersChange = onUsersChange;
+    this.debouncedPresence = debounce(() => this.renderPresence(), 120, false);
+    this.debouncedStatus = debounce(() => this.emitStatus(), 400, false);
+  }
+
+  get shareId(): string { return this.share.id; }
+
+  /** Share id as used by the server snapshot/history paths ("legacy" for the legacy share). */
+  get histShareId(): string { return this.share.legacy ? "legacy" : this.share.id; }
+
+  /** Total local edits across this share's files made while offline (unsynced). */
+  pendingOfflineCount(): number {
+    let n = 0;
+    for (const [, fp] of this.fileProviders) n += fp.pendingOffline();
+    return n;
+  }
+
+  /** Emit the current status + offline-pending count to the status bar. */
+  private emitStatus(): void {
+    this.onStatusChange(this.syncStatus, this.fileProviders.size, this.pendingOfflineCount());
+  }
+
+  /** Effective color: explicit user choice, else a stable hash of uid. */
+  private userColor(): string {
+    return this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName);
+  }
+
+  /** Manifest awareness — drives facepile / follow / typing (P1B). */
+  getManifestAwareness(): any { return this.manifestProvider?.awareness ?? null; }
+
+  /** Collaborators currently in this share (for @mention autocomplete). */
+  roster(): { uid: string; name: string }[] {
+    const aw = this.manifestProvider?.awareness;
+    if (!aw) return [];
+    const out: { uid: string; name: string }[] = [];
+    const seen = new Set<string>();
+    aw.getStates().forEach((s: any) => {
+      const u = s?.user;
+      if (u?.uid && u.uid !== this.settings.uid && !seen.has(u.uid)) {
+        seen.add(u.uid);
+        out.push({ uid: u.uid, name: u.name || "Anonymous" });
+      }
+    });
+    return out;
+  }
+
+  // last-edited-by stamping (debounced per file to bound manifest churn). Written
+  // to the SEPARATE `edits` map, never the files map, so it cannot LWW-clobber a
+  // concurrent delete/rename tombstone (the bug a whole-object stamp would cause).
+  private stampDebounce: Map<string, () => void> = new Map();
+  private stampEdit(relPath: string): void {
+    let fn = this.stampDebounce.get(relPath);
+    if (!fn) {
+      fn = debounce(() => {
+        if (!this.editsMap) return;
+        this.editsMap.set(relPath, { by: this.settings.displayName, at: Date.now() });
+      }, 3000, false);
+      this.stampDebounce.set(relPath, fn);
+    }
+    fn();
+  }
+
+  /** Force-reconnect every socket for this share (manifest + files). */
+  reconnect(): void {
+    const mp = this.manifestProvider;
+    if (mp) { try { mp.wsUnsuccessfulReconnects = 0; mp.disconnect(); mp.connect(); } catch { /* ignore */ } }
+    for (const [, fp] of this.fileProviders) fp.reconnect();
+  }
+
+  /** Send an @mention push frame (server fans out to the target's ntfy topic). */
+  sendMention(toUid: string, title: string, body: string, click?: string): void {
+    sendFrame(this.manifestProvider, MSG_NOTIFY, {
+      fromUid: this.settings.uid,
+      fromName: this.settings.displayName,
+      toUid,
+      title,
+      body,
+      click,
+    });
+  }
+
+  /** Iterate live file providers (for reconnect / presence). */
+  eachFileProvider(fn: (relPath: string, fp: FileProvider) => void): void {
+    for (const [rel, fp] of this.fileProviders) fn(rel, fp);
+  }
+
+  get role(): string { return this.share.role || "editor"; }
+  get localFolder(): string { return this.share.localFolder; }
+  toRel(fullPath: string): string { return this.toRelativePath(fullPath); }
+  toFull(relPath: string): string { return this.toFullPath(relPath); }
+
+  /** Start syncing the share's folder */
+  async start(): Promise<void> {
+    if (!this.share.localFolder || !this.settings.serverUrl) return;
+
+    this.syncStatus = "connecting";
+    this.onStatusChange("connecting", 0, 0);
+
+    // Connect to manifest room (namespaced per share)
+    this.manifestDoc = new Y.Doc();
+    this.manifestMap = this.manifestDoc.getMap("files");
+    this.manifestMeta = this.manifestDoc.getMap("meta");
+    this.editsMap = this.manifestDoc.getMap("edits");
+
+    this.manifestProvider = createProvider(
+      this.settings.serverUrl,
+      manifestRoom(this.share),
+      this.manifestDoc,
+      shareToken(this.share, this.settings.serverPassword),
+      { uid: this.settings.uid, name: this.settings.displayName, color: this.userColor() },
+      {
+        onStatus: (status) => {
+          if (status === "connected") {
+            this.syncStatus = "connected";
+            // Register our ntfy topic so collaborators can @mention us (even offline).
+            if (this.settings.ntfyTopic && this.settings.uid) {
+              sendFrame(this.manifestProvider, MSG_TOPIC_REGISTER, { uid: this.settings.uid, topic: this.settings.ntfyTopic });
+            }
+          } else if (status === "error") {
+            this.syncStatus = "error";
+          }
+          this.emitStatus();
+        },
+        onSynced: (synced) => {
+          if (synced) {
+            this.onManifestSynced();
+          }
+        },
+      },
+      shareAuthParams(this.share)
+    );
+
+    // Observe manifest changes from remote
+    this.manifestMap.observe((event) => {
+      if (this.processingManifest) return;
+      this.handleManifestChange(event);
+    });
+
+    // Awareness drives file-explorer presence avatars (debounced + diffed)
+    this.manifestProvider.awareness.on("change", () => {
+      this.debouncedPresence();
+    });
+  }
+
+  /** Called after initial manifest sync -- reconcile local folder with manifest */
+  private async onManifestSynced(): Promise<void> {
+    this.processingManifest = true;
+
+    // Schema v1 → v2 migration: backfill fileIds (idempotent; LWW-converges if
+    // two clients migrate at once). Editors only — viewers can't write.
+    if (this.role === "editor") this.migrateManifest();
+    // Remember every entry's fileId so we can later detect a *different* file
+    // appearing at the same path (concurrent same-path create).
+    this.manifestMap!.forEach((entry: any, relPath: string) => {
+      if (!this.safeManifestRelPath(relPath, "startup fileId cache")) return;
+      if (entry?.fileId) this.fileIds.set(relPath, entry.fileId);
+    });
+
+    // Get all local .md files in linked folder
+    const localFiles = this.getLocalFiles();
+
+    // First reconcile tombstones for local files. This must run BEFORE publishing
+    // local files, otherwise a remote delete would be flipped back to exists:true
+    // and silently resurrected on every offline client's startup.
+    if (this.role === "editor") {
+      for (const filePath of localFiles) {
+        const relPath = this.toRelativePath(filePath);
+        if (!this.safeManifestRelPath(relPath, "startup local tombstone")) continue;
+        const entry = this.manifestMap!.get(relPath) as ManifestEntry | undefined;
+        if (entry && !entry.exists) {
+          await this.applyRemoteTombstone(relPath, entry, false);
+        }
+      }
+    }
+
+    // Editors publish genuinely new local files. Viewers/commenters mirror remote
+    // state only. A tombstone is not "missing"; it was handled above.
+    if (this.role === "editor") {
+      for (const filePath of localFiles) {
+        if (!(this.app.vault.getAbstractFileByPath(filePath) instanceof TFile)) continue;
+        const relPath = this.toRelativePath(filePath);
+        if (!this.safeManifestRelPath(relPath, "startup local publish")) continue;
+        const entry = this.manifestMap!.get(relPath) as ManifestEntry | undefined;
+        if (shouldPublishLocalOnStartup(entry)) {
+          const fileId = newFileId();
+          this.fileIds.set(relPath, fileId);
+          this.manifestMap!.set(relPath, liveManifestEntry(undefined, relPath, fileId, this.settings.displayName));
+        }
+      }
+    }
+
+    // Create local files for manifest entries that don't exist locally
+    const manifestEntries = Array.from(this.manifestMap!.entries());
+    for (const [relPath, entry] of manifestEntries) {
+      const safeRel = this.safeManifestRelPath(relPath, "startup manifest create");
+      if (!safeRel) continue;
+      if (!entry.exists) continue;
+      const fullPath = this.toFullPath(safeRel);
+      const file = this.app.vault.getAbstractFileByPath(fullPath);
+      if (!file) {
+        // Ensure parent folders exist
+        const dir = fullPath.substring(0, fullPath.lastIndexOf("/"));
+        if (dir) {
+          await this.ensureFolder(dir);
+        }
+        await this.guardedCreate(fullPath);
+      }
+    }
+
+    this.processingManifest = false;
+
+    // Create FileProviders for all existing files
+    for (const [relPath, entry] of manifestEntries) {
+      const safeRel = this.safeManifestRelPath(relPath, "startup provider");
+      if (!safeRel) continue;
+      if (!entry.exists) continue;
+      const fullPath = this.toFullPath(safeRel);
+      if (!this.fileProviders.has(safeRel)) {
+        await this.createFileProvider(safeRel, fullPath);
+      }
+    }
+
+    this.syncStatus = "connected";
+    this.emitStatus();
+  }
+
+  /**
+   * Idempotent schema v1→v2 migration: give every entry lacking one a stable
+   * `fileId` and stamp the doc's schemaVersion. Additive — v1 clients keep
+   * working and ignore the new fields. Concurrent migration on two clients just
+   * assigns two ids and LWW-converges (fileId is an identity hint, not a key).
+   */
+  private migrateManifest(): void {
+    if (!this.manifestMap || !this.manifestMeta) return;
+    let changed = 0;
+    this.manifestDoc!.transact(() => {
+      this.manifestMap!.forEach((entry: any, relPath: string) => {
+        if (!this.safeManifestRelPath(relPath, "manifest migration")) return;
+        if (entry && !entry.fileId) {
+          this.manifestMap!.set(relPath, { ...entry, fileId: newFileId(), path: relPath });
+          changed++;
+        }
+      });
+      const v = this.manifestMeta!.get("schemaVersion") || 1;
+      if (v < MANIFEST_SCHEMA_VERSION) this.manifestMeta!.set("schemaVersion", MANIFEST_SCHEMA_VERSION);
+    });
+    if (changed) log("delete", "manifest migrated v2: assigned", changed, "fileId(s)");
+  }
+
+  /** Handle remote manifest changes */
+  private async handleManifestChange(event: Y.YMapEvent<any>): Promise<void> {
+    for (const [key, change] of event.changes.keys) {
+      const relPath = this.safeManifestRelPath(key, "manifest change");
+      if (!relPath) continue;
+      const entry = this.manifestMap!.get(key) as ManifestEntry | undefined;
+      if (!entry) continue;
+
+      const fullPath = this.toFullPath(relPath);
+
+      if (entry.exists && change.action !== "delete") {
+        // Identity check: a DIFFERENT file now occupies this path (concurrent
+        // same-path create, or a path reused after deletion). Drop the stale
+        // local doc so we adopt the new file's room cleanly instead of merging
+        // two unrelated histories into one.
+        const knownId = this.fileIds.get(relPath);
+        if (entry.fileId && knownId && knownId !== entry.fileId) {
+          const stale = this.fileProviders.get(relPath);
+          if (stale) { await stale.destroyAndClearData(); this.fileProviders.delete(relPath); }
+          log("delete", "fileId changed at", relPath, "- adopting new identity");
+        }
+        if (entry.fileId) this.fileIds.set(relPath, entry.fileId);
+
+        // File should exist -- create locally if missing
+        const file = this.app.vault.getAbstractFileByPath(fullPath);
+        if (!file) {
+          const dir = fullPath.substring(0, fullPath.lastIndexOf("/"));
+          if (dir) await this.ensureFolder(dir);
+          await this.guardedCreate(fullPath);
+        }
+        if (!this.fileProviders.has(relPath)) {
+          await this.createFileProvider(relPath, fullPath);
+        }
+      } else if (!entry.exists) {
+        // File was deleted (or renamed-away) remotely.
+        await this.applyRemoteTombstone(relPath, entry, true);
+      }
+    }
+    this.emitStatus();
+  }
+
+  /**
+   * Apply a tombstone to our local copy of `relPath`: resurrect if we edited it
+   * after the delete (no silent loss), otherwise snapshot + trash + remove it.
+   * Shared by the live `handleManifestChange` AND the startup `onManifestSynced`
+   * reconcile so the boot path can't silently delete locally-edited files.
+   * Returns true if the file was resurrected (kept).
+   */
+  private async applyRemoteTombstone(relPath: string, entry: ManifestEntry, notifyIfOpen: boolean): Promise<boolean> {
+    const safeRel = this.safeManifestRelPath(relPath, "remote tombstone");
+    if (!safeRel) return false;
+    const fullPath = this.toFullPath(safeRel);
+    const provider = this.fileProviders.get(safeRel);
+    const file = this.app.vault.getAbstractFileByPath(fullPath);
+    const deletedAt = entry.deletedAt || entry.lastModified || 0;
+
+    // Delete-vs-edit resurrection: if WE edited this file locally AFTER it was
+    // deleted elsewhere, keep it. Renames carry `renamedTo` and must NOT
+    // resurrect (the content moved on). Bias toward keeping — a false resurrect
+    // just leaves a file; a false delete loses data.
+    if (
+      this.role === "editor" &&
+      file instanceof TFile &&
+      shouldResurrect({ localMtime: file.stat.mtime, deletedAt, renamedTo: entry.renamedTo })
+    ) {
+      const fileId = entry.fileId || this.fileIds.get(relPath) || newFileId();
+      this.fileIds.set(safeRel, fileId);
+      this.manifestMap!.set(safeRel, liveManifestEntry(entry, safeRel, fileId, this.settings.displayName, {
+        lastModified: Date.now(),
+        resurrectedBy: this.settings.displayName,
+      }));
+      new Notice(`"${safeRel}" was edited after being deleted — kept`);
+      log("delete", "resurrected (edited after delete)", safeRel);
+      return true;
+    }
+
+    if (file instanceof TFile) {
+      if (notifyIfOpen) {
+        const activeFile = this.app.workspace.getActiveFile();
+        if (activeFile && activeFile.path === fullPath && !entry.renamedTo) {
+          new Notice(`"${safeRel}" was deleted by ${entry.deletedBy || "collaborator"}`);
+        }
+      }
+      // Keep a local recovery copy before removing our copy too.
+      if (provider) {
+        await provider.flushSnapshot();
+        await provider.saveToTrash();
+      } else {
+        const content = await this.app.vault.read(file).catch(() => "");
+        if (content.length > 0) {
+          await FileProvider.saveTextSnapshot(this.app, fullPath, content).catch((e) => log("delete", "startup snapshot failed", fullPath, e));
+          await FileProvider.saveTextToTrash(this.app, this.histShareId, fullPath, content).catch((e) => log("delete", "startup trash failed", fullPath, e));
+        }
+      }
+      await this.guardedDelete(file);
+    }
+    // Destroy provider and clear persisted data
+    if (provider) {
+      await provider.destroyAndClearData();
+      this.fileProviders.delete(safeRel);
+    }
+    this.fileIds.delete(safeRel);
+    return false;
+  }
+
+  // In-flight provider creations, so two concurrent callers for the same path
+  // can't both pass the `has()` check and create duplicate providers/sockets.
+  private creatingProviders: Map<string, Promise<void>> = new Map();
+
+  /** Create a FileProvider for a file. `seedState` clones a full Y.Doc into the
+   *  new room (rename content-transfer — preserves text, comments, and anchors). */
+  private async createFileProvider(relPath: string, fullPath: string, opts?: { seedState?: Uint8Array | null }): Promise<void> {
+    if (this.fileProviders.has(relPath)) return;
+    const inflight = this.creatingProviders.get(relPath);
+    if (inflight) return inflight;
+
+    const task = (async () => {
+      // Read initial content
+      let content = "";
+      const file = this.app.vault.getAbstractFileByPath(fullPath);
+      if (file instanceof TFile) {
+        content = await this.app.vault.read(file);
+      }
+
+      const fp = new FileProvider({
+        app: this.app,
+        settings: this.settings,
+        filePath: fullPath,
+        roomName: fileRoom(this.share, relPath),
+        shareId: this.histShareId,
+        token: shareToken(this.share, this.settings.serverPassword),
+        authParams: shareAuthParams(this.share),
+        echo: this.echo,
+        onStatusChange: () => {},  // Individual file status not shown
+        onUsersChange: (users) => this.onUsersChange(users),
+        onLocalEdit: () => this.stampEdit(relPath),
+        onPending: () => this.debouncedStatus(),
+      });
+
+      await fp.start(content, { seedState: opts?.seedState ?? null });
+      this.fileProviders.set(relPath, fp);
+    })();
+
+    this.creatingProviders.set(relPath, task);
+    try {
+      await task;
+    } finally {
+      this.creatingProviders.delete(relPath);
+    }
+  }
+
+  /** Create an empty file, marking it so its create event is dropped as an echo. */
+  private async guardedCreate(fullPath: string): Promise<void> {
+    this.echo.markCreated(fullPath);
+    beginRemoteApply();
+    try {
+      await this.app.vault.create(fullPath, "");
+    } catch (e) {
+      if (!this.app.vault.getAbstractFileByPath(fullPath)) log("delete", "guardedCreate failed", fullPath, e);
+    } finally {
+      endRemoteApply();
+    }
+  }
+
+  /** Delete a file, fingerprinting the deletion so its delete event is dropped as an echo. */
+  private async guardedDelete(file: TFile): Promise<void> {
+    this.echo.markDeleted(file.path);
+    beginRemoteApply();
+    try {
+      await this.app.vault.delete(file);
+    } catch (e) {
+      log("delete", "guardedDelete failed", file.path, e);
+    } finally {
+      endRemoteApply();
+    }
+  }
+
+  // -- Vault event handlers (routed from main.ts) --
+
+  onFileCreate(file: TFile): void {
+    if (!this.isInLinkedFolder(file.path)) return;
+    if (!this.isSyncableFile(file)) return;
+    if (this.role !== "editor") return;
+    // Drop our own create echo, and any create delivered synchronously while
+    // we're applying a remote change.
+    if (isApplyingRemote() || this.echo.isCreatedEcho(file.path)) return;
+
+    const relPath = this.toRelativePath(file.path);
+    if (!this.safeManifestRelPath(relPath, "local create")) return;
+
+    if (this.manifestMap) {
+      const prev = this.manifestMap.get(relPath) as ManifestEntry | undefined;
+      // Reuse an existing fileId (re-create at the same path) else mint a new one.
+      const fileId = prev?.fileId || newFileId();
+      this.fileIds.set(relPath, fileId);
+      this.manifestMap.set(relPath, liveManifestEntry(prev, relPath, fileId, this.settings.displayName));
+    }
+
+    if (!this.fileProviders.has(relPath)) {
+      this.createFileProvider(relPath, file.path);
+    }
+    this.emitStatus();
+  }
+
+  async onFileModify(file: TFile): Promise<void> {
+    if (!this.isInLinkedFolder(file.path)) return;
+    if (!this.isSyncableFile(file)) return;
+    if (this.role !== "editor") return;
+    if (isApplyingRemote()) return;
+
+    const relPath = this.toRelativePath(file.path);
+    if (!this.safeManifestRelPath(relPath, "local modify")) return;
+    const fp = this.fileProviders.get(relPath);
+    if (fp) {
+      const content = await this.app.vault.read(file);
+      // Our own write echo (deterministic, content-based — no timing window).
+      if (this.echo.isEcho(file.path, content)) return;
+      fp.applyLocalChange(content);
+    }
+  }
+
+  async onFileDelete(file: TFile): Promise<void> {
+    if (!this.isInLinkedFolder(file.path)) return;
+    if (!this.isSyncableFile(file)) return;
+    if (this.role !== "editor") return;
+    if (isApplyingRemote() || this.echo.isDeletedEcho(file.path)) return;
+
+    const relPath = this.toRelativePath(file.path);
+    if (!this.safeManifestRelPath(relPath, "local delete")) return;
+    const fp = this.fileProviders.get(relPath);
+
+    // Never lose stuff: snapshot + trash the content BEFORE tearing the doc down.
+    if (fp) {
+      await fp.flushSnapshot();
+      await fp.saveToTrash();
+    }
+
+    if (this.manifestMap) {
+      const prev = this.manifestMap.get(relPath) as ManifestEntry | undefined;
+      this.manifestMap.set(relPath, {
+        ...(prev || {}),
+        path: relPath,
+        exists: false,
+        deleted: true,
+        lastModified: Date.now(),
+        deletedBy: this.settings.displayName,
+        deletedAt: Date.now(),
+      });
+    }
+    this.fileIds.delete(relPath);
+
+    if (fp) {
+      fp.destroyAndClearData();
+      this.fileProviders.delete(relPath);
+    }
+    log("delete", "tombstoned", relPath);
+    this.emitStatus();
+  }
+
+  /**
+   * Rename. A true within-share rename TRANSFERS the file's identity (fileId)
+   * and full Y.Doc state (text + comments + anchors + history) into the new
+   * room, then tombstones the old path with `renamedTo`. Moving out of the share
+   * is a delete; moving in is a create. Obsidian has already moved the file on
+   * disk by the time this fires, so we never create/delete disk files here.
+   */
+  async onFileRename(file: TFile, oldPath: string): Promise<void> {
+    if (this.role !== "editor") return;
+    if (isApplyingRemote()) return; // never re-enter while applying a remote change
+    const oldWasSyncable = this.isInLinkedFolder(oldPath) && oldPath.toLowerCase().endsWith(".md");
+    const newIsSyncable = this.isInLinkedFolder(file.path) && this.isSyncableFile(file);
+
+    if (oldWasSyncable && newIsSyncable) {
+      await this.transferRename(oldPath, file.path);
+    } else if (oldWasSyncable && !newIsSyncable) {
+      // Moved/renamed out of the share → treat as a delete of the old path.
+      await this.tombstoneByRelPath(this.toRelativePath(oldPath));
+    } else if (!oldWasSyncable && newIsSyncable) {
+      // Moved into the share → treat as a create.
+      this.onFileCreate(file);
+    }
+  }
+
+  /**
+   * Folder move/rename. Obsidian fires a SINGLE rename event for the folder (no
+   * per-child events), so we re-derive each descendant .md file's old path by
+   * prefix substitution and route it through the per-file rename — preserving
+   * content, comments, identity, and version lineage for every moved file.
+   */
+  async onFolderRename(folder: TFolder, oldFolderPath: string): Promise<void> {
+    if (this.role !== "editor") return;
+    if (isApplyingRemote()) return;
+    const newPrefix = folder.path; // folder is already at its NEW path
+    const children: TFile[] = [];
+    const walk = (f: TFolder) => {
+      for (const c of f.children) {
+        if (c instanceof TFile && c.extension.toLowerCase() === "md") children.push(c);
+        else if (c instanceof TFolder) walk(c);
+      }
+    };
+    walk(folder);
+    for (const child of children) {
+      if (child.path !== newPrefix && !child.path.startsWith(newPrefix + "/")) continue;
+      const oldChildPath = oldFolderPath + child.path.slice(newPrefix.length); // suffix incl. leading "/"
+      await this.onFileRename(child, oldChildPath);
+    }
+  }
+
+  /**
+   * Folder delete. The children are already gone from disk, so we work from the
+   * manifest: tombstone every LIVE entry whose path falls under the deleted
+   * folder. Idempotent — harmless if per-child delete events also fired.
+   */
+  async onFolderDelete(oldFolderPath: string): Promise<void> {
+    if (this.role !== "editor") return;
+    if (isApplyingRemote()) return;
+    if (!this.manifestMap) return;
+    const prefixFull = oldFolderPath.replace(/\/+$/, "") + "/";
+    const toTomb: string[] = [];
+    this.manifestMap.forEach((entry: any, relPath: string) => {
+      if (!entry || entry.exists === false) return;
+      const full = this.toFullPath(relPath);
+      if (full.startsWith(prefixFull)) toTomb.push(relPath);
+    });
+    for (const relPath of toTomb) await this.tombstoneByRelPath(relPath);
+  }
+
+  /** Tombstone a relPath whose disk file is already gone (rename-out / move). */
+  private async tombstoneByRelPath(oldRel: string): Promise<void> {
+    if (!this.safeManifestRelPath(oldRel, "local tombstone")) return;
+    const fp = this.fileProviders.get(oldRel);
+    if (fp) { await fp.flushSnapshot(); await fp.saveToTrash(); }
+    if (this.manifestMap) {
+      const prev = this.manifestMap.get(oldRel) as ManifestEntry | undefined;
+      this.manifestMap.set(oldRel, {
+        ...(prev || {}), path: oldRel, exists: false, deleted: true,
+        lastModified: Date.now(), deletedBy: this.settings.displayName, deletedAt: Date.now(),
+      });
+    }
+    this.fileIds.delete(oldRel);
+    if (fp) { fp.destroyAndClearData(); this.fileProviders.delete(oldRel); }
+    log("delete", "tombstoned (moved out)", oldRel);
+    this.emitStatus();
+  }
+
+  /** Content-transfer a rename: clone old room state into the new room, same fileId. */
+  private async transferRename(oldPath: string, newPath: string): Promise<void> {
+    const oldRel = this.toRelativePath(oldPath);
+    const newRel = this.toRelativePath(newPath);
+    if (!this.safeManifestRelPath(oldRel, "local rename old")) return;
+    if (!this.safeManifestRelPath(newRel, "local rename new")) return;
+    if (oldRel === newRel) return;
+
+    const oldFp = this.fileProviders.get(oldRel);
+    const oldEntry = (this.manifestMap?.get(oldRel) as ManifestEntry | undefined) || ({} as ManifestEntry);
+    const fileId = oldEntry.fileId || this.fileIds.get(oldRel) || newFileId();
+    // Capture the full doc state (text + comments) BEFORE teardown; snapshot too.
+    const state = oldFp ? oldFp.encodeState() : null;
+    if (oldFp) await oldFp.flushSnapshot();
+
+    // Tear down the old local provider (server room + IDB linger harmlessly).
+    if (oldFp) { oldFp.destroy(); this.fileProviders.delete(oldRel); }
+    this.fileIds.delete(oldRel);
+
+    // Create the new room seeded from the old doc's state (so the new file room
+    // is authoritative) BEFORE writing the manifest, so the manifest observe
+    // doesn't race to create an un-seeded provider.
+    this.fileIds.set(newRel, fileId);
+    if (!this.fileProviders.has(newRel)) {
+      await this.createFileProvider(newRel, newPath, { seedState: state });
+    }
+
+    if (this.manifestMap) {
+      this.manifestDoc!.transact(() => {
+        // New entry: same identity, new path.
+        this.manifestMap!.set(newRel, liveManifestEntry(oldEntry, newRel, fileId, this.settings.displayName, {
+          renamedFrom: oldRel,
+          lastModified: Date.now(),
+        }));
+        // Old path: tombstone pointing at the new path.
+        this.manifestMap!.set(oldRel, {
+          ...oldEntry, fileId, path: oldRel, exists: false, deleted: true,
+          renamedTo: newRel, lastModified: Date.now(),
+          deletedBy: this.settings.displayName, deletedAt: Date.now(),
+        });
+      });
+    }
+    log("delete", "renamed", oldRel, "→", newRel, "(content transferred)");
+    this.emitStatus();
+  }
+
+  /** Broadcast which file (if any) this user has open, for presence avatars. */
+  setPresence(activeFile: TFile | null): void {
+    if (!this.manifestProvider) return;
+    let relPath: string | null = null;
+    if (activeFile && this.isInLinkedFolder(activeFile.path)) {
+      const candidate = this.toRelativePath(activeFile.path);
+      relPath = this.safeManifestRelPath(candidate, "local presence");
+    }
+    this.manifestProvider.awareness.setLocalStateField("presence", { activeFile: relPath });
+  }
+
+  /** The FileProvider owning a vault path (for the editor yCollab binding). */
+  getFileProvider(fullPath: string): FileProvider | null {
+    if (!this.isInLinkedFolder(fullPath)) return null;
+    return this.fileProviders.get(this.toRelativePath(fullPath)) ?? null;
+  }
+
+  // ── Deleted-file recovery (Phase B) ────────────────────────────────────────
+
+  /** Tombstoned (deleted) files in this share's manifest — the "Deleted files" list. */
+  listDeletedFiles(): { relPath: string; deletedBy?: string; deletedAt?: number }[] {
+    if (!this.manifestMap) return [];
+    const out: { relPath: string; deletedBy?: string; deletedAt?: number }[] = [];
+    this.manifestMap.forEach((entry: any, relPath: string) => {
+      if (!this.safeManifestRelPath(relPath, "deleted-files list")) return;
+      if (isRecoverableTombstone(entry)) {
+        out.push({ relPath, deletedBy: entry.deletedBy, deletedAt: entry.deletedAt || entry.lastModified });
+      }
+    });
+    out.sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
+    return out;
+  }
+
+  /**
+   * Un-delete a tombstoned file. Flipping the manifest entry to exists:true makes
+   * handleManifestChange (here AND on peers) recreate the file from the RETAINED
+   * server room content — no local re-seeding, so no risk of CRDT duplication.
+   * The server never discards a file room's content on delete, so the full last
+   * content comes back. Older versions remain available via normal history.
+   */
+  async restoreDeletedFile(relPath: string): Promise<boolean> {
+    if (this.role !== "editor") { new Notice("This share is read-only on this device."); return false; }
+    if (!this.manifestMap) return false;
+    const safeRel = this.safeManifestRelPath(relPath, "restore deleted");
+    if (!safeRel) return false;
+    const prev = this.manifestMap.get(safeRel) || {};
+    const fileId = prev.fileId || this.fileIds.get(safeRel) || newFileId();
+    this.fileIds.set(safeRel, fileId);
+    this.manifestMap.set(safeRel, {
+      ...liveManifestEntry(prev, safeRel, fileId, this.settings.displayName),
+      lastModified: Date.now(),
+      restoredBy: this.settings.displayName,
+      restoredAt: Date.now(),
+    });
+    log("delete", "restore requested", safeRel);
+
+    // Primary path: the flipped tombstone makes handleManifestChange recreate
+    // the file from the retained server room content (no re-seed → no dup).
+    // Safety net: if that room turns out EMPTY (server content lost / wiped),
+    // seed from the local trash copy. Empty→content via restoreFromText is a
+    // dup-safe CRDT diff, so this only ever helps.
+    const trash = await this.readLatestTrash(safeRel);
+    if (trash) {
+      setTimeout(async () => {
+        const fp = this.fileProviders.get(safeRel);
+        if (fp && fp.isReady() && fp.getText().length === 0) {
+          await fp.restoreFromText(trash);
+          log("delete", "restored content from local trash (server room was empty)", safeRel);
+        }
+      }, 2500);
+    }
+    return true;
+  }
+
+  /** Newest local-trash content for a deleted relPath, if any (offline fallback). */
+  async readLatestTrash(relPath: string): Promise<string | null> {
+    const safeRel = this.safeManifestRelPath(relPath, "read trash");
+    if (!safeRel) return null;
+    return FileProvider.readLatestTrash(this.app, this.histShareId, this.toFullPath(safeRel));
+  }
+
+  /**
+   * Render colored letter-avatar badges in the file explorer for collaborators
+   * who have a file in THIS share open. Diffed (skips when nothing changed) and
+   * called on a debounce, so awareness churn doesn't thrash the DOM.
+   *
+   * Desktop-only: mobile uses a different file-explorer (WorkspaceMobileDrawer)
+   * without the `.nav-file-title[data-path]` nodes, so we skip the explorer
+   * avatars there entirely. The in-editor CM6 facepile (PresenceController)
+   * works on every platform, so presence is never lost — just rendered elsewhere.
+   */
+  private renderPresence(): void {
+    if (!this.manifestProvider) return;
+    if (Platform.isMobile) return; // no file-explorer DOM to attach to
+    try {
+      this.renderPresenceDesktop();
+    } catch (e) {
+      // Never let a DOM/selector quirk throw out of an awareness callback.
+      log("offline", "renderPresence skipped", e);
+    }
+  }
+
+  private renderPresenceDesktop(): void {
+    const states = this.manifestProvider.awareness.getStates();
+    const myClientId = this.manifestProvider.awareness.clientID;
+
+    // Collect: fullPath → [{ name, color, device, isSelf }]. Includes YOU next
+    // to the file you have open, as a "connected & syncing" confidence marker.
+    const fileUsers: Map<string, { name: string; color: string; device?: string; isSelf: boolean }[]> = new Map();
+    states.forEach((state: any, clientId: number) => {
+      const presence = state.presence;
+      const user = state.user;
+      if (!presence?.activeFile || !user) return;
+      const safeRel = this.safeManifestRelPath(presence.activeFile, "remote presence");
+      if (!safeRel) return;
+      const fullPath = this.toFullPath(safeRel);
+      if (!fileUsers.has(fullPath)) fileUsers.set(fullPath, []);
+      fileUsers.get(fullPath)!.push({ name: user.name, color: user.color, device: user.device, isSelf: clientId === myClientId });
+    });
+
+    // Skip if nothing changed since the last render
+    const sig = JSON.stringify(Array.from(fileUsers.entries()).sort());
+    if (sig === this.lastPresenceSig) return;
+    this.lastPresenceSig = sig;
+
+    // Clear this share's previously-rendered avatars
+    for (const els of this.renderedPresence.values()) for (const el of els) el.remove();
+    this.renderedPresence.clear();
+
+    for (const [fullPath, users] of fileUsers) {
+      const fileEl = document.querySelector(
+        `.nav-file-title[data-path="${CSS.escape(fullPath)}"]`
+      ) as HTMLElement | null;
+      if (!fileEl) continue;
+
+      // You first, then others — so your own marker is the leftmost badge.
+      const ordered = [...users].sort((a, b) => (a.isSelf === b.isSelf ? 0 : a.isSelf ? -1 : 1));
+      const rendered: HTMLElement[] = [];
+      ordered.forEach((user, i) => {
+        const av = document.createElement("span");
+        av.className = "collab-presence-avatar" + (user.isSelf ? " self" : "");
+        if (i > 0) av.classList.add("stacked");
+        av.style.backgroundColor = user.color;
+        av.textContent = (user.name?.trim()?.[0] || "?").toUpperCase();
+        const label = user.isSelf ? `${user.name} (you) — connected` : (user.device ? `${user.name} (${user.device})` : user.name);
+        av.setAttribute("aria-label", label);
+        av.title = label;
+        fileEl.appendChild(av);
+        rendered.push(av);
+      });
+      this.renderedPresence.set(fullPath, rendered);
+    }
+  }
+
+  /** Stop syncing this share */
+  async destroy(): Promise<void> {
+    for (const els of this.renderedPresence.values()) for (const el of els) el.remove();
+    this.renderedPresence.clear();
+
+    for (const [, fp] of this.fileProviders) fp.destroy();
+    this.fileProviders.clear();
+
+    if (this.manifestProvider) this.manifestProvider.destroy();
+    if (this.manifestDoc) this.manifestDoc.destroy();
+
+    this.syncStatus = "disconnected";
+    this.onStatusChange("disconnected", 0, 0);
+  }
+
+  // -- Helpers --
+
+  isInLinkedFolder(path: string): boolean {
+    const folder = this.share.localFolder;
+    if (!folder) return false;
+    return path.startsWith(folder + "/") || path === folder;
+  }
+
+  private toRelativePath(fullPath: string): string {
+    return fullPath.substring(this.share.localFolder.length + 1);
+  }
+
+  private toFullPath(relPath: string): string {
+    return this.share.localFolder + "/" + relPath;
+  }
+
+  private safeManifestRelPath(relPath: unknown, context: string): string | null {
+    const safe = safeRelPath(relPath, this.share.localFolder);
+    if (!safe) log("loop", "rejected unsafe manifest path", context, String(relPath));
+    return safe;
+  }
+
+  private getLocalFiles(): string[] {
+    const folder = this.app.vault.getAbstractFileByPath(this.share.localFolder);
+    if (!(folder instanceof TFolder)) return [];
+    const files: string[] = [];
+    const recurse = (f: TFolder) => {
+      for (const child of f.children) {
+        if (child instanceof TFile && child.extension === "md") {
+          files.push(child.path);
+        } else if (child instanceof TFolder) {
+          recurse(child);
+        }
+      }
+    };
+    recurse(folder);
+    return files;
+  }
+
+  private async ensureFolder(path: string): Promise<void> {
+    const clean = path.replace(/\/+$/, "");
+    if (!clean) return;
+    const parts = clean.split("/").filter(Boolean);
+    let cur = "";
+    for (const part of parts) {
+      cur = cur ? `${cur}/${part}` : part;
+      const existing = this.app.vault.getAbstractFileByPath(cur);
+      if (existing instanceof TFolder) continue;
+      if (existing) throw new Error(`Cannot create folder "${cur}"; a file exists there.`);
+      await this.app.vault.createFolder(cur).catch((e) => {
+        if (!this.app.vault.getAbstractFileByPath(cur)) throw e;
+      });
+    }
+  }
+
+  private isSyncableFile(file: TFile): boolean {
+    return file.extension.toLowerCase() === "md";
+  }
+}

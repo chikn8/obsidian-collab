@@ -1,0 +1,521 @@
+import { App, TFile, Notice } from "obsidian";
+import * as Y from "yjs";
+import { IndexeddbPersistence } from "y-indexeddb";
+import { createProvider } from "./YjsProvider";
+import { EchoGuard, beginRemoteApply, endRemoteApply } from "./EchoGuard";
+import { diffRange } from "../utils/textDiff";
+import { log } from "../utils/log";
+import { colorFor } from "../types";
+import type { CollabPluginSettings, ConnectionStatus, ConnectedUser } from "../types";
+
+const BACKUP_DIR = ".obsidian/plugins/obsidian-collab/backups";
+const TRASH_DIR = ".obsidian/plugins/obsidian-collab/trash";
+
+/**
+ * Headless-only file sync with offline persistence.
+ *
+ * Remote changes: ytext.observe → write to local file
+ * Local changes:  vault.on("modify") → read file → diff into ytext
+ *
+ * Three layers of data-loss prevention:
+ *
+ *  1. IndexedDB persistence — Yjs CRDT ops survive app restarts.
+ *     Offline edits merge correctly when WebSocket reconnects.
+ *
+ *  2. Pre-overwrite snapshots — before sync overwrites a local file,
+ *     the previous disk content is saved to backups/ for recovery.
+ *
+ *  3. Disk reconciliation — if the file on disk has edits that never
+ *     made it into Yjs (crash between Obsidian save and plugin
+ *     processing), those edits are captured into Yjs before the
+ *     WebSocket sync, so they participate in the CRDT merge.
+ */
+export class FileProvider {
+  private app: App;
+  private settings: CollabPluginSettings;
+  filePath: string;
+  private roomName: string;
+  private shareId: string;
+  private ydoc!: Y.Doc;
+  private ytext!: Y.Text;
+  private provider: any;
+  private idbProvider: IndexeddbPersistence | null = null;
+  private observer: any = null;
+  private echo: EchoGuard;
+  private onStatusChange: (status: ConnectionStatus) => void;
+  private onUsersChange: (users: ConnectedUser[]) => void;
+  private isInitialized = false;
+  private destroyed = false;
+  private writing = false;
+  // Offline state: count local edits made while the socket isn't synced so the
+  // status bar can surface "N changes will sync when you reconnect".
+  private connected = false;
+  private pending = 0;
+  /** When the active editor is bound via yCollab, it owns this doc — the
+   *  headless disk round-trip is suppressed to avoid double-apply/flicker. */
+  private editorBound = false;
+  private token: string;
+  private authParams: Record<string, string>;
+
+  constructor(params: {
+    app: App;
+    settings: CollabPluginSettings;
+    filePath: string;
+    roomName: string;
+    shareId: string;
+    token: string;
+    authParams?: Record<string, string>;
+    echo: EchoGuard;
+    onStatusChange: (status: ConnectionStatus) => void;
+    onUsersChange: (users: ConnectedUser[]) => void;
+    onLocalEdit?: () => void;
+    onPending?: () => void;
+  }) {
+    this.app = params.app;
+    this.settings = params.settings;
+    this.filePath = params.filePath;
+    this.roomName = params.roomName;
+    this.shareId = params.shareId;
+    this.token = params.token;
+    this.authParams = params.authParams ?? {};
+    this.echo = params.echo;
+    this.onStatusChange = params.onStatusChange;
+    this.onUsersChange = params.onUsersChange;
+    this.onLocalEdit = params.onLocalEdit;
+    this.onPending = params.onPending;
+  }
+
+  /** Local edits made while offline that haven't synced yet. */
+  pendingOffline(): number {
+    return this.pending;
+  }
+
+  private onLocalEdit?: () => void;
+  private onPending?: () => void;
+
+  /** Force a reconnect of this file's socket (used by "Reconnect all"). */
+  reconnect(): void {
+    const p = this.provider;
+    if (!p) return;
+    try { p.wsUnsuccessfulReconnects = 0; p.disconnect(); p.connect(); } catch (e) { /* ignore */ }
+  }
+
+  /** Y.Text + awareness for the active-editor yCollab binding. */
+  getYText(): Y.Text { return this.ytext; }
+  getAwareness(): any { return this.provider?.awareness ?? null; }
+  getProvider(): any { return this.provider; }
+  getDoc(): Y.Doc { return this.ydoc; }
+  isReady(): boolean { return this.isInitialized && !this.destroyed; }
+
+  /** Toggle editor-owned mode. On unbind, flush ytext → disk once. */
+  setEditorBound(bound: boolean): void {
+    this.editorBound = bound;
+    if (!bound) this.flushToDisk();
+  }
+
+  /** Force-write current ytext to disk (used when the editor unbinds). */
+  async flushToDisk(): Promise<void> {
+    await this.writeToFile(true);
+  }
+
+  async start(initialContent?: string, opts?: { seedState?: Uint8Array | null }): Promise<void> {
+    this.ydoc = new Y.Doc();
+    this.ytext = this.ydoc.getText("codemirror");
+
+    // ── LAYER 1: IndexedDB persistence ──────────────────────────
+    // Persist all Yjs CRDT operations locally. Offline edits survive
+    // app restarts and will merge via CRDT when WebSocket reconnects.
+    this.idbProvider = new IndexeddbPersistence(
+      `obsidian-collab:${this.roomName}`,
+      this.ydoc
+    );
+    await this.idbProvider.whenSynced;
+
+    // ── Rename content-transfer: clone the prior file's full Y.Doc state
+    // (text + comments + anchors) into this fresh room. Authoritative — skip
+    // the disk seed below (the moved disk file already holds the same text).
+    if (opts?.seedState) {
+      if (this.ytext.length === 0) {
+        try {
+          Y.applyUpdate(this.ydoc, opts.seedState, "seed");
+          log("delete", "seeded renamed room from prior doc state", this.filePath);
+        } catch (e) {
+          log("delete", "seedState apply failed", this.filePath, e);
+        }
+      } else {
+        // Destination room already holds content (a reused path). Don't merge the
+        // seed into it (would duplicate) — the moved disk file's text is captured
+        // by the reconciliation below; only Yjs comment-history transfer is lost.
+        log("delete", "rename seed skipped (room already had content)", this.filePath);
+      }
+    }
+
+    // ── LAYER 3: Disk → Yjs reconciliation ──────────────────────
+    // Capture edits the file picked up on disk while the plugin was OFF (a
+    // crash between Obsidian's save and applyLocalChange, OR the user editing
+    // the note in another app / on another device while this one was closed)
+    // into Yjs NOW — before the WebSocket sync — so they JOIN the CRDT merge
+    // instead of being clobbered by it.
+    //
+    // The diff base is `idbContent`: the IndexedDB-persisted last-synced text,
+    // i.e. the common ancestor. Diffing disk against that ancestor (rather than
+    // blind-replacing) means only the genuinely-changed span becomes Yjs ops,
+    // so concurrent remote edits elsewhere survive the merge.
+    const diskContent = initialContent || "";
+    const idbContent = this.ytext.toString();
+
+    if (diskContent.length > 0 && idbContent !== diskContent) {
+      if (idbContent.length === 0) {
+        // IDB is empty (first load or cleared) — seed from disk
+        this.ytext.insert(0, diskContent);
+      } else {
+        // Both have content but differ — the disk holds offline edits. Snapshot
+        // the raw disk version FIRST (never-lose), then apply it as a CRDT diff
+        // so nothing is lost even if the subsequent server merge is messy.
+        log("offline", "reconciling offline disk edits", this.filePath,
+          `(base ${idbContent.length} → disk ${diskContent.length} chars)`);
+        await this.saveSnapshot(diskContent).catch((e) => log("offline", "pre-reconcile snapshot failed", e));
+        this.applyDiff(idbContent, diskContent);
+      }
+    }
+
+    // ── Connect WebSocket ───────────────────────────────────────
+    this.provider = createProvider(
+      this.settings.serverUrl,
+      this.roomName,
+      this.ydoc,
+      this.token,
+      {
+        uid: this.settings.uid,
+        name: this.settings.displayName,
+        color: this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName),
+      },
+      {
+        onStatus: (status) => {
+          this.connected = status === "connected";
+          this.onStatusChange(status);
+        },
+        // (authParams passed below)
+        onSynced: (synced) => {
+          if (synced && this.pending > 0) {
+            // Reconnected and caught up — the queued offline edits are now sent.
+            this.pending = 0;
+            this.onPending?.();
+          }
+          if (synced && !this.isInitialized && !this.destroyed) {
+            setTimeout(() => {
+              if (this.destroyed || this.isInitialized) return;
+              this.isInitialized = true;
+
+              // ── LAYER 2: Pre-overwrite snapshot ─────────────────
+              // The CRDT merge is done. If the merged result differs
+              // from what was on disk, save the disk version first.
+              const mergedContent = this.ytext.toString();
+              if (diskContent.length > 0 && mergedContent !== diskContent) {
+                this.saveSnapshot(diskContent).catch((e) => {
+                  console.error("[FileProvider] snapshot failed:", e);
+                });
+                const fileName = this.filePath.split("/").pop() || this.filePath;
+                new Notice(
+                  `Sync updated "${fileName}" — pre-sync backup saved`
+                );
+              }
+
+              // First client ever → seed with local content
+              if (this.ytext.length === 0 && diskContent.length > 0) {
+                this.ytext.insert(0, diskContent);
+              }
+
+              // CRDT merge done → write merged result to disk
+              if (this.ytext.length > 0) {
+                this.writeToFile();
+              }
+
+              // Start observing remote changes
+              this.startObserver();
+            }, 500);
+          }
+        },
+      },
+      this.authParams
+    );
+
+    this.provider.awareness.on("change", () => {
+      this.updateUsers();
+    });
+  }
+
+  /** Watch ytext for REMOTE changes → write to local file */
+  private startObserver(): void {
+    if (this.observer || this.destroyed) return;
+
+    this.observer = (_event: any, transaction: any) => {
+      if (this.destroyed) return;
+      // Local edits (typing in the bound editor, or applyLocalChange) → stamp
+      // last-edited-by on the manifest (debounced upstream), then we're done.
+      if (transaction.local) {
+        this.onLocalEdit?.();
+        // Edited while the socket is down → it'll sync on reconnect. Surface it.
+        if (!this.connected && transaction.origin !== "seed") {
+          this.pending++;
+          this.onPending?.();
+        }
+        return;
+      }
+      if (this.writing) return;
+      // While the editor owns this doc (yCollab), it renders remote changes
+      // itself and Obsidian persists them — skip the headless disk write.
+      if (this.editorBound) return;
+      this.writeToFile();
+    };
+    this.ytext.observe(this.observer);
+  }
+
+  /** Write ytext content to vault file (if different) */
+  private async writeToFile(force = false): Promise<void> {
+    if (this.destroyed || this.writing) return;
+    if (this.editorBound && !force) return;
+    this.writing = true;
+    try {
+      const content = this.ytext.toString();
+      const file = this.app.vault.getAbstractFileByPath(this.filePath);
+      if (!(file instanceof TFile)) return;
+
+      const current = await this.app.vault.read(file);
+      if (current === content) return;
+
+      // Fingerprint exactly what we're about to write so the vault "modify"
+      // echo is recognised and dropped deterministically (no timing window).
+      this.echo.mark(this.filePath, content);
+      beginRemoteApply();
+      try {
+        await this.app.vault.modify(file, content);
+      } finally {
+        endRemoteApply();
+      }
+    } catch (e) {
+      console.error("FileProvider: writeToFile failed", this.filePath, e);
+    } finally {
+      this.writing = false;
+    }
+  }
+
+  /** Apply a local file change to ytext (called from vault.on("modify")) */
+  applyLocalChange(newContent: string): void {
+    if (!this.isInitialized || this.destroyed) return;
+    // While bound, yCollab already streams editor edits into ytext — the
+    // vault.modify echo would double-apply, so ignore it here.
+    if (this.editorBound) return;
+    const old = this.ytext.toString();
+    if (old === newContent) return;
+    // Staleness guard: the incoming disk content matches something the plugin
+    // recently wrote, but ytext has since merged newer remote ops (old !==
+    // newContent). Applying it would revert the merge — drop the late echo.
+    if (this.echo.isEcho(this.filePath, newContent)) {
+      log("loop", "stale echo ignored in applyLocalChange", this.filePath);
+      return;
+    }
+
+    const { start, delCount, insert } = diffRange(old, newContent);
+    this.ydoc.transact(() => {
+      if (delCount > 0) this.ytext.delete(start, delCount);
+      if (insert.length > 0) this.ytext.insert(start, insert);
+    });
+  }
+
+  /** No editor binding in headless mode */
+  hasEditor(): boolean {
+    return false;
+  }
+
+  /**
+   * Restore the file to a prior version's text. Applies as a CRDT diff (so it
+   * converges to peers and, if this file is the active editor, yCollab updates
+   * the view). Saves a pre-restore local backup first. Explicitly flushes to
+   * disk even when headless (the observer skips local transactions).
+   */
+  async restoreFromText(newText: string): Promise<void> {
+    if (!this.isInitialized || this.destroyed) return;
+    const old = this.ytext.toString();
+    if (old === newText) return;
+    await this.saveSnapshot(old).catch((e) => console.error("[FileProvider] pre-restore snapshot failed", e));
+    this.applyDiff(old, newText);
+    await this.writeToFile(true);
+  }
+
+  private updateUsers(): void {
+    if (!this.provider) return;
+    const states = this.provider.awareness.getStates();
+    const users: ConnectedUser[] = [];
+    states.forEach((state: any, clientId: number) => {
+      if (clientId !== this.provider.awareness.clientID && state.user) {
+        users.push({ clientId, name: state.user.name, color: state.user.color, device: state.user.device });
+      }
+    });
+    this.onUsersChange(users);
+  }
+
+  /** Apply a diff between two strings as Yjs operations */
+  private applyDiff(oldContent: string, newContent: string): void {
+    const { start, delCount, insert } = diffRange(oldContent, newContent);
+    if (delCount > 0 || insert.length > 0) {
+      this.ydoc.transact(() => {
+        if (delCount > 0) this.ytext.delete(start, delCount);
+        if (insert.length > 0) this.ytext.insert(start, insert);
+      });
+    }
+  }
+
+  /** Current Y.Text content (for transferring/preserving across destroy). */
+  getText(): string {
+    return this.ytext?.toString() ?? "";
+  }
+
+  /** Full Y.Doc state for cloning into another room (rename content-transfer). */
+  encodeState(): Uint8Array | null {
+    if (!this.ydoc) return null;
+    return Y.encodeStateAsUpdate(this.ydoc);
+  }
+
+  /**
+   * "Never lose stuff" pre-destroy guarantee. Saves the CURRENT content to the
+   * local backups/ dir before any delete / rename / large overwrite. The server
+   * keeps git history independently; this is the local belt-and-suspenders copy
+   * that works offline. No-op for empty docs.
+   */
+  async flushSnapshot(): Promise<void> {
+    if (this.destroyed) return;
+    const content = this.getText();
+    if (content.length === 0) return;
+    await this.saveSnapshot(content).catch((e) => log("delete", "flushSnapshot failed", this.filePath, e));
+  }
+
+  /**
+   * Move the current content to the local trash before a delete. Distinct from
+   * backups/ (pre-overwrite snapshots): trash is keyed by share + path so a
+   * deleted note is one click back, retained longer. No-op for empty docs.
+   */
+  async saveToTrash(): Promise<void> {
+    const content = this.getText();
+    if (content.length === 0) return;
+    await FileProvider.saveTextToTrash(this.app, this.shareId, this.filePath, content);
+  }
+
+  /** Save arbitrary text to the local trash store for a path. Used both by a live
+   *  FileProvider and by startup tombstone handling before providers exist. */
+  static async saveTextToTrash(app: App, shareId: string, fullPath: string, content: string): Promise<void> {
+    if (content.length === 0) return;
+    const adapter = app.vault.adapter;
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const safeName = fullPath.replace(/\//g, "__");
+    const dir = `${TRASH_DIR}/${(shareId || "legacy").replace(/[^A-Za-z0-9_.-]/g, "_")}`;
+    await adapter.mkdir(TRASH_DIR).catch(() => {});
+    await adapter.mkdir(dir).catch(() => {});
+    await adapter.write(`${dir}/${safeName}__${ts}.md`, content).catch((e) => log("delete", "saveToTrash failed", fullPath, e));
+  }
+
+  /** Save a pre-sync snapshot for disaster recovery */
+  private async saveSnapshot(content: string): Promise<void> {
+    await FileProvider.saveTextSnapshot(this.app, this.filePath, content);
+  }
+
+  /** Save arbitrary text to backups/. Used by pre-overwrite and startup delete
+   *  handling when a FileProvider has not been created yet. */
+  static async saveTextSnapshot(app: App, fullPath: string, content: string): Promise<void> {
+    if (content.length === 0) return;
+    const adapter = app.vault.adapter;
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const safeName = fullPath.replace(/\//g, "__");
+    const snapshotPath = `${BACKUP_DIR}/${safeName}__${ts}.md`;
+
+    await adapter.mkdir(BACKUP_DIR).catch(() => {});
+    await adapter.write(snapshotPath, content);
+  }
+
+  /** Normal teardown — preserves IndexedDB for next session */
+  destroy(): void {
+    this.destroyed = true;
+    if (this.observer) {
+      this.ytext.unobserve(this.observer);
+      this.observer = null;
+    }
+    if (this.provider) {
+      this.provider.destroy();
+      this.provider = null;
+    }
+    if (this.idbProvider) {
+      this.idbProvider.destroy();
+      this.idbProvider = null;
+    }
+    if (this.ydoc) {
+      this.ydoc.destroy();
+      this.ydoc = null as any;
+    }
+  }
+
+  /** Teardown AND wipe IndexedDB data (call when file is permanently deleted) */
+  async destroyAndClearData(): Promise<void> {
+    this.destroyed = true;
+    if (this.observer) {
+      this.ytext.unobserve(this.observer);
+      this.observer = null;
+    }
+    if (this.provider) {
+      this.provider.destroy();
+      this.provider = null;
+    }
+    if (this.idbProvider) {
+      await this.idbProvider.clearData();
+      this.idbProvider.destroy();
+      this.idbProvider = null;
+    }
+    if (this.ydoc) {
+      this.ydoc.destroy();
+      this.ydoc = null as any;
+    }
+  }
+
+  /** Newest trashed content for a deleted file (offline fallback for restore). */
+  static async readLatestTrash(app: App, shareId: string, fullPath: string): Promise<string | null> {
+    const adapter = app.vault.adapter;
+    const shareDir = (shareId || "legacy").replace(/[^A-Za-z0-9_.-]/g, "_");
+    const dir = `${TRASH_DIR}/${shareDir}`;
+    const prefix = `${dir}/${fullPath.replace(/\//g, "__")}__`;
+    try {
+      const listing = await adapter.list(dir);
+      let best: string | null = null;
+      let bestMtime = -1;
+      for (const f of listing.files) {
+        if (!f.startsWith(prefix)) continue;
+        const stat = await adapter.stat(f);
+        if (stat && stat.mtime > bestMtime) { bestMtime = stat.mtime; best = f; }
+      }
+      return best ? await adapter.read(best) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Delete backup snapshots older than maxAgeDays, and trashed deletions older
+   * than trashAgeDays (trash is retained longer — it's the "undo a delete" net).
+   */
+  static async cleanupSnapshots(app: App, maxAgeDays = 7, trashAgeDays = 30): Promise<void> {
+    const adapter = app.vault.adapter;
+    const sweep = async (dir: string, ageDays: number, recurse: boolean): Promise<void> => {
+      try {
+        const listing = await adapter.list(dir);
+        const cutoff = Date.now() - ageDays * 24 * 60 * 60 * 1000;
+        for (const file of listing.files) {
+          const stat = await adapter.stat(file);
+          if (stat && stat.mtime < cutoff) await adapter.remove(file);
+        }
+        if (recurse) for (const sub of listing.folders) await sweep(sub, ageDays, false);
+      } catch {
+        // Dir may not exist yet — that's fine
+      }
+    };
+    await sweep(BACKUP_DIR, maxAgeDays, false);
+    await sweep(TRASH_DIR, trashAgeDays, true); // trash is nested per-share
+  }
+}

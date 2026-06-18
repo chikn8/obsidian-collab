@@ -1,0 +1,27 @@
+{
+  "name": "obsidian-collab-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit && node esbuild.config.mjs production",
+    "test": "tsx test/loop-sim.test.mjs && tsx test/manifest.test.mjs && tsx test/textdiff.test.mjs && node test/run-integration.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.25.0",
+    "obsidian": "latest",
+    "tslib": "^2.6.0",
+    "tsx": "^4.22.4",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "lib0": "^0.2.90",
+    "y-codemirror.next": "^0.3.5",
+    "y-indexeddb": "^9.0.12",
+    "y-protocols": "^1.0.6",
+    "y-websocket": "^2.0.4",
+    "yjs": "^13.6.0"
+  }
+}

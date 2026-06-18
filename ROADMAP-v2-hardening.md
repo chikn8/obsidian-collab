@@ -41,8 +41,8 @@ per client/share; server e2e verifies two rooms over two mux sockets; server per
 dirty-room global save sweep instead of one interval per active room.
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
-(ops, not code) · account-grade identity semantics · true HA storage/fan-out · object-store polish ·
-human device-matrix test.
+(ops, not code) · account-grade identity semantics · true HA storage/fan-out · richer binary conflict
+history · human device-matrix test.
 
 ---
 
@@ -339,15 +339,17 @@ A persisted audit log of joins/revokes/security rejections also exists.
 ### 4.1 — Binary/attachment sync (HIGH user value, L/XL)
 **Status.** Implemented the foundation: Markdown and `.canvas` text files still sync through the Y.Text
 path; safe-listed image/PDF/audio/video attachments now upload to `/blob` as content-addressed SHA-256
-objects under `$PERSIST_DIR/blobs`, with manifest `kind:"binary"`/`blobHash`/`blobSize` metadata. Editors
-can upload; any valid role can download. Peers download and write the attachment when the manifest entry
-appears. Server tests and real-server e2e cover blob validation, editor upload, viewer download, and
-viewer upload rejection. Orphan blob GC can scan persisted manifests, keep referenced tombstone blobs for
-recovery, dry-run by default through `/admin/blob-gc`, and optionally run on an interval.
+objects under `$PERSIST_DIR/blobs` or an S3-compatible object store (`BLOB_STORE=s3`), with manifest
+`kind:"binary"`/`blobHash`/`blobSize` metadata. Editors can upload; any valid role can download. Peers
+download and write the attachment when the manifest entry appears. Server tests and real-server e2e cover
+blob validation, editor upload, viewer download, viewer upload rejection, filesystem storage, and
+S3/R2-compatible storage. Orphan blob GC can scan persisted manifests, keep referenced tombstone blobs for
+recovery, dry-run by default through `/admin/blob-gc`, and optionally run on an interval against the
+configured blob store.
 Live binary apply now keeps and republishes a newer local attachment instead of overwriting it with an
 older remote blob.
-**Remaining.** Object-store offload for very large vaults, richer conflict UI/history for same binary
-changed on two devices, and human mobile testing with real images/PDFs.
+**Remaining.** Richer conflict UI/history for same binary changed on two devices, and human mobile testing
+with real images/PDFs.
 
 ### 4.2 — Inline / side-by-side version diff (implemented)
 **Status.** History preview is no longer only a raw 4000-char dump: the sidebar can compare a saved

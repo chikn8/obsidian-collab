@@ -1,11 +1,9 @@
 import fs from "fs/promises";
-import type { Dirent } from "fs";
 import path from "path";
 import * as Y from "yjs";
-import { safeBlobHash, safeBlobShareId } from "./blobs.js";
+import { deleteStoredBlob, listStoredBlobs, safeBlobHash, safeBlobShareId } from "./blobs.js";
 
 const PERSIST_DIR = process.env.PERSIST_DIR || "./collab-data";
-const BLOB_DIR = path.join(PERSIST_DIR, "blobs");
 export const BLOB_GC_GRACE_MS = Number(process.env.BLOB_GC_GRACE_MS || 24 * 60 * 60 * 1000);
 const BLOB_GC_INTERVAL_MS = Number(process.env.BLOB_GC_INTERVAL_MS || 0);
 
@@ -71,12 +69,6 @@ async function collectReferencedBlobs(): Promise<Set<string>> {
   return referenced;
 }
 
-async function removeEmptyDir(dir: string): Promise<void> {
-  await fs.rmdir(dir).catch((e: any) => {
-    if (e?.code !== "ENOENT" && e?.code !== "ENOTEMPTY") throw e;
-  });
-}
-
 export async function sweepOrphanBlobs(options: { dryRun?: boolean; graceMs?: number } = {}): Promise<BlobGcResult> {
   const dryRun = options.dryRun ?? true;
   const graceMs = options.graceMs ?? BLOB_GC_GRACE_MS;
@@ -95,56 +87,25 @@ export async function sweepOrphanBlobs(options: { dryRun?: boolean; graceMs?: nu
     bytesScanned: 0,
   };
 
-  let shares: Dirent[];
-  try {
-    shares = await fs.readdir(BLOB_DIR, { withFileTypes: true });
-  } catch (e: any) {
-    if (e?.code === "ENOENT") return result;
-    throw e;
-  }
-
-  for (const share of shares) {
-    if (!share.isDirectory() || !safeBlobShareId(share.name)) {
+  for await (const blob of listStoredBlobs()) {
+    if (!safeBlobShareId(blob.shareId) || !safeBlobHash(blob.hash) || blob.hash.slice(0, 2).length !== 2) {
       result.skippedInvalid++;
       continue;
     }
-    const shareDir = path.join(BLOB_DIR, share.name);
-    const prefixes = await fs.readdir(shareDir, { withFileTypes: true }).catch(() => []);
-    for (const prefix of prefixes) {
-      if (!prefix.isDirectory() || !/^[a-f0-9]{2}$/.test(prefix.name)) {
-        result.skippedInvalid++;
-        continue;
-      }
-      const prefixDir = path.join(shareDir, prefix.name);
-      const files = await fs.readdir(prefixDir, { withFileTypes: true }).catch(() => []);
-      for (const file of files) {
-        if (!file.isFile() || !safeBlobHash(file.name) || !file.name.startsWith(prefix.name)) {
-          result.skippedInvalid++;
-          continue;
-        }
-        const filePath = path.join(prefixDir, file.name);
-        const stat = await fs.stat(filePath).catch(() => null);
-        if (!stat) continue;
-        result.scanned++;
-        result.bytesScanned += stat.size;
+    result.scanned++;
+    result.bytesScanned += blob.size;
 
-        if (referenced.has(`${share.name}:${file.name}`)) {
-          result.retainedReferenced++;
-          continue;
-        }
-        if (now - stat.mtimeMs < graceMs) {
-          result.retainedYoung++;
-          continue;
-        }
-        if (!dryRun) {
-          await fs.rm(filePath, { force: true });
-          await removeEmptyDir(prefixDir);
-          await removeEmptyDir(shareDir);
-        }
-        result.deleted++;
-        result.bytesDeleted += stat.size;
-      }
+    if (referenced.has(`${blob.shareId}:${blob.hash}`)) {
+      result.retainedReferenced++;
+      continue;
     }
+    if (now - blob.updatedAt < graceMs) {
+      result.retainedYoung++;
+      continue;
+    }
+    if (!dryRun) await deleteStoredBlob(blob.shareId, blob.hash);
+    result.deleted++;
+    result.bytesDeleted += blob.size;
   }
 
   return result;

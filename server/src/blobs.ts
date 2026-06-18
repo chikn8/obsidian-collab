@@ -1,11 +1,7 @@
 import type http from "http";
 import { createHash } from "crypto";
-import fs from "fs/promises";
-import path from "path";
-import { atomicWriteFile } from "./storage.js";
+import { getBlobStore, type StoredBlob } from "./blobStore.js";
 
-const PERSIST_DIR = process.env.PERSIST_DIR || "./collab-data";
-const BLOB_DIR = path.join(PERSIST_DIR, "blobs");
 export const BLOB_MAX_BYTES = Number(process.env.BLOB_MAX_BYTES || 25 * 1024 * 1024);
 
 const BINARY_EXTENSIONS = new Set([
@@ -37,10 +33,6 @@ export function sha256Hex(data: Uint8Array): string {
   return createHash("sha256").update(data).digest("hex");
 }
 
-function blobPath(shareId: string, hash: string): string {
-  return path.join(BLOB_DIR, shareId, hash.slice(0, 2), hash);
-}
-
 export async function readBlobBody(req: http.IncomingMessage, maxBytes = BLOB_MAX_BYTES): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let total = 0;
@@ -59,22 +51,23 @@ export async function storeBlob(shareId: string, hash: string, data: Buffer): Pr
   if (data.byteLength > BLOB_MAX_BYTES) throw new Error("blob too large");
   const actual = sha256Hex(data);
   if (actual !== hash) throw new Error("blob hash mismatch");
-  const filePath = blobPath(shareId, hash);
-  try {
-    const stat = await fs.stat(filePath);
-    if (stat.size === data.byteLength) return;
-  } catch {
-    // Missing blob; write it below.
-  }
-  await atomicWriteFile(filePath, data);
+  await getBlobStore().put(shareId, hash, data);
 }
 
 export async function loadBlob(shareId: string, hash: string): Promise<Buffer | null> {
   if (!safeBlobShareId(shareId) || !safeBlobHash(hash)) return null;
-  try {
-    return await fs.readFile(blobPath(shareId, hash));
-  } catch (e: any) {
-    if (e?.code === "ENOENT") return null;
-    throw e;
-  }
+  return getBlobStore().get(shareId, hash);
+}
+
+export async function* listStoredBlobs(): AsyncIterable<StoredBlob> {
+  for await (const blob of getBlobStore().list()) yield blob;
+}
+
+export async function deleteStoredBlob(shareId: string, hash: string): Promise<void> {
+  if (!safeBlobShareId(shareId) || !safeBlobHash(hash)) return;
+  await getBlobStore().delete(shareId, hash);
+}
+
+export function getBlobStorageHealth() {
+  return getBlobStore().configured();
 }

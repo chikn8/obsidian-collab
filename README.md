@@ -185,6 +185,10 @@ Settings → Real-Time Collaboration:
 | `PERSIST_DIR` | `./collab-data` | Durable state dir — **mount a persistent volume here** |
 | `WS_MAX_PAYLOAD` | `2097152` | Max inbound WS frame (anti-bloat/OOM) |
 | `BLOB_MAX_BYTES` | `26214400` | Max attachment/blob upload size |
+| `BLOB_STORE` | `fs` | Attachment blob backend: `fs` or S3-compatible `s3` |
+| `BLOB_S3_ENDPOINT` / `BLOB_S3_BUCKET` / `BLOB_S3_REGION` | — / — / `auto` | S3/R2 object-store endpoint, bucket, and signing region when `BLOB_STORE=s3` |
+| `BLOB_S3_ACCESS_KEY_ID` / `BLOB_S3_SECRET_ACCESS_KEY` | — | S3/R2 credentials for attachment blobs |
+| `BLOB_S3_PREFIX` | `obsidian-collab/blobs` | Object key prefix for S3/R2 attachment blobs |
 | `BLOB_GC_GRACE_MS` | `86400000` | Minimum orphan blob age before GC may delete it |
 | `BLOB_GC_INTERVAL_MS` | `0` | Optional automatic orphan blob GC cadence; `0` disables scheduled GC |
 | `SAVE_SWEEP_INTERVAL_MS` | `60000` | Dirty-room persistence sweep cadence |
@@ -283,7 +287,8 @@ manual installs but violates Obsidian's current community-directory naming rule 
   secrets after the grace window.
 - **Blob GC:** `POST /admin/blob-gc?dryRun=true` with `Authorization: Bearer $ADMIN_SECRET` previews
   orphan attachment cleanup. Use `dryRun=false` to delete unreferenced blobs older than
-  `BLOB_GC_GRACE_MS`, or set `BLOB_GC_INTERVAL_MS` for scheduled sweeps.
+  `BLOB_GC_GRACE_MS`, or set `BLOB_GC_INTERVAL_MS` for scheduled sweeps. When `BLOB_STORE=s3`, the same
+  endpoint scans/deletes object-store blobs under `BLOB_S3_PREFIX`.
 - **Restore:** follow `server/RECOVERY.md`.
 
 ## Project status

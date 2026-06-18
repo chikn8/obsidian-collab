@@ -2,7 +2,7 @@ import http from "http";
 import { randomBytes } from "crypto";
 import { WebSocketServer } from "ws";
 import { setupMuxConnection, setupWSConnection, getMetrics, saveAllDocs, closeRevokedConnections, closeInviteConnections } from "./rooms.js";
-import { BLOB_MAX_BYTES, loadBlob, readBlobBody, safeBlobHash, safeBlobRelPath, storeBlob } from "./blobs.js";
+import { BLOB_MAX_BYTES, getBlobStorageHealth, loadBlob, readBlobBody, safeBlobHash, safeBlobRelPath, storeBlob } from "./blobs.js";
 import { BLOB_GC_GRACE_MS, startBlobGc, stopBlobGc, sweepOrphanBlobs } from "./blobGc.js";
 import {
   timingSafeEqualStr,
@@ -249,7 +249,8 @@ const server = http.createServer(async (req, res) => {
       ]);
       const shareState = getShareStateHealth();
       const backups = getBackupHealth();
-      const ok = persistence.ok && snapshots.ok && shareState.ok && backups.ok && runtime.ok;
+      const blobs = getBlobStorageHealth();
+      const ok = persistence.ok && snapshots.ok && shareState.ok && backups.ok && runtime.ok && blobs.ok;
       return json(ok ? 200 : 503, {
         status: ok ? "ok" : "degraded",
         service: "obsidian-collab-server",
@@ -258,6 +259,7 @@ const server = http.createServer(async (req, res) => {
         snapshots,
         shareState,
         backups,
+        blobs,
         runtime,
       });
     }

@@ -276,11 +276,14 @@ unknown v2 fields during old-client round trips.
 **Problem.** Server logs are `console.*` only; `/metrics` is in-memory (lost on restart, no series).
 **Status.** Structured redacted JSON logs now cover relay joins/leaves, rejected writes, mux room
 rejections, rate limits, backpressure closes, suspicious updates, awareness rejections, and opt-in client
-errors. `/metrics` now includes cumulative counters for save/snapshot failures, disconnects, revocations,
-rejected writes/paths, rejected awareness, rate limiting, backpressure closes, send failures, client
-errors, and mux room rejections, alongside live room/runtime state.
-**Remaining.** Point stdout/stderr at a retained drain in production and add explicit threshold alerts if
-the hosted platform cannot alert on `/health`/`/metrics`.
+errors. In production the same redacted rows are also retained to a bounded JSONL drain under
+`SERVER_LOG_PATH` (default `$PERSIST_DIR/server.jsonl`) with rotation, and `/health`/`/metrics` expose
+`logDrain` status so a broken retained-log path becomes visible. `/metrics` now includes cumulative
+counters for save/snapshot failures, disconnects, revocations, rejected writes/paths, rejected awareness,
+rate limiting, backpressure closes, send failures, client errors, and mux room rejections, alongside live
+room/runtime state.
+**Remaining.** Add explicit external threshold alerts if the hosted platform cannot alert on `/health` and
+`/metrics`.
 **Verify.** Unit/e2e coverage checks metric counter behavior and `/metrics.counters` increments on real
 clientlog, blob rejection, and revocation paths.
 

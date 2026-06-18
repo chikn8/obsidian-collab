@@ -194,6 +194,10 @@ Settings → Real-Time Collaboration:
 | `SYNC_DEBUG_LOG` | `false` | Emit verbose structured sync/awareness relay rows for debugging loops/glitches |
 | `SYNC_LOG_LARGE_UPDATE_BYTES` | `65536` | Warn when an inbound Yjs sync update frame is this large |
 | `SYNC_LOG_LARGE_TEXT_DELTA` | `20480` | Warn when a single inbound sync update changes text length by this much |
+| `SERVER_LOG_DRAIN` | `true` in production, otherwise `false` | Retain redacted structured server logs to a bounded JSONL file; set `false` to disable |
+| `SERVER_LOG_PATH` | `$PERSIST_DIR/server.jsonl` | Retained structured log path; `/health` reports `logDrain` status |
+| `SERVER_LOG_MAX_BYTES` | `10485760` | Rotate retained server log when the active file passes this many bytes |
+| `SERVER_LOG_ROTATE_COUNT` | `3` | Number of rotated retained log files to keep |
 | `CLIENT_LOG_MAX_BYTES` | `65536` | Max opt-in `/clientlog` telemetry request body size |
 | `BLOB_MAX_BYTES` | `26214400` | Max attachment/blob upload size |
 | `BLOB_STORE` | `fs` | Attachment blob backend: `fs` or S3-compatible `s3` |

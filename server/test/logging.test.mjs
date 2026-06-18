@@ -1,4 +1,7 @@
-import { logEvent } from "../src/logging.ts";
+import fs from "fs/promises";
+import os from "os";
+import path from "path";
+import { configureLogDrainForTest, getLogDrainHealth, logEvent } from "../src/logging.ts";
 
 let failures = 0;
 function check(name, cond, extra = "") {
@@ -52,6 +55,41 @@ check("redacts body fields", second.body === "[redacted]");
 check("keeps safe length metadata", first.beforeTextLen === 123);
 check("summarizes binary payloads", first.binary?.byteLength === 3);
 check("does not leak secret values", !captured.map((r) => r.line).join("\n").includes("should-not-export"));
+
+{
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "obsidian-collab-log-"));
+  const logPath = path.join(tmp, "server.jsonl");
+  const drainCaptured = [];
+  configureLogDrainForTest({ enabled: true, path: logPath, maxBytes: 900, rotateCount: 2 });
+  try {
+    console.log = (line) => drainCaptured.push({ stream: "log", line });
+    console.warn = (line) => drainCaptured.push({ stream: "warn", line });
+    console.error = (line) => drainCaptured.push({ stream: "error", line });
+
+    logEvent("info", "drain.one", { shareId: "share-1", token: "drain-secret", safe: "yes" });
+    logEvent("error", "drain.two", { body: "drain-secret", safe: "still" });
+    for (let i = 0; i < 6; i++) {
+      logEvent("info", "drain.rotate", { i, message: "x".repeat(260) });
+    }
+  } finally {
+    console.log = original.log;
+    console.warn = original.warn;
+    console.error = original.error;
+  }
+
+  const current = await fs.readFile(logPath, "utf8");
+  const rotated = await fs.readFile(`${logPath}.1`, "utf8");
+  const combined = `${current}\n${rotated}`;
+  const lines = combined.trim().split(/\n+/).map((line) => JSON.parse(line));
+  const health = getLogDrainHealth();
+  check("retained drain writes JSONL", lines.some((row) => row.event === "drain.rotate"), combined);
+  check("retained drain uses level stream", drainCaptured.some((row) => row.stream === "error" && row.line.includes("drain.two")));
+  check("retained drain redacts secrets", !combined.includes("drain-secret"), combined);
+  check("retained drain rotates when capped", rotated.includes("drain."), rotated);
+  check("retained drain health is exposed", health.enabled === true && health.ok === true && health.path === logPath && health.bytes > 0, JSON.stringify(health));
+  configureLogDrainForTest({ enabled: false });
+  await fs.rm(tmp, { recursive: true, force: true });
+}
 
 console.log("");
 if (failures > 0) { console.error(`FAILED — ${failures} assertion(s) failed`); process.exit(1); }

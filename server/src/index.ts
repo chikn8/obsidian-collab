@@ -26,7 +26,7 @@ import { startBackups, stopBackups, getBackupHealth } from "./backups.js";
 import { auditEvent } from "./audit.js";
 import { getRuntimeHealth } from "./runtime.js";
 import { CLIENT_LOG_MAX_BYTES, clientLogFields } from "./clientLog.js";
-import { logEvent } from "./logging.js";
+import { getLogDrainHealth, logEvent } from "./logging.js";
 import { incMetric } from "./metrics.js";
 
 const HOST = process.env.HOST || "0.0.0.0";
@@ -253,7 +253,8 @@ const server = http.createServer(async (req, res) => {
       const shareState = getShareStateHealth();
       const backups = getBackupHealth();
       const blobs = getBlobStorageHealth();
-      const ok = persistence.ok && snapshots.ok && shareState.ok && backups.ok && runtime.ok && blobs.ok;
+      const logDrain = getLogDrainHealth();
+      const ok = persistence.ok && snapshots.ok && shareState.ok && backups.ok && runtime.ok && blobs.ok && logDrain.ok !== false;
       return json(ok ? 200 : 503, {
         status: ok ? "ok" : "degraded",
         service: "obsidian-collab-server",
@@ -264,12 +265,13 @@ const server = http.createServer(async (req, res) => {
         backups,
         blobs,
         runtime,
+        logDrain,
       });
     }
 
     if (p === "/metrics") {
       if (!metricsAuthorized(req, url)) return json(401, { error: "unauthorized" });
-      return json(200, { ...getMetrics(), runtime: getRuntimeHealth() });
+      return json(200, { ...getMetrics(), runtime: getRuntimeHealth(), logDrain: getLogDrainHealth() });
     }
 
     if (p === "/clientlog" && req.method === "POST") {

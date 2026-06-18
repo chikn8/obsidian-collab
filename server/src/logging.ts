@@ -1,12 +1,29 @@
+import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from "fs";
+import { dirname, join } from "path";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 const MAX_STRING = 512;
 const MAX_ARRAY = 50;
 const MAX_OBJECT_KEYS = 80;
 const SECRET_KEY_RE = /(authorization|auth|credential|password|secret|token|key|code|content|body)/i;
+const DEFAULT_LOG_MAX_BYTES = 10 * 1024 * 1024;
+const DEFAULT_LOG_ROTATE_COUNT = 3;
 
 const startedAt = Date.now();
 let seq = 0;
+let drainLastWriteAt = 0;
+let drainLastError = "";
+let drainDroppedRows = 0;
+
+interface LogDrainConfig {
+  enabled: boolean;
+  path: string;
+  maxBytes: number;
+  rotateCount: number;
+}
+
+let logDrain = initialLogDrainConfig();
 
 function trim(value: string): string {
   const clean = value.replace(/[\u0000-\u001f\u007f]/g, "");
@@ -72,4 +89,98 @@ export function logEvent(level: LogLevel, event: string, fields: Record<string, 
   if (level === "error") console.error(line);
   else if (level === "warn") console.warn(line);
   else console.log(line);
+  writeToLogDrain(line);
+}
+
+export function getLogDrainHealth(): Record<string, unknown> {
+  const health: Record<string, unknown> = {
+    enabled: logDrain.enabled,
+    ok: !logDrain.enabled || !drainLastError,
+    droppedRows: drainDroppedRows,
+  };
+  if (!logDrain.enabled) return health;
+  health.path = logDrain.path;
+  health.maxBytes = logDrain.maxBytes;
+  health.rotateCount = logDrain.rotateCount;
+  health.lastWriteAt = drainLastWriteAt || undefined;
+  health.lastError = drainLastError || undefined;
+  try {
+    health.bytes = existsSync(logDrain.path) ? statSync(logDrain.path).size : 0;
+  } catch (e: any) {
+    health.ok = false;
+    health.lastError = trim(String(e?.message || e));
+  }
+  return health;
+}
+
+export function configureLogDrainForTest(config: Partial<LogDrainConfig> | null): void {
+  logDrain = config
+    ? {
+      enabled: !!config.enabled,
+      path: config.path || defaultLogPath(),
+      maxBytes: positiveInt(config.maxBytes, DEFAULT_LOG_MAX_BYTES),
+      rotateCount: nonNegativeInt(config.rotateCount, DEFAULT_LOG_ROTATE_COUNT),
+    }
+    : initialLogDrainConfig();
+  drainLastWriteAt = 0;
+  drainLastError = "";
+  drainDroppedRows = 0;
+}
+
+function writeToLogDrain(line: string): void {
+  if (!logDrain.enabled) return;
+  try {
+    mkdirSync(dirname(logDrain.path), { recursive: true });
+    rotateIfNeeded(Buffer.byteLength(line) + 1);
+    appendFileSync(logDrain.path, `${line}\n`, "utf8");
+    drainLastWriteAt = Date.now();
+    drainLastError = "";
+  } catch (e: any) {
+    drainDroppedRows++;
+    drainLastError = trim(String(e?.message || e));
+  }
+}
+
+function rotateIfNeeded(nextBytes: number): void {
+  if (logDrain.maxBytes <= 0 || !existsSync(logDrain.path)) return;
+  const currentBytes = statSync(logDrain.path).size;
+  if (currentBytes + nextBytes <= logDrain.maxBytes) return;
+
+  if (logDrain.rotateCount <= 0) {
+    unlinkSync(logDrain.path);
+    return;
+  }
+
+  for (let i = logDrain.rotateCount - 1; i >= 1; i--) {
+    const from = `${logDrain.path}.${i}`;
+    const to = `${logDrain.path}.${i + 1}`;
+    if (existsSync(from)) renameSync(from, to);
+  }
+  renameSync(logDrain.path, `${logDrain.path}.1`);
+}
+
+function initialLogDrainConfig(): LogDrainConfig {
+  const explicit = process.env.SERVER_LOG_DRAIN;
+  const enabled =
+    explicit === "true" ||
+    (!!process.env.SERVER_LOG_PATH && explicit !== "false") ||
+    (process.env.NODE_ENV === "production" && explicit !== "false");
+  return {
+    enabled,
+    path: process.env.SERVER_LOG_PATH || defaultLogPath(),
+    maxBytes: positiveInt(Number(process.env.SERVER_LOG_MAX_BYTES), DEFAULT_LOG_MAX_BYTES),
+    rotateCount: nonNegativeInt(Number(process.env.SERVER_LOG_ROTATE_COUNT), DEFAULT_LOG_ROTATE_COUNT),
+  };
+}
+
+function defaultLogPath(): string {
+  return join(process.env.PERSIST_DIR || "./collab-data", "server.jsonl");
+}
+
+function positiveInt(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+function nonNegativeInt(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
 }

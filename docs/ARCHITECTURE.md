@@ -182,7 +182,9 @@ legacy `/admin/revoke` raises it and disconnects live revoked clients with close
   room index rather than scanning every active room. `/metrics` exposes cumulative counters, runtime memory,
   and room/file metadata, so it is protected by `METRICS_TOKEN` whenever auth is enabled. The hot relay path
   emits redacted structured logs for joins/leaves, rejected writes, mux room rejections, rate limits,
-  backpressure closes, suspicious update sizes, and awareness debug rows when `SYNC_DEBUG_LOG=true`.
+  backpressure closes, suspicious update sizes, and awareness debug rows when `SYNC_DEBUG_LOG=true`. In
+  production, those redacted rows are also retained to a bounded rotating JSONL drain; `/health` and
+  `/metrics` expose `logDrain` status.
 - **`/clientlog`** — opt-in plugin error telemetry. Clients authenticate with an existing share token
   (including role/invite identity params where applicable), POST only redacted `err(...)` diagnostics, and
   the server re-normalizes the body before emitting a structured `client.error` log row. This is debugging

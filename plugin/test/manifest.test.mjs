@@ -214,7 +214,85 @@ console.log("Delete-vs-edit tombstone decision");
     tombstoneLocalDecision({ localMtime: deletedAt + 999999, deletedAt, renamedTo: "new.md" }) === "delete");
 }
 
-// ── 6. Startup reconciliation must not publish tombstoned local files ─────────
+// ── 6. Two-client delete/edit skew simulation ────────────────────────────────
+console.log("Two-client delete/edit skew simulation");
+{
+  const deletedAt = 300_000;
+  const editAt = deletedAt + RESURRECT_GRACE_MS + 10;
+  const base = new Y.Doc();
+  base.getMap("files").set("note.md", liveManifestEntry(undefined, "note.md", "id-note", "A", {
+    kind: "text",
+    lastModified: deletedAt - 10_000,
+  }));
+  const baseState = Y.encodeStateAsUpdate(base);
+
+  const deleter = new Y.Doc(); Y.applyUpdate(deleter, baseState);
+  const editor = new Y.Doc(); Y.applyUpdate(editor, baseState);
+
+  // Client B edited locally while client A deleted with an old/no-provenance tombstone.
+  editor.getMap("edits").set("note.md", { by: "B", byUid: "uid-b", deviceId: "device-b", at: editAt });
+  const prev = deleter.getMap("files").get("note.md");
+  deleter.getMap("files").set("note.md", {
+    ...prev,
+    exists: false,
+    deleted: true,
+    deletedAt,
+    deletedBy: "A",
+    lastModified: deletedAt,
+  });
+
+  Y.applyUpdate(editor, Y.encodeStateAsUpdate(deleter));
+  const entry = editor.getMap("files").get("note.md");
+  const localEdit = editor.getMap("edits").get("note.md");
+  const decision = tombstoneLocalDecision({
+    localMtime: editAt,
+    deletedAt: entry.deletedAt,
+    localUid: "uid-b",
+    localDeviceId: "device-b",
+    localEditAt: localEdit.at,
+    localEditUid: localEdit.byUid,
+    localEditDeviceId: localEdit.deviceId,
+    tombstoneUid: entry.mutationByUid,
+    tombstoneDeviceId: entry.mutationDeviceId,
+  });
+  check("skewed delete/edit resolves to conflict copy", decision === "conflict-copy", decision);
+
+  const conflictRel = "note (delete conflict 2026-06-18T00-00-00-000Z).md";
+  const mutation = manifestMutationFields({
+    action: "delete-conflict-copy",
+    at: editAt + 1,
+    seq: 1,
+    displayName: "B",
+    uid: "uid-b",
+    deviceId: "device-b",
+    device: "desktop",
+  });
+  editor.getMap("files").set(conflictRel, liveManifestEntry(undefined, conflictRel, "id-conflict", "B", {
+    kind: "text",
+    ...mutation,
+    resurrectedBy: "B",
+    conflictOf: "note.md",
+    conflictKind: "delete",
+    conflictReason: "remote-delete",
+    conflictBy: "B",
+    conflictRemoteUpdatedAt: deletedAt,
+    conflictLocalModifiedAt: editAt,
+    conflictCreatedAt: mutation.mutationAt,
+  }));
+  Y.applyUpdate(deleter, Y.encodeStateAsUpdate(editor));
+
+  check("original stays tombstoned on both clients",
+    deleter.getMap("files").get("note.md").exists === false &&
+    editor.getMap("files").get("note.md").exists === false);
+  const conflictA = conflictFileFromManifest(conflictRel, deleter.getMap("files").get(conflictRel));
+  const conflictB = conflictFileFromManifest(conflictRel, editor.getMap("files").get(conflictRel));
+  check("conflict copy converges to both manifests",
+    conflictA?.originalPath === "note.md" &&
+    conflictA?.kind === "delete" &&
+    conflictB?.originalPath === "note.md");
+}
+
+// ── 7. Startup reconciliation must not publish tombstoned local files ─────────
 console.log("Startup tombstone ordering helpers");
 {
   const tombstone = {
@@ -234,7 +312,7 @@ console.log("Startup tombstone ordering helpers");
     shouldPublishLocalOnStartup(tombstone) === false);
 }
 
-// ── 7. Live entry cleanup strips stale tombstone/rename metadata ───────────────
+// ── 8. Live entry cleanup strips stale tombstone/rename metadata ───────────────
 console.log("Live entry cleanup");
 {
   const prior = {
@@ -284,7 +362,7 @@ console.log("Live entry cleanup");
     live.mutationDevice === "mobile");
 }
 
-// ── 8. Deleted-files list should exclude rename-away tombstones ────────────────
+// ── 9. Deleted-files list should exclude rename-away tombstones ────────────────
 console.log("Recoverable tombstone filter");
 {
   check("normal delete is recoverable",
@@ -295,7 +373,7 @@ console.log("Recoverable tombstone filter");
     isRecoverableTombstone({ exists: true, lastModified: 1 }) === false);
 }
 
-// ── 9. Conflict-copy manifest metadata powers the review list ────────────────
+// ── 10. Conflict-copy manifest metadata powers the review list ───────────────
 console.log("Conflict-copy manifest metadata");
 {
   const entry = liveManifestEntry(undefined, "assets/photo (binary conflict 2026).png", "id-conflict", "Me", {
@@ -322,7 +400,7 @@ console.log("Conflict-copy manifest metadata");
     conflictFileFromManifest("old.md", { ...entry, exists: false, deleted: true }) === null);
 }
 
-// ── 10. Manifest relpaths are validated before touching the vault ──────────────
+// ── 11. Manifest relpaths are validated before touching the vault ─────────────
 console.log("Safe manifest paths");
 {
   check("accepts nested markdown path",

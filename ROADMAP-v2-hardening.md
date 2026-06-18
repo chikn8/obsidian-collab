@@ -298,7 +298,8 @@ helper covers these branches headlessly.
 **Remaining.** Replace the remaining old-client fallback with a full logical/same-clock marker (e.g., an edit
 Lamport/seq on the file doc) when the file-doc protocol is revised.
 **Verify.** Unit coverage asserts resurrect/delete/conflict-copy branches, including local edit stamps. A
-full two-client skew simulation is still needed.
+two-client Yjs manifest skew simulation now checks tombstone propagation, conflict-copy creation, and
+convergence back to both clients.
 
 ### 2.6 — Stop swallowing client errors (implemented foundation)
 **Problem.** Many `.catch(()=>{})` hide lifecycle failures from the user and from us.

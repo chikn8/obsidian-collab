@@ -269,12 +269,17 @@ entries without `fileId`; new client migrates). No test covers it.
 idempotent; old clients ignore unknown fields.
 **Verify.** Asserted convergence + no field loss across the version boundary.
 
-### 2.4 — Structured logging + cumulative metrics + alerting (MEDIUM, M)
+### 2.4 — Structured logging + cumulative metrics + alerting (implemented foundation; ops follow-ups remain)
 **Problem.** Server logs are `console.*` only; `/metrics` is in-memory (lost on restart, no series).
-**Fix.** Structured per-connection logs (uid, room, epoch, role) to a retained drain; cumulative counters
-(`save_failures`, `disconnects`, `revocations`, `rejected_paths`, `rate_limited`) on `/metrics`; a basic
-alert (reuse ops ntfy from 0.3) on threshold breach.
-**Verify.** A loop or save-failure is diagnosable from logs/metrics without a debugger.
+**Status.** Structured redacted JSON logs now cover relay joins/leaves, rejected writes, mux room
+rejections, rate limits, backpressure closes, suspicious updates, awareness rejections, and opt-in client
+errors. `/metrics` now includes cumulative counters for save/snapshot failures, disconnects, revocations,
+rejected writes/paths, rejected awareness, rate limiting, backpressure closes, send failures, client
+errors, and mux room rejections, alongside live room/runtime state.
+**Remaining.** Point stdout/stderr at a retained drain in production and add explicit threshold alerts if
+the hosted platform cannot alert on `/health`/`/metrics`.
+**Verify.** Unit/e2e coverage checks metric counter behavior and `/metrics.counters` increments on real
+clientlog, blob rejection, and revocation paths.
 
 ### 2.5 — Resurrection no longer relies on wall-clock (implemented foundation; logical-clock follow-up remains)
 **Problem.** `shouldResurrect` compares cross-device wall-clock `mtime` vs `deletedAt` (skew-biased toward

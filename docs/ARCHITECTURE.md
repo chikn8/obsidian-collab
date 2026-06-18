@@ -164,8 +164,8 @@ legacy `/admin/revoke` raises it and disconnects live revoked clients with close
 - **`rooms.ts`** — one in-memory `WSSharedDoc` per room; relays sync + awareness to all conns. Abuse
   caps: `maxPayload`, a per-connection inbound rate limit, and `bufferedAmount` backpressure (a
   hopelessly backed-up slow peer is closed to avoid OOM). Socket close cleanup uses a per-connection
-  room index rather than scanning every active room. `/metrics` exposes counters, runtime memory, and
-  room/file metadata, so it is protected by `METRICS_TOKEN` whenever auth is enabled. The hot relay path
+  room index rather than scanning every active room. `/metrics` exposes cumulative counters, runtime memory,
+  and room/file metadata, so it is protected by `METRICS_TOKEN` whenever auth is enabled. The hot relay path
   emits redacted structured logs for joins/leaves, rejected writes, mux room rejections, rate limits,
   backpressure closes, suspicious update sizes, and awareness debug rows when `SYNC_DEBUG_LOG=true`.
 - **`/clientlog`** — opt-in plugin error telemetry. Clients authenticate with an existing share token

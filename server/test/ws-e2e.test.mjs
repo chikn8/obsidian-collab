@@ -488,6 +488,11 @@ try {
       "clientlog server output"
     );
     check("clientlog server output is redacted", !server.output().includes("should-not-export"));
+    const metricsRes = await fetch(`${server.httpBase}/metrics`, {
+      headers: { Authorization: `Bearer ${ADMIN_SECRET}` },
+    });
+    const metrics = await metricsRes.json();
+    check("clientlog increments metrics counter", metrics.counters?.client_errors >= 1, JSON.stringify(metrics.counters));
 
     const rejected = await fetch(`${server.httpBase}/clientlog?${queryParams({
       ...authParams("editor", 1, shareId, "wrong-secret"),
@@ -645,6 +650,16 @@ try {
       body,
     });
     check("unsupported blob extension is rejected", badPathRes.status === 400, `status=${badPathRes.status}`);
+
+    const metricsRes = await fetch(`${server.httpBase}/metrics`, {
+      headers: { Authorization: `Bearer ${ADMIN_SECRET}` },
+    });
+    const metrics = await metricsRes.json();
+    check(
+      "blob rejections increment metrics counters",
+      metrics.counters?.rejected_writes >= 1 && metrics.counters?.rejected_paths >= 1,
+      JSON.stringify(metrics.counters)
+    );
   }
 
   console.log("Per-recipient invite can be revoked independently");
@@ -680,6 +695,11 @@ try {
       sleep(5000).then(() => null),
     ]);
     check("revoked invite socket closed with 4003", closed?.code === 4003, `code=${closed?.code}`);
+    const metricsRes = await fetch(`${server.httpBase}/metrics`, {
+      headers: { Authorization: `Bearer ${ADMIN_SECRET}` },
+    });
+    const metrics = await metricsRes.json();
+    check("revocations increment metrics counter", metrics.counters?.revocations >= 2, JSON.stringify(metrics.counters));
     invited.doc.destroy();
   }
 } finally {

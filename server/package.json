@@ -7,7 +7,7 @@
     "start": "node dist/index.js",
     "build": "tsc",
     "dev": "tsx watch src/index.ts",
-    "test": "tsx test/auth.test.mjs && tsx test/awareness.test.mjs && tsx test/snapshots.test.mjs && tsx test/persistence.test.mjs && tsx test/runtime.test.mjs && tsx test/audit.test.mjs && tsx test/logging.test.mjs && tsx test/client-log.test.mjs && tsx test/share-state.test.mjs && tsx test/notify.test.mjs && tsx test/blobs.test.mjs && tsx test/blob-s3.test.mjs && tsx test/blob-gc.test.mjs",
+    "test": "tsx test/auth.test.mjs && tsx test/awareness.test.mjs && tsx test/snapshots.test.mjs && tsx test/persistence.test.mjs && tsx test/runtime.test.mjs && tsx test/audit.test.mjs && tsx test/logging.test.mjs && tsx test/client-log.test.mjs && tsx test/metrics.test.mjs && tsx test/share-state.test.mjs && tsx test/notify.test.mjs && tsx test/blobs.test.mjs && tsx test/blob-s3.test.mjs && tsx test/blob-gc.test.mjs",
     "test:e2e": "node test/ws-e2e.test.mjs"
   },
   "dependencies": {

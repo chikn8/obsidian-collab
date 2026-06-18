@@ -27,6 +27,7 @@ import { auditEvent } from "./audit.js";
 import { getRuntimeHealth } from "./runtime.js";
 import { CLIENT_LOG_MAX_BYTES, clientLogFields } from "./clientLog.js";
 import { logEvent } from "./logging.js";
+import { incMetric } from "./metrics.js";
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = parseInt(process.env.PORT || "8080", 10);
@@ -300,6 +301,7 @@ const server = http.createServer(async (req, res) => {
         remote: remoteAddress(req),
         body,
       }));
+      incMetric("client_errors");
       return json(200, { ok: true });
     }
 
@@ -321,8 +323,14 @@ const server = http.createServer(async (req, res) => {
 
       if (req.method === "PUT") {
         const relPath = safeBlobRelPath(url.searchParams.get("path") || "");
-        if (!relPath) return json(400, { error: "bad path" });
-        if (granted !== "editor") return json(403, { error: "forbidden" });
+        if (!relPath) {
+          incMetric("rejected_paths");
+          return json(400, { error: "bad path" });
+        }
+        if (granted !== "editor") {
+          incMetric("rejected_writes");
+          return json(403, { error: "forbidden" });
+        }
         let body: Buffer;
         try {
           body = await readBlobBody(req);
@@ -445,6 +453,7 @@ const server = http.createServer(async (req, res) => {
       const invite = await revokeInvite(shareId, inviteId);
       if (!invite) return json(404, { error: "not found" });
       const closedConnections = closeInviteConnections(shareId, inviteId);
+      incMetric("revocations");
       void auditEvent("share.invite.revoked", { shareId, inviteId, role: invite.role, epoch: invite.epoch, closedConnections, remote: remoteAddress(req) });
       return json(200, { ok: true, shareId, inviteId, closedConnections, revokedAt: invite.revokedAt });
     }
@@ -462,6 +471,7 @@ const server = http.createServer(async (req, res) => {
       const newEpoch = Math.max(epoch + 1, min + 1);
       await setMinEpoch(shareId, newEpoch);
       const closedConnections = closeRevokedConnections(shareId, newEpoch);
+      incMetric("revocations");
       void auditEvent("share.revoke", { shareId, oldEpoch: epoch, newEpoch, closedConnections, remote: remoteAddress(req) });
       return json(200, {
         ok: true,
@@ -510,6 +520,7 @@ const server = http.createServer(async (req, res) => {
       }
       await setMinEpoch(shareId, epoch);
       const closedConnections = closeRevokedConnections(shareId, epoch);
+      incMetric("revocations");
       void auditEvent("admin.revoke", { shareId, epoch, closedConnections, remote: remoteAddress(req) });
       return json(200, { ok: true, shareId, minEpoch: epoch, closedConnections });
     }

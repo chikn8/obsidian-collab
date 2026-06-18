@@ -9,6 +9,7 @@ import { loadState, markDirty, saveState, startPeriodicSave, stopPeriodicSave } 
 import { handleNotify, registerTopic } from "./notify.js";
 import { logEvent } from "./logging.js";
 import { auditEvent } from "./audit.js";
+import { getMetricCounters, incMetric } from "./metrics.js";
 
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
@@ -166,6 +167,7 @@ function filterAndStampAwarenessUpdate(
     }
 
     if (owner && owner !== conn) {
+      incMetric("rejected_awareness");
       logEvent("warn", "awareness.rejected_foreign_client", {
         room: doc.name,
         ...roomInfo(doc.name),
@@ -339,6 +341,7 @@ export function getMetrics() {
     muxConnections: activeMuxConnections.size,
     rateLimited: rateLimitedCount,
     backpressureClosed: backpressureClosedCount,
+    counters: getMetricCounters(),
     detail: rooms.sort((a, b) => b.conns - a.conns).slice(0, 100),
   };
 }
@@ -542,6 +545,7 @@ function send(conn: WebSocket, message: Uint8Array, roomName?: string): void {
   // unbounded send data → OOM. Close it; it reconnects and re-syncs cleanly.
   if (conn.bufferedAmount > SEND_BUFFER_LIMIT) {
     backpressureClosedCount++;
+    incMetric("backpressure_closed");
     logEvent("warn", "ws.backpressure_closed", {
       room: roomName,
       ...(roomName ? roomInfo(roomName) : {}),
@@ -556,6 +560,7 @@ function send(conn: WebSocket, message: Uint8Array, roomName?: string): void {
   try {
     conn.send(out, (err) => {
       if (err) {
+        incMetric("send_failures");
         logEvent("error", "ws.send_failed", {
           room: roomName,
           ...(roomName ? roomInfo(roomName) : {}),
@@ -568,6 +573,7 @@ function send(conn: WebSocket, message: Uint8Array, roomName?: string): void {
       }
     });
   } catch (e) {
+    incMetric("send_failures");
     logEvent("error", "ws.send_threw", {
       room: roomName,
       ...(roomName ? roomInfo(roomName) : {}),
@@ -604,6 +610,7 @@ function handleMessage(
         const role = (conn as any).collabRole || "editor";
         if (role !== "editor") {
           if (subtype === 1 || subtype === 2) {
+            incMetric("rejected_writes");
             logEvent("warn", "sync.write_rejected", {
               room: doc.name,
               ...roomInfo(doc.name),
@@ -780,6 +787,7 @@ function closeConn(conn: WebSocket): void {
     closedAny = true;
 
     doc.conns.delete(conn);
+    incMetric("disconnects");
 
     // Remove awareness states for this client
     awarenessProtocol.removeAwarenessStates(
@@ -845,6 +853,7 @@ export async function setupWSConnection(
   conn.on("message", (data: RawData) => {
     // Drop messages from a connection exceeding its rate budget (flood guard).
     if (!allowMessage(conn)) {
+      incMetric("rate_limited");
       if (++rateLimitedCount % 100 === 1) {
         logEvent("warn", "ws.rate_limited", {
           room: roomName,
@@ -926,6 +935,7 @@ export async function setupMuxConnection(
 
   conn.on("message", (data: RawData) => {
     if (!allowMessage(conn)) {
+      incMetric("rate_limited");
       if (++rateLimitedCount % 100 === 1) {
         logEvent("warn", "mux.rate_limited", {
           connId: (conn as any).collabConnId,
@@ -951,6 +961,7 @@ export async function setupMuxConnection(
         }
         const roomName = decoding.readVarString(decoder);
         if (!muxRoomAllowed(conn, roomName)) {
+          incMetric("mux_room_rejections");
           logEvent("warn", "mux.room_rejected", {
             room: roomName,
             ...roomInfo(roomName),

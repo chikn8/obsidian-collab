@@ -294,8 +294,9 @@ community-directory naming rule against ids containing `obsidian`. New installs 
 
 - **Health:** `GET /health` returns 503 when persistence/snapshots/backups are unhealthy (so Railway
   restarts and `OPS_NTFY_TOPIC` pages you), or when runtime memory crosses configured guardrails.
-  `GET /metrics` exposes rooms, file paths, connections, runtime memory, rate-limited and backpressure-closed counts, so call it with
-  `Authorization: Bearer $METRICS_TOKEN` on public deployments.
+  `GET /metrics` exposes rooms, file paths, connections, runtime memory, and cumulative counters for
+  save/snapshot failures, disconnects, revocations, rejected writes/paths, rate limits, backpressure
+  closes, and client error telemetry. Call it with `Authorization: Bearer $METRICS_TOKEN` on public deployments.
 - **Backups:** set `SNAPSHOT_GIT_REMOTE` (push history) **and** `PERSIST_BACKUP_COMMAND` (full-corpus
   archive), then set `REQUIRE_SNAPSHOT_REMOTE=true` and `REQUIRE_PERSIST_BACKUP=true`. Without these,
   all data lives on one volume — see the warning in `server/RECOVERY.md`.

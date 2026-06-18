@@ -4,6 +4,7 @@ import path from "path";
 import { writeSnapshot } from "./snapshots.js";
 import { alertOps } from "./notify.js";
 import { atomicWriteFile } from "./storage.js";
+import { incMetric } from "./metrics.js";
 
 export const PERSIST_DIR = process.env.PERSIST_DIR || "./collab-data";
 const saveQueues: Map<string, Promise<void>> = new Map();
@@ -88,12 +89,14 @@ export async function saveState(
     } catch (e: any) {
       lastSaveOk = false;
       lastSaveError = String(e?.message || e);
+      incMetric("save_failures");
       await alertOps("yjs-save", "ObsidianSync Yjs save failed", `Room ${roomName}: ${lastSaveError}`);
       throw e;
     }
 
     // Also write human-readable snapshot for git history
     await writeSnapshot(roomName, ydoc).catch((e) => {
+      incMetric("snapshot_failures");
       console.error(`[persistence] snapshot write error for ${roomName}:`, e);
       void alertOps("snapshot-write", "ObsidianSync snapshot write failed", `Room ${roomName}: ${String(e?.message || e)}`);
     });

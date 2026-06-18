@@ -227,6 +227,9 @@ See `server/.env.example` for a copy-paste template, and `server/RECOVERY.md` fo
 - **Share a folder:** right-click a folder → *Share this folder (collab)* (or `Cmd+P` → *Share a
   folder…*). A **share code** is copied — send it to a collaborator. Editor links are copied by default;
   grab a view-only link from the settings tab.
+- **Move/repoint a local share:** Settings → Real-Time Collaboration → that share → *Change folder…*.
+  The plugin stops that share, updates the local mount folder, and restarts it. Keep independent shares as
+  sibling vault folders, not nested/overlapping folders.
 - **Join:** `Cmd+P` → *Add a shared folder (paste code)…*, or open an `obsidian://collab-add?code=…`
   link. The join modal pre-fills the code and suggests a friendly local folder/label.
 - **Roles:** share an *editor*, *commenter*, or *viewer* link. Viewers/commenters can't write the file

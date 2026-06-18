@@ -14260,6 +14260,12 @@ var CollabSettingsTab = class extends import_obsidian7.PluginSettingTab {
         );
       }
       s.addButton(
+        (b) => b.setButtonText("Change folder\u2026").onClick(async () => {
+          await this.plugin.changeShareLocalFolderInteractive(share.id);
+          this.display();
+        })
+      );
+      s.addButton(
         (b) => b.setButtonText(share.legacy ? "Stop" : "Leave").setWarning().onClick(async () => {
           await this.plugin.removeShare(share.id);
           this.display();
@@ -15738,6 +15744,22 @@ function isThreadUnread(thread, myUid, lastReadAt) {
   return !thread.resolved && latest.byUid !== myUid && latest.at > lastReadAt;
 }
 
+// src/utils/shareFolders.ts
+function cleanShareFolder(folder) {
+  return folder.trim().replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+}
+function shareFolderOverlaps(shares, folder, exceptId) {
+  const path = cleanShareFolder(folder);
+  if (!path) return null;
+  for (const share of shares) {
+    if (exceptId && share.id === exceptId) continue;
+    const existing = cleanShareFolder(share.localFolder);
+    if (!existing) continue;
+    if (path === existing || path.startsWith(existing + "/") || existing.startsWith(path + "/")) return share;
+  }
+  return null;
+}
+
 // src/ui/HistoryView.ts
 var import_obsidian10 = require("obsidian");
 
@@ -17124,11 +17146,10 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     return true;
   }
   folderOverlaps(path) {
-    for (const s of this.settings.shares) {
-      const a = s.localFolder;
-      if (path === a || path.startsWith(a + "/") || a.startsWith(path + "/")) return s;
-    }
-    return null;
+    return shareFolderOverlaps(this.settings.shares, path);
+  }
+  folderOverlapsOtherShare(path, shareId) {
+    return shareFolderOverlaps(this.settings.shares, path, shareId);
   }
   async shareFolderInteractive(presetFolder) {
     if (!this.settings.shareMintToken && !this.settings.serverSecret) {
@@ -17144,7 +17165,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       ]
     });
     if (!res || !res.folder.trim()) return;
-    const folder = res.folder.trim().replace(/\/+$/, "");
+    const folder = cleanShareFolder(res.folder);
     const overlap = this.folderOverlaps(folder);
     if (overlap) {
       new import_obsidian11.Notice(`That folder overlaps an existing share ("${overlap.label}").`);
@@ -17238,7 +17259,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     if (!this.settings.serverUrl || this.settings.serverUrl === DEFAULT_SETTINGS.serverUrl) {
       this.settings.serverUrl = decoded.s;
     }
-    const folder = ((localFolder == null ? void 0 : localFolder.trim()) || this.suggestJoinFolder(decoded.l, decoded.id)).replace(/\/+$/, "");
+    const folder = cleanShareFolder(localFolder || this.suggestJoinFolder(decoded.l, decoded.id));
     const overlap = this.folderOverlaps(folder);
     if (overlap) {
       new import_obsidian11.Notice(`That folder overlaps an existing share ("${overlap.label}").`);
@@ -17276,8 +17297,39 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     this.settings.shares = this.settings.shares.filter((s) => s.id !== id2);
     await this.persist();
   }
+  async changeShareLocalFolderInteractive(id2) {
+    const share = this.settings.shares.find((s) => s.id === id2);
+    if (!share) return;
+    const res = await promptModal(this.app, {
+      title: "Change local folder",
+      cta: "Update folder",
+      fields: [
+        { key: "folder", label: "Local folder for this share", placeholder: "Path/To/Folder", value: share.localFolder }
+      ]
+    });
+    if (!res) return;
+    const folder = cleanShareFolder(res.folder);
+    if (!folder) {
+      new import_obsidian11.Notice("Choose a vault folder for this share.");
+      return;
+    }
+    const overlap = this.folderOverlapsOtherShare(folder, share.id);
+    if (overlap) {
+      new import_obsidian11.Notice(`That folder overlaps an existing share ("${overlap.label}").`);
+      return;
+    }
+    if (folder === cleanShareFolder(share.localFolder)) return;
+    await this.ensureFolder(folder);
+    await this.stopShare(share.id);
+    const oldFolder = share.localFolder;
+    share.localFolder = folder;
+    await this.persist();
+    await this.startShare(share);
+    log("share", "local folder changed", share.id, oldFolder, "->", folder);
+    new import_obsidian11.Notice(`Share "${share.label || share.id}" now syncs at ${folder}.`);
+  }
   async ensureFolder(path) {
-    const clean2 = path.replace(/\/+$/, "");
+    const clean2 = cleanShareFolder(path);
     if (!clean2) return;
     const parts = clean2.split("/").filter(Boolean);
     let cur = "";

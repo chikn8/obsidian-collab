@@ -419,8 +419,10 @@ the join flow suggests a friendly `Shared/<label>` folder plus editable label in
 into `Shared/<rawid>`.
 
 ### 4.7 — Nested/overlapping shares + suggesting mode (XL, deferred)
-Most-specific-wins precedence for overlapping shares (currently hard-blocked); track-changes/suggesting mode
-+ export-clean (explicitly deferred in v1).
+Most-specific-wins precedence for overlapping shares (currently hard-blocked). The settings UI can repoint
+a share's local folder and the overlap guard is shared by create/join/repoint flows, so separate shares
+should be mounted as sibling vault folders. Track-changes/suggesting mode + export-clean remain explicitly
+deferred in v1.
 
 ---
 

@@ -30,6 +30,10 @@ client/share carries frames for the manifest and each text-file room. The server
 separate `WSSharedDoc` rooms internally, so persistence/history behavior is unchanged. Legacy shares keep
 the old one-room-per-socket transport for compatibility.
 
+Local mount folders are per-device settings, not server identity. A user can repoint a share to a new
+vault folder from settings; the plugin stops that share, updates `localFolder`, and restarts it. Nested or
+overlapping share roots are still blocked because there is no most-specific-wins ownership model yet.
+
 ### Rooms
 Room names are namespaced per share so shares never collide:
 - `@<shareId>:__manifest__` — the folder manifest

@@ -247,6 +247,15 @@ export class CollabSettingsTab extends PluginSettingTab {
 
       s.addButton((b) =>
         b
+          .setButtonText("Change folder…")
+          .onClick(async () => {
+            await this.plugin.changeShareLocalFolderInteractive(share.id);
+            this.display();
+          })
+      );
+
+      s.addButton((b) =>
+        b
           .setButtonText(share.legacy ? "Stop" : "Leave")
           .setWarning()
           .onClick(async () => {

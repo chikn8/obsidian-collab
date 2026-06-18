@@ -21,6 +21,7 @@ import { findMentionedUsers } from "./utils/mentions";
 import { buildThreadAuthorNotification, type CommentEventKind } from "./utils/commentNotifications";
 import { isThreadUnread, latestCommentActivity } from "./utils/commentActivity";
 import { readLegacyPluginData } from "./utils/pluginPaths";
+import { cleanShareFolder, shareFolderOverlaps } from "./utils/shareFolders";
 import {
   encodeShareCode,
   decodeShareCode,
@@ -1019,11 +1020,11 @@ export default class CollabPlugin extends Plugin {
   }
 
   private folderOverlaps(path: string): Share | null {
-    for (const s of this.settings.shares) {
-      const a = s.localFolder;
-      if (path === a || path.startsWith(a + "/") || a.startsWith(path + "/")) return s;
-    }
-    return null;
+    return shareFolderOverlaps(this.settings.shares, path);
+  }
+
+  private folderOverlapsOtherShare(path: string, shareId: string): Share | null {
+    return shareFolderOverlaps(this.settings.shares, path, shareId);
   }
 
   async shareFolderInteractive(presetFolder?: string): Promise<void> {
@@ -1040,7 +1041,7 @@ export default class CollabPlugin extends Plugin {
       ],
     });
     if (!res || !res.folder.trim()) return;
-    const folder = res.folder.trim().replace(/\/+$/, "");
+    const folder = cleanShareFolder(res.folder);
 
     const overlap = this.folderOverlaps(folder);
     if (overlap) {
@@ -1140,7 +1141,7 @@ export default class CollabPlugin extends Plugin {
     if (!this.settings.serverUrl || this.settings.serverUrl === DEFAULT_SETTINGS.serverUrl) {
       this.settings.serverUrl = decoded.s;
     }
-    const folder = (localFolder?.trim() || this.suggestJoinFolder(decoded.l, decoded.id)).replace(/\/+$/, "");
+    const folder = cleanShareFolder(localFolder || this.suggestJoinFolder(decoded.l, decoded.id));
     const overlap = this.folderOverlaps(folder);
     if (overlap) {
       new Notice(`That folder overlaps an existing share ("${overlap.label}").`);
@@ -1182,8 +1183,41 @@ export default class CollabPlugin extends Plugin {
     await this.persist();
   }
 
+  async changeShareLocalFolderInteractive(id: string): Promise<void> {
+    const share = this.settings.shares.find((s) => s.id === id);
+    if (!share) return;
+    const res = await promptModal(this.app, {
+      title: "Change local folder",
+      cta: "Update folder",
+      fields: [
+        { key: "folder", label: "Local folder for this share", placeholder: "Path/To/Folder", value: share.localFolder },
+      ],
+    });
+    if (!res) return;
+    const folder = cleanShareFolder(res.folder);
+    if (!folder) {
+      new Notice("Choose a vault folder for this share.");
+      return;
+    }
+    const overlap = this.folderOverlapsOtherShare(folder, share.id);
+    if (overlap) {
+      new Notice(`That folder overlaps an existing share ("${overlap.label}").`);
+      return;
+    }
+    if (folder === cleanShareFolder(share.localFolder)) return;
+
+    await this.ensureFolder(folder);
+    await this.stopShare(share.id);
+    const oldFolder = share.localFolder;
+    share.localFolder = folder;
+    await this.persist();
+    await this.startShare(share);
+    log("share", "local folder changed", share.id, oldFolder, "->", folder);
+    new Notice(`Share "${share.label || share.id}" now syncs at ${folder}.`);
+  }
+
   private async ensureFolder(path: string): Promise<void> {
-    const clean = path.replace(/\/+$/, "");
+    const clean = cleanShareFolder(path);
     if (!clean) return;
     const parts = clean.split("/").filter(Boolean);
     let cur = "";

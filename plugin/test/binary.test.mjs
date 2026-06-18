@@ -1,6 +1,7 @@
 import { webcrypto } from "node:crypto";
 import {
   buffersEqual,
+  isLocalBinaryNewer,
   isSyncableBinaryPath,
   sha256Hex,
 } from "../src/utils/binary.ts";
@@ -24,6 +25,8 @@ check("detects syncable pdf", isSyncableBinaryPath("docs/spec.pdf"));
 check("rejects executable extension", !isSyncableBinaryPath("scripts/run.js"));
 check("compares equal buffers", buffersEqual(data, data.slice(0)));
 check("compares different buffers", !buffersEqual(data, new TextEncoder().encode("other").buffer));
+check("detects local binary newer outside skew", isLocalBinaryNewer(5001, 3000));
+check("does not treat skew-window binary as newer", !isLocalBinaryNewer(4999, 3000));
 
 console.log("");
 if (failures > 0) { console.error(`FAILED — ${failures} assertion(s) failed`); process.exit(1); }

@@ -6,7 +6,7 @@ import { EchoGuard, beginRemoteApply, endRemoteApply, isApplyingRemote } from ".
 import { manifestRoom, fileRoom, shareToken, shareAuthParams, httpBase } from "../utils/roomName";
 import { sendFrame, MSG_NOTIFY, MSG_TOPIC_REGISTER } from "../utils/frames";
 import { getBinary, putBinary } from "../utils/http";
-import { buffersEqual, isSyncableBinaryPath, MAX_SYNCABLE_BINARY_BYTES, sha256Hex } from "../utils/binary";
+import { buffersEqual, isLocalBinaryNewer, isSyncableBinaryPath, MAX_SYNCABLE_BINARY_BYTES, sha256Hex } from "../utils/binary";
 import { log, trace } from "../utils/log";
 import { rewriteObsidianLinks } from "../utils/wikiLinks";
 import {
@@ -328,7 +328,7 @@ export class SyncManager {
           const info = file instanceof TFile ? await this.readBinaryInfo(file) : null;
           if (info && (info.hash !== entry.blobHash || info.size !== entry.blobSize)) {
             const localMtime = file instanceof TFile ? file.stat.mtime : 0;
-            if (localMtime > (entry.blobUpdatedAt || entry.lastModified || 0) + 2000) {
+            if (isLocalBinaryNewer(localMtime, entry.blobUpdatedAt || entry.lastModified || 0)) {
               await this.publishBinaryFile(relPath, filePath, entry, "startup-offline");
             }
           }
@@ -679,6 +679,19 @@ export class SyncManager {
     if (existing instanceof TFile) {
       const local = await this.readBinaryInfo(existing);
       if (local?.hash === entry.blobHash && local.size === entry.blobSize) return;
+      if (local && this.role === "editor" && isLocalBinaryNewer(existing.stat.mtime, entry.blobUpdatedAt || entry.lastModified || 0)) {
+        trace("blob", "kept-local-newer", {
+          shareId: this.histShareId,
+          relPath: safeRel,
+          localHash: local.hash,
+          remoteHash: entry.blobHash,
+          localMtime: existing.stat.mtime,
+          remoteUpdatedAt: entry.blobUpdatedAt || entry.lastModified || 0,
+        });
+        new Notice(`Kept newer local attachment "${existing.name}" and re-published it.`);
+        await this.publishBinaryFile(safeRel, fullPath, entry, "live-local-newer");
+        return;
+      }
     }
 
     const url = `${httpBase(this.settings.serverUrl)}/blob?${this.blobQuery({

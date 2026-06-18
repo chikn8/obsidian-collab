@@ -11506,6 +11506,9 @@ function buffersEqual(a, b) {
   for (let i = 0; i < av.length; i++) if (av[i] !== bv[i]) return false;
   return true;
 }
+function isLocalBinaryNewer(localMtime, remoteUpdatedAt, skewMs = 2e3) {
+  return Number.isFinite(localMtime) && Number.isFinite(remoteUpdatedAt) && localMtime > remoteUpdatedAt + skewMs;
+}
 
 // src/utils/wikiLinks.ts
 function rewriteObsidianLinks(content, opts) {
@@ -12179,7 +12182,7 @@ var SyncManager = class {
           const info = file instanceof import_obsidian4.TFile ? await this.readBinaryInfo(file) : null;
           if (info && (info.hash !== entry.blobHash || info.size !== entry.blobSize)) {
             const localMtime = file instanceof import_obsidian4.TFile ? file.stat.mtime : 0;
-            if (localMtime > (entry.blobUpdatedAt || entry.lastModified || 0) + 2e3) {
+            if (isLocalBinaryNewer(localMtime, entry.blobUpdatedAt || entry.lastModified || 0)) {
               await this.publishBinaryFile(relPath, filePath, entry, "startup-offline");
             }
           }
@@ -12486,6 +12489,19 @@ var SyncManager = class {
     if (existing instanceof import_obsidian4.TFile) {
       const local = await this.readBinaryInfo(existing);
       if ((local == null ? void 0 : local.hash) === entry.blobHash && local.size === entry.blobSize) return;
+      if (local && this.role === "editor" && isLocalBinaryNewer(existing.stat.mtime, entry.blobUpdatedAt || entry.lastModified || 0)) {
+        trace("blob", "kept-local-newer", {
+          shareId: this.histShareId,
+          relPath: safeRel,
+          localHash: local.hash,
+          remoteHash: entry.blobHash,
+          localMtime: existing.stat.mtime,
+          remoteUpdatedAt: entry.blobUpdatedAt || entry.lastModified || 0
+        });
+        new import_obsidian4.Notice(`Kept newer local attachment "${existing.name}" and re-published it.`);
+        await this.publishBinaryFile(safeRel, fullPath, entry, "live-local-newer");
+        return;
+      }
     }
     const url = `${httpBase(this.settings.serverUrl)}/blob?${this.blobQuery({
       share: this.histShareId,

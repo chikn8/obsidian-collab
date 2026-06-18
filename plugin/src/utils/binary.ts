@@ -27,3 +27,7 @@ export function buffersEqual(a: ArrayBuffer, b: ArrayBuffer): boolean {
   for (let i = 0; i < av.length; i++) if (av[i] !== bv[i]) return false;
   return true;
 }
+
+export function isLocalBinaryNewer(localMtime: number, remoteUpdatedAt: number, skewMs = 2000): boolean {
+  return Number.isFinite(localMtime) && Number.isFinite(remoteUpdatedAt) && localMtime > remoteUpdatedAt + skewMs;
+}

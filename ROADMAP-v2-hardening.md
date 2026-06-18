@@ -344,8 +344,10 @@ can upload; any valid role can download. Peers download and write the attachment
 appears. Server tests and real-server e2e cover blob validation, editor upload, viewer download, and
 viewer upload rejection. Orphan blob GC can scan persisted manifests, keep referenced tombstone blobs for
 recovery, dry-run by default through `/admin/blob-gc`, and optionally run on an interval.
-**Remaining.** Object-store offload for very large vaults, richer conflict UI for same binary changed on
-two devices, and human mobile testing with real images/PDFs.
+Live binary apply now keeps and republishes a newer local attachment instead of overwriting it with an
+older remote blob.
+**Remaining.** Object-store offload for very large vaults, richer conflict UI/history for same binary
+changed on two devices, and human mobile testing with real images/PDFs.
 
 ### 4.2 — Inline / side-by-side version diff (implemented)
 **Status.** History preview is no longer only a raw 4000-char dump: the sidebar can compare a saved

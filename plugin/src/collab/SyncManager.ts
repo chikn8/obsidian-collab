@@ -7,7 +7,7 @@ import { manifestRoom, fileRoom, shareToken, shareAuthParams, httpBase } from ".
 import { sendFrame, MSG_NOTIFY, MSG_TOPIC_REGISTER } from "../utils/frames";
 import { getBinary, putBinary } from "../utils/http";
 import { binaryRemoteDecision, buffersEqual, isSyncableBinaryPath, MAX_SYNCABLE_BINARY_BYTES, sha256Hex } from "../utils/binary";
-import { log, trace } from "../utils/log";
+import { err, log, trace } from "../utils/log";
 import { rewriteObsidianLinks } from "../utils/wikiLinks";
 import {
   isRecoverableTombstone,
@@ -299,6 +299,12 @@ export class SyncManager {
             this.syncStatus = "error";
           }
           this.emitStatus();
+        },
+        onError: (error) => {
+          err("ws", "manifest provider connection error", {
+            shareId: this.share.legacy ? "legacy" : this.share.id,
+            room: manifestRoom(this.share),
+          }, error);
         },
         onSynced: (synced) => {
           trace("ws", "manifest-synced", {

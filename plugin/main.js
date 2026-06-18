@@ -10350,8 +10350,10 @@ function createProvider(serverUrl, roomName, ydoc, token, userInfo, callbacks, a
   provider.on("sync", (synced) => {
     callbacks.onSynced(synced);
   });
-  provider.on("connection-error", () => {
+  provider.on("connection-error", (error) => {
+    var _a3;
     callbacks.onStatus("error");
+    (_a3 = callbacks.onError) == null ? void 0 : _a3.call(callbacks, error);
   });
   return provider;
 }
@@ -11155,6 +11157,9 @@ var FileProvider = class _FileProvider {
           this.connected = status === "connected";
           trace("ws", "file-status", { path: this.filePath, room: this.roomName, status });
           this.onStatusChange(status);
+        },
+        onError: (error) => {
+          err("ws", "file provider connection error", { path: this.filePath, room: this.roomName }, error);
         },
         // (authParams passed below)
         onSynced: (synced) => {
@@ -12381,6 +12386,12 @@ var SyncManager = class {
             this.syncStatus = "error";
           }
           this.emitStatus();
+        },
+        onError: (error) => {
+          err("ws", "manifest provider connection error", {
+            shareId: this.share.legacy ? "legacy" : this.share.id,
+            room: manifestRoom(this.share)
+          }, error);
         },
         onSynced: (synced) => {
           trace("ws", "manifest-synced", {

@@ -49,6 +49,7 @@ export function deviceScopedColor(baseColor: string, deviceId = installDeviceId(
 export interface ProviderCallbacks {
   onStatus: (status: ConnectionStatus) => void;
   onSynced: (synced: boolean) => void;
+  onError?: (error: unknown) => void;
 }
 
 function shareIdFromRoom(roomName: string): string | null {
@@ -136,8 +137,9 @@ export function createProvider(
   });
 
   // Handle connection errors
-  provider.on("connection-error", () => {
+  provider.on("connection-error", (error: unknown) => {
     callbacks.onStatus("error");
+    callbacks.onError?.(error);
   });
 
   return provider;

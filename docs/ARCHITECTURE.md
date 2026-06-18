@@ -188,7 +188,8 @@ legacy `/admin/revoke` raises it and disconnects live revoked clients with close
   `/metrics` expose `logDrain` status.
 - **`/clientlog`** — opt-in plugin error telemetry. Clients authenticate with an existing share token
   (including role/invite identity params where applicable), POST only redacted `err(...)` diagnostics, and
-  the server re-normalizes the body before emitting a structured `client.error` log row. This is debugging
+  the server re-normalizes the body before emitting a structured `client.error` log row. Manifest/file
+  provider `connection-error` events feed this same path with share/file context. This is debugging
   telemetry, not a trust boundary for secrets.
 - **`persistence.ts`** — atomic `.yjs` saves (tmp + rename), one global dirty-room save sweep,
   last-disconnect saves, and SIGTERM flush; corrupt files are renamed aside and the room starts empty

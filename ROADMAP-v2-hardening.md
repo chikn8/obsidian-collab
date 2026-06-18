@@ -309,11 +309,13 @@ convergence back to both clients.
 **Status.** Implemented opt-in client error telemetry: plugin `err(...)` rows are locally persisted as before
 and, when enabled, POSTed to `/clientlog` using normal share authentication. The server caps request size,
 re-normalizes/redacts the payload, and emits a structured `client.error` row. Lifecycle catches already moved
-under the `err` namespace feed this path.
+under the `err` namespace feed this path. Manifest/file WebSocket provider `connection-error` events now
+emit `err("ws", ...)` rows with share/file context instead of only flipping status.
 **UX.** User-triggered reconnect/force-resync and share startup failures now emit targeted Notices while
 best-effort background cleanup stays diagnostics-only.
-**Verify.** Unit coverage checks plugin telemetry POST shape and server-side client-log redaction. A full
-live-server provider-failure drill is still needed.
+**Verify.** Unit coverage checks plugin telemetry POST shape and server-side client-log redaction. The
+FileProvider integration harness simulates a provider connection failure and asserts both error status and
+diagnostic context.
 
 ---
 

@@ -13,6 +13,7 @@ import { EchoGuard } from "../src/collab/EchoGuard";
 import { App } from "obsidian";
 import { __resetIdb } from "y-indexeddb";
 import { __resetHubs } from "y-websocket";
+import { getRecentDiagnostics } from "../src/utils/log";
 
 let failures = 0;
 const check = (n, c, e = "") => { if (c) console.log(`  ✓ ${n}`); else { failures++; console.error(`  ✗ ${n} ${e}`); } };
@@ -30,6 +31,7 @@ async function makeClient(uid, room, filePath, initialDisk) {
   const echo = new EchoGuard();
   await app.vault.create(filePath, initialDisk);
   const modifyCounts = { n: 0 };
+  const statuses = [];
   app.vault.on("modify", async (file) => {
     if (file.path !== filePath) return;
     modifyCounts.n++;
@@ -40,10 +42,11 @@ async function makeClient(uid, room, filePath, initialDisk) {
   const fp = new FileProvider({
     app, settings: SETTINGS(uid), filePath, roomName: room, shareId: "test",
     token: "t", authParams: {}, echo,
-    onStatusChange: () => {}, onUsersChange: () => {}, onLocalEdit: () => {}, onPending: () => {},
+    onStatusChange: (status) => statuses.push(status), onUsersChange: () => {}, onLocalEdit: () => {}, onPending: () => {},
   });
   await fp.start(initialDisk);
   const obj = { app, echo, fp, filePath, modifyCounts, uid,
+    statuses,
     disk: () => app.vault.content.get(filePath),
     edit: async (content) => { const f = app.vault.getAbstractFileByPath(filePath); await app.vault.modify(f, content); },
   };
@@ -176,6 +179,35 @@ console.log("Editor-bound transactions flush to disk");
   }, "test-editor");
   await A.fp.setEditorBound(false);
   check("unbind awaited the final flush", A.disk().includes("on-switch"), `disk="${A.disk()}"`);
+  A.fp.destroy();
+}
+
+// ── 5. Provider connection failures surface in diagnostics ───────────────────
+console.log("Provider connection failures are observable");
+{
+  __resetIdb(); __resetHubs();
+  const room = "@test:file:note6";
+  const A = await makeClient("A", room, "note.md", "base");
+  await sleep(900);
+
+  const before = getRecentDiagnostics().length;
+  const originalConsoleError = console.error;
+  try {
+    console.error = () => {};
+    A.fp.getProvider().simulateConnectionError(new Error("socket down"));
+  } finally {
+    console.error = originalConsoleError;
+  }
+  await sleep(0);
+  const rows = getRecentDiagnostics().slice(before);
+  const providerError = rows.find((row) =>
+    row.level === "error" &&
+    row.ns === "ws" &&
+    JSON.stringify(row.fields || {}).includes("file provider connection error")
+  );
+  check("provider failure sets error status", A.statuses.includes("error"), A.statuses.join(","));
+  check("provider failure records diagnostic error", !!providerError, JSON.stringify(rows));
+  check("provider failure keeps file context", providerError?.fields?.args?.[1]?.path === "note.md", JSON.stringify(providerError));
   A.fp.destroy();
 }
 

@@ -83,5 +83,8 @@ export class WebsocketProvider {
     this.synced = false;
     this._emit("status", { status: "disconnected" });
   }
+  simulateConnectionError(error = new Error("simulated connection error")) {
+    this._emit("connection-error", error);
+  }
   destroy() { this.disconnect(); this.awareness.setLocalState(null); }
 }

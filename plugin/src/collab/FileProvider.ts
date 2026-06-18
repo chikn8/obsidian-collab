@@ -4,7 +4,7 @@ import { IndexeddbPersistence } from "y-indexeddb";
 import { createProvider } from "./YjsProvider";
 import { EchoGuard, beginRemoteApply, endRemoteApply } from "./EchoGuard";
 import { diffRange } from "../utils/textDiff";
-import { log, trace } from "../utils/log";
+import { err, log, trace } from "../utils/log";
 import { pluginDataPath } from "../utils/pluginPaths";
 import { colorFor } from "../types";
 import type { CollabPluginSettings, ConnectionStatus, ConnectedUser } from "../types";
@@ -239,6 +239,9 @@ export class FileProvider {
           this.connected = status === "connected";
           trace("ws", "file-status", { path: this.filePath, room: this.roomName, status });
           this.onStatusChange(status);
+        },
+        onError: (error) => {
+          err("ws", "file provider connection error", { path: this.filePath, room: this.roomName }, error);
         },
         // (authParams passed below)
         onSynced: (synced) => {

@@ -16,7 +16,7 @@ import {
   liveManifestEntry,
   safeRelPath,
   shouldPublishLocalOnStartup,
-  shouldResurrect,
+  tombstoneLocalDecision,
 } from "../utils/manifestLogic";
 import { colorFor, MANIFEST_SCHEMA_VERSION } from "../types";
 import type { CollabPluginSettings, ConnectedUser, SyncStatus, Share, ManifestEntry } from "../types";
@@ -492,14 +492,16 @@ export class SyncManager {
     const deletedAt = entry.deletedAt || entry.lastModified || 0;
     const isBinary = this.entryKind(safeRel, entry) === "binary";
 
-    // Delete-vs-edit resurrection: if WE edited this file locally AFTER it was
-    // deleted elsewhere, keep it. Renames carry `renamedTo` and must NOT
-    // resurrect (the content moved on). Bias toward keeping — a false resurrect
-    // just leaves a file; a false delete loses data.
+    // Delete-vs-edit handling. Renames carry `renamedTo` and must not resurrect:
+    // the content moved to the new path. Ambiguous wall-clock skew gets a visible
+    // conflict copy before the tombstone is applied, so local edits are not lost.
+    const localDecision =
+      this.role === "editor" && file instanceof TFile
+        ? tombstoneLocalDecision({ localMtime: file.stat.mtime, deletedAt, renamedTo: entry.renamedTo })
+        : "delete";
     if (
-      this.role === "editor" &&
       file instanceof TFile &&
-      shouldResurrect({ localMtime: file.stat.mtime, deletedAt, renamedTo: entry.renamedTo })
+      localDecision === "resurrect"
     ) {
       trace("manifest", "tombstone-resurrect", {
         shareId: this.histShareId,
@@ -517,6 +519,20 @@ export class SyncManager {
       new Notice(`"${safeRel}" was edited after being deleted — kept`);
       log("delete", "resurrected (edited after delete)", safeRel);
       return true;
+    }
+
+    if (file instanceof TFile && localDecision === "conflict-copy") {
+      const conflictRel = await this.createDeleteConflictCopy(safeRel, file, provider, isBinary);
+      trace("manifest", "tombstone-conflict-copy", {
+        shareId: this.histShareId,
+        relPath: safeRel,
+        conflictRel,
+        deletedAt,
+        localMtime: file.stat.mtime,
+      });
+      if (conflictRel) {
+        new Notice(`"${safeRel}" changed near a remote delete — kept a conflict copy at "${conflictRel}"`);
+      }
     }
 
     if (file instanceof TFile) {
@@ -553,6 +569,74 @@ export class SyncManager {
     }
     this.fileIds.delete(safeRel);
     return false;
+  }
+
+  private async createDeleteConflictCopy(
+    safeRel: string,
+    file: TFile,
+    provider: FileProvider | undefined,
+    isBinary: boolean
+  ): Promise<string | null> {
+    const conflictRel = this.nextDeleteConflictRelPath(safeRel);
+    if (!conflictRel) return null;
+
+    const conflictFullPath = this.toFullPath(conflictRel);
+    const dir = conflictFullPath.substring(0, conflictFullPath.lastIndexOf("/"));
+    if (dir) await this.ensureFolder(dir);
+
+    try {
+      if (isBinary) {
+        const data = await this.app.vault.readBinary(file);
+        await this.app.vault.createBinary(conflictFullPath, data);
+        await this.publishBinaryFile(conflictRel, conflictFullPath, undefined, "delete-conflict");
+      } else {
+        const content = provider ? provider.getText() : await this.app.vault.read(file);
+        await this.app.vault.create(conflictFullPath, content);
+        const fileId = newFileId();
+        this.fileIds.set(conflictRel, fileId);
+        this.manifestMap?.set(conflictRel, liveManifestEntry(undefined, conflictRel, fileId, this.settings.displayName, {
+          lastModified: Date.now(),
+          resurrectedBy: this.settings.displayName,
+        }));
+        await this.createFileProvider(conflictRel, conflictFullPath);
+      }
+      log("delete", "created delete conflict copy", safeRel, "->", conflictRel);
+      return conflictRel;
+    } catch (e) {
+      trace("manifest", "tombstone-conflict-copy-failed", {
+        shareId: this.histShareId,
+        relPath: safeRel,
+        conflictRel,
+        error: e,
+      });
+      log("delete", "delete conflict copy failed", safeRel, e);
+      return null;
+    }
+  }
+
+  private nextDeleteConflictRelPath(safeRel: string): string | null {
+    const slash = safeRel.lastIndexOf("/");
+    const dir = slash >= 0 ? safeRel.slice(0, slash + 1) : "";
+    const name = slash >= 0 ? safeRel.slice(slash + 1) : safeRel;
+    const dot = name.lastIndexOf(".");
+    const base = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : "";
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+
+    for (let i = 0; i < 100; i++) {
+      const suffix = i === 0 ? "" : ` ${i + 1}`;
+      const candidate = `${dir}${base} (delete conflict ${stamp}${suffix})${ext}`;
+      const safeCandidate = this.safeManifestRelPath(candidate, "delete conflict copy");
+      if (!safeCandidate) continue;
+      if (this.manifestMap?.has(safeCandidate)) continue;
+      if (this.app.vault.getAbstractFileByPath(this.toFullPath(safeCandidate))) continue;
+      return safeCandidate;
+    }
+    trace("manifest", "tombstone-conflict-path-exhausted", {
+      shareId: this.histShareId,
+      relPath: safeRel,
+    });
+    return null;
   }
 
   // In-flight provider creations, so two concurrent callers for the same path

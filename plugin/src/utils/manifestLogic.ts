@@ -8,6 +8,7 @@ import { isSyncableBinaryPath } from "./binary";
 /** Grace window (ms) for clock skew between the deleter's clock and our mtime. */
 export const RESURRECT_GRACE_MS = 2000;
 export const SYNCABLE_TEXT_EXTENSIONS = ["md", "canvas"] as const;
+export type TombstoneLocalDecision = "delete" | "resurrect" | "conflict-copy";
 
 export function isSyncableTextPath(path: string): boolean {
   const ext = path.split("/").pop()?.split(".").pop()?.toLowerCase() || "";
@@ -19,21 +20,31 @@ export function isSyncablePath(path: string): boolean {
 }
 
 /**
- * Delete-vs-edit resurrection: when a remote tombstone arrives for a file we
- * still hold, should we KEEP it (because we edited it locally after the delete)
- * instead of removing it?
+ * Delete-vs-edit reconciliation: when a remote tombstone arrives for a file we
+ * still hold, decide whether to delete it, resurrect it, or preserve it as a
+ * visible conflict copy before deleting the original.
  *
- * Biased toward keeping — a false keep just leaves a file around; a false delete
- * silently loses edits. A rename (`renamedTo` set) never resurrects: the content
+ * A rename (`renamedTo` set) never resurrects or conflict-copies: the content
  * moved to the new path, the old path is meant to disappear.
  */
+export function tombstoneLocalDecision(args: {
+  localMtime: number;
+  deletedAt: number;
+  renamedTo?: string;
+}): TombstoneLocalDecision {
+  if (args.renamedTo) return "delete";
+  const delta = args.localMtime - args.deletedAt;
+  if (delta > RESURRECT_GRACE_MS) return "resurrect";
+  if (Math.abs(delta) <= RESURRECT_GRACE_MS) return "conflict-copy";
+  return "delete";
+}
+
 export function shouldResurrect(args: {
   localMtime: number;
   deletedAt: number;
   renamedTo?: string;
 }): boolean {
-  if (args.renamedTo) return false;
-  return args.localMtime > args.deletedAt + RESURRECT_GRACE_MS;
+  return tombstoneLocalDecision(args) === "resurrect";
 }
 
 function normalizeVaultPath(input: string): string {

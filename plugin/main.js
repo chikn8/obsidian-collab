@@ -11707,9 +11707,12 @@ function isSyncableTextPath(path) {
 function isSyncablePath(path) {
   return isSyncableTextPath(path) || isSyncableBinaryPath(path);
 }
-function shouldResurrect(args2) {
-  if (args2.renamedTo) return false;
-  return args2.localMtime > args2.deletedAt + RESURRECT_GRACE_MS;
+function tombstoneLocalDecision(args2) {
+  if (args2.renamedTo) return "delete";
+  const delta = args2.localMtime - args2.deletedAt;
+  if (delta > RESURRECT_GRACE_MS) return "resurrect";
+  if (Math.abs(delta) <= RESURRECT_GRACE_MS) return "conflict-copy";
+  return "delete";
 }
 function normalizeVaultPath(input) {
   const out = [];
@@ -12398,7 +12401,8 @@ var SyncManager = class {
     const file = this.app.vault.getAbstractFileByPath(fullPath);
     const deletedAt = entry.deletedAt || entry.lastModified || 0;
     const isBinary = this.entryKind(safeRel, entry) === "binary";
-    if (this.role === "editor" && file instanceof import_obsidian4.TFile && shouldResurrect({ localMtime: file.stat.mtime, deletedAt, renamedTo: entry.renamedTo })) {
+    const localDecision = this.role === "editor" && file instanceof import_obsidian4.TFile ? tombstoneLocalDecision({ localMtime: file.stat.mtime, deletedAt, renamedTo: entry.renamedTo }) : "delete";
+    if (file instanceof import_obsidian4.TFile && localDecision === "resurrect") {
       trace("manifest", "tombstone-resurrect", {
         shareId: this.histShareId,
         relPath: safeRel,
@@ -12415,6 +12419,19 @@ var SyncManager = class {
       new import_obsidian4.Notice(`"${safeRel}" was edited after being deleted \u2014 kept`);
       log("delete", "resurrected (edited after delete)", safeRel);
       return true;
+    }
+    if (file instanceof import_obsidian4.TFile && localDecision === "conflict-copy") {
+      const conflictRel = await this.createDeleteConflictCopy(safeRel, file, provider, isBinary);
+      trace("manifest", "tombstone-conflict-copy", {
+        shareId: this.histShareId,
+        relPath: safeRel,
+        conflictRel,
+        deletedAt,
+        localMtime: file.stat.mtime
+      });
+      if (conflictRel) {
+        new import_obsidian4.Notice(`"${safeRel}" changed near a remote delete \u2014 kept a conflict copy at "${conflictRel}"`);
+      }
     }
     if (file instanceof import_obsidian4.TFile) {
       trace("manifest", "tombstone-apply", {
@@ -12448,6 +12465,66 @@ var SyncManager = class {
     }
     this.fileIds.delete(safeRel);
     return false;
+  }
+  async createDeleteConflictCopy(safeRel, file, provider, isBinary) {
+    var _a2;
+    const conflictRel = this.nextDeleteConflictRelPath(safeRel);
+    if (!conflictRel) return null;
+    const conflictFullPath = this.toFullPath(conflictRel);
+    const dir = conflictFullPath.substring(0, conflictFullPath.lastIndexOf("/"));
+    if (dir) await this.ensureFolder(dir);
+    try {
+      if (isBinary) {
+        const data = await this.app.vault.readBinary(file);
+        await this.app.vault.createBinary(conflictFullPath, data);
+        await this.publishBinaryFile(conflictRel, conflictFullPath, void 0, "delete-conflict");
+      } else {
+        const content = provider ? provider.getText() : await this.app.vault.read(file);
+        await this.app.vault.create(conflictFullPath, content);
+        const fileId = newFileId();
+        this.fileIds.set(conflictRel, fileId);
+        (_a2 = this.manifestMap) == null ? void 0 : _a2.set(conflictRel, liveManifestEntry(void 0, conflictRel, fileId, this.settings.displayName, {
+          lastModified: Date.now(),
+          resurrectedBy: this.settings.displayName
+        }));
+        await this.createFileProvider(conflictRel, conflictFullPath);
+      }
+      log("delete", "created delete conflict copy", safeRel, "->", conflictRel);
+      return conflictRel;
+    } catch (e) {
+      trace("manifest", "tombstone-conflict-copy-failed", {
+        shareId: this.histShareId,
+        relPath: safeRel,
+        conflictRel,
+        error: e
+      });
+      log("delete", "delete conflict copy failed", safeRel, e);
+      return null;
+    }
+  }
+  nextDeleteConflictRelPath(safeRel) {
+    var _a2;
+    const slash = safeRel.lastIndexOf("/");
+    const dir = slash >= 0 ? safeRel.slice(0, slash + 1) : "";
+    const name = slash >= 0 ? safeRel.slice(slash + 1) : safeRel;
+    const dot = name.lastIndexOf(".");
+    const base = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : "";
+    const stamp2 = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+    for (let i = 0; i < 100; i++) {
+      const suffix = i === 0 ? "" : ` ${i + 1}`;
+      const candidate = `${dir}${base} (delete conflict ${stamp2}${suffix})${ext}`;
+      const safeCandidate = this.safeManifestRelPath(candidate, "delete conflict copy");
+      if (!safeCandidate) continue;
+      if ((_a2 = this.manifestMap) == null ? void 0 : _a2.has(safeCandidate)) continue;
+      if (this.app.vault.getAbstractFileByPath(this.toFullPath(safeCandidate))) continue;
+      return safeCandidate;
+    }
+    trace("manifest", "tombstone-conflict-path-exhausted", {
+      shareId: this.histShareId,
+      relPath: safeRel
+    });
+    return null;
   }
   /** Create a FileProvider for a file. `seedState` clones a full Y.Doc into the
    *  new room (rename content-transfer — preserves text, comments, and anchors). */

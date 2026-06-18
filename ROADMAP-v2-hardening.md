@@ -276,12 +276,17 @@ idempotent; old clients ignore unknown fields.
 alert (reuse ops ntfy from 0.3) on threshold breach.
 **Verify.** A loop or save-failure is diagnosable from logs/metrics without a debugger.
 
-### 2.5 — Resurrection no longer relies on wall-clock (LOWER, L)
+### 2.5 — Resurrection no longer relies on wall-clock (implemented foundation; logical-clock follow-up remains)
 **Problem.** `shouldResurrect` compares cross-device wall-clock `mtime` vs `deletedAt` (skew-biased toward
 keep). Fine as a safety bias, but ambiguous cases can surprise.
-**Fix.** Prefer a logical/same-clock marker (e.g., an edit lamport/seq on the file doc) or, on ambiguity,
-surface a **conflict copy** (`note (resolved conflict).md`) instead of a silent keep/delete.
-**Verify.** Concurrent delete+edit under clock skew yields a deterministic, user-visible outcome.
+**Status.** Implemented the deterministic fallback: ambiguous clock-skew cases now create a visible
+`(... delete conflict ...).md`/attachment copy before the remote tombstone is applied. Clear edits after the
+delete still resurrect, old local copies delete, and rename tombstones still delete because the content moved
+to the new path. The pure `tombstoneLocalDecision` helper covers these branches headlessly.
+**Remaining.** Replace the wall-clock comparison with a logical/same-clock marker (e.g., an edit lamport/seq
+on the file doc) when the file-doc protocol is revised.
+**Verify.** Unit coverage asserts resurrect/delete/conflict-copy branches. A full two-client skew simulation
+is still needed.
 
 ### 2.6 — Stop swallowing client errors (MEDIUM, M)
 **Problem.** Many `.catch(()=>{})` hide lifecycle failures from the user and from us.

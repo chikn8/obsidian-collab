@@ -1,7 +1,7 @@
 /**
  * Phase C regression: manifest identity, rename content-transfer, tombstones,
- * and the delete-vs-edit resurrection predicate. Pure Yjs + the real
- * shouldResurrect helper — runs headless.
+ * and the delete-vs-edit tombstone decision. Pure Yjs + the real manifest
+ * helpers — runs headless.
  *
  * Run: node test/manifest.test.mjs  (or npm test runs both via the test script)
  */
@@ -12,6 +12,7 @@ import {
   safeRelPath,
   shouldPublishLocalOnStartup,
   shouldResurrect,
+  tombstoneLocalDecision,
   RESURRECT_GRACE_MS,
 } from "../src/utils/manifestLogic.ts";
 
@@ -105,18 +106,28 @@ console.log("Delete = retained tombstone");
   check("deleted-files scan finds the tombstone", deleted.length === 1 && deleted[0] === "x.md");
 }
 
-// ── 4. Resurrection predicate (delete-vs-edit) ────────────────────────────────
-console.log("Delete-vs-edit resurrection predicate");
+// ── 4. Tombstone decision (delete-vs-edit) ────────────────────────────────────
+console.log("Delete-vs-edit tombstone decision");
 {
   const deletedAt = 100_000;
   check("edited well after delete → resurrect",
     shouldResurrect({ localMtime: deletedAt + RESURRECT_GRACE_MS + 1, deletedAt }) === true);
+  check("decision: edited well after delete → resurrect",
+    tombstoneLocalDecision({ localMtime: deletedAt + RESURRECT_GRACE_MS + 1, deletedAt }) === "resurrect");
   check("untouched since before delete → do not resurrect",
     shouldResurrect({ localMtime: deletedAt - 5000, deletedAt }) === false);
-  check("edited within grace window → do not resurrect (skew guard)",
+  check("decision: untouched since before delete → delete",
+    tombstoneLocalDecision({ localMtime: deletedAt - RESURRECT_GRACE_MS - 1, deletedAt }) === "delete");
+  check("edited within grace window → do not resurrect directly",
     shouldResurrect({ localMtime: deletedAt + 500, deletedAt }) === false);
+  check("decision: edited just after delete → conflict copy",
+    tombstoneLocalDecision({ localMtime: deletedAt + 500, deletedAt }) === "conflict-copy");
+  check("decision: edited just before delete → conflict copy",
+    tombstoneLocalDecision({ localMtime: deletedAt - 500, deletedAt }) === "conflict-copy");
   check("rename tombstone never resurrects",
     shouldResurrect({ localMtime: deletedAt + 999999, deletedAt, renamedTo: "new.md" }) === false);
+  check("decision: rename tombstone → delete",
+    tombstoneLocalDecision({ localMtime: deletedAt + 999999, deletedAt, renamedTo: "new.md" }) === "delete");
 }
 
 // ── 5. Startup reconciliation must not publish tombstoned local files ─────────

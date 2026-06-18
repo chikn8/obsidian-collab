@@ -6,6 +6,7 @@ import { PERSIST_DIR } from "./persistence.js";
 const execShell = promisify(exec);
 
 const BACKUP_COMMAND = process.env.PERSIST_BACKUP_COMMAND || "";
+const REQUIRE_PERSIST_BACKUP = process.env.REQUIRE_PERSIST_BACKUP === "true";
 const BACKUP_INTERVAL_MS = Number(process.env.PERSIST_BACKUP_INTERVAL_MS || 24 * 60 * 60_000);
 const BACKUP_JITTER_MS = Number(process.env.PERSIST_BACKUP_JITTER_MS || 5 * 60_000);
 const BACKUP_TIMEOUT_MS = Number(process.env.PERSIST_BACKUP_TIMEOUT_MS || 30 * 60_000);
@@ -59,8 +60,9 @@ export function getBackupHealth() {
     lastBackupTs > 0 &&
     Date.now() - lastBackupTs > BACKUP_INTERVAL_MS * 2;
   return {
-    ok: !BACKUP_COMMAND || (lastBackupOk && !stale),
+    ok: (!REQUIRE_PERSIST_BACKUP || !!BACKUP_COMMAND) && (!BACKUP_COMMAND || (lastBackupOk && !stale)),
     configured: !!BACKUP_COMMAND,
+    required: REQUIRE_PERSIST_BACKUP,
     lastBackupOk,
     lastBackupTs,
     lastBackupError,

@@ -13,6 +13,7 @@ const SNAPSHOT_DIR = path.join(PERSIST_DIR, "snapshots");
 const SNAPSHOT_INTERVAL = 5 * 60_000; // 5 minutes
 const SNAPSHOT_GIT_REMOTE = process.env.SNAPSHOT_GIT_REMOTE || "";
 const SNAPSHOT_GIT_BRANCH = process.env.SNAPSHOT_GIT_BRANCH || "main";
+const REQUIRE_SNAPSHOT_REMOTE = process.env.REQUIRE_SNAPSHOT_REMOTE === "true";
 
 let snapshotTimer: ReturnType<typeof setInterval> | null = null;
 let lastSnapshotWriteOk = true;
@@ -218,8 +219,9 @@ export async function commitSnapshotsNow(): Promise<void> {
 }
 
 export function getSnapshotsHealth() {
+  const remoteOk = !REQUIRE_SNAPSHOT_REMOTE || (!!SNAPSHOT_GIT_REMOTE && lastPushOk);
   return {
-    ok: lastSnapshotWriteOk && lastCommitOk,
+    ok: lastSnapshotWriteOk && lastCommitOk && remoteOk,
     lastSnapshotWriteOk,
     lastSnapshotWriteTs,
     lastSnapshotWriteError,
@@ -227,6 +229,7 @@ export function getSnapshotsHealth() {
     lastCommitTs,
     lastCommitError,
     remoteConfigured: !!SNAPSHOT_GIT_REMOTE,
+    remoteRequired: REQUIRE_SNAPSHOT_REMOTE,
     lastPushOk,
     lastPushTs,
     lastPushError,

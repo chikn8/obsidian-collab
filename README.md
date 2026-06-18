@@ -180,7 +180,9 @@ Settings → Real-Time Collaboration:
 | `STALE_SAVE_MS` | — | `/health` 503s if a save is older than this while rooms are active |
 | `MIN_FREE_BYTES` | — | `/health` 503s below this much free disk |
 | `SNAPSHOT_GIT_REMOTE` / `SNAPSHOT_GIT_BRANCH` | — / `main` | Push note-history snapshots off-box |
+| `REQUIRE_SNAPSHOT_REMOTE` | `false` | Make `/health` fail until snapshot git push is configured |
 | `PERSIST_BACKUP_COMMAND` | — | Shell command for periodic full-corpus backup (gets `$PERSIST_DIR`) |
+| `REQUIRE_PERSIST_BACKUP` | `false` | Make `/health` fail until full-corpus backups are configured |
 | `PERSIST_BACKUP_INTERVAL_MS` | `86400000` | Backup cadence |
 | `OPS_NTFY_TOPIC` | — | ntfy topic for save/backup/corruption alerts |
 
@@ -233,6 +235,11 @@ a first-pass local summary:
 node tools/diagnostics-summary.mjs "<vault-config>/plugins/obsidian-collab/diagnostics/diagnostic-bundle-....json"
 ```
 
+Production durability gate:
+```bash
+node tools/prod-health-check.mjs
+```
+
 ## Plugin updates
 
 Obsidian's normal auto-update path is release based: bump `plugin/manifest.json`, `plugin/package.json`,
@@ -253,7 +260,8 @@ manual installs but violates Obsidian's current community-directory naming rule 
   rate-limited and backpressure-closed counts, so call it with
   `Authorization: Bearer $METRICS_TOKEN` on public deployments.
 - **Backups:** set `SNAPSHOT_GIT_REMOTE` (push history) **and** `PERSIST_BACKUP_COMMAND` (full-corpus
-  archive). Without these, all data lives on one volume — see the warning in `server/RECOVERY.md`.
+  archive), then set `REQUIRE_SNAPSHOT_REMOTE=true` and `REQUIRE_PERSIST_BACKUP=true`. Without these,
+  all data lives on one volume — see the warning in `server/RECOVERY.md`.
 - **Restore:** follow `server/RECOVERY.md`.
 
 ## Project status

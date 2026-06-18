@@ -167,6 +167,7 @@ Settings → Real-Time Collaboration:
 | `SERVER_SECRET` | — | Mints/validates per-share HMAC keys. **Required in prod.** |
 | `AUTH_TOKEN` | — | Global password for the legacy (un-namespaced) share |
 | `ADMIN_SECRET` | = `SERVER_SECRET` | Separate secret for `/admin/revoke` (defense in depth) |
+| `METRICS_TOKEN` | = `ADMIN_SECRET` | Bearer/query token required for `/metrics` when auth is enabled |
 | `REQUIRE_AUTH` | `true` if `NODE_ENV=production` | Refuse to start without strong secrets |
 | `MIN_SECRET_LENGTH` | `16` | Minimum secret length enforced when `REQUIRE_AUTH` |
 | `DISABLE_LEGACY_ROOMS` | `false` | Reject un-namespaced rooms entirely (no `AUTH_TOKEN` needed) |
@@ -223,8 +224,9 @@ cd plugin && node test/ws-sync.test.mjs <wsBase> <token>
 ## Operations & recovery
 
 - **Health:** `GET /health` returns 503 when persistence/snapshots/backups are unhealthy (so Railway
-  restarts and `OPS_NTFY_TOPIC` pages you). `GET /metrics` exposes rooms, connections, rate-limited and
-  backpressure-closed counts.
+  restarts and `OPS_NTFY_TOPIC` pages you). `GET /metrics` exposes rooms, file paths, connections,
+  rate-limited and backpressure-closed counts, so call it with
+  `Authorization: Bearer $METRICS_TOKEN` on public deployments.
 - **Backups:** set `SNAPSHOT_GIT_REMOTE` (push history) **and** `PERSIST_BACKUP_COMMAND` (full-corpus
   archive). Without these, all data lives on one volume — see the warning in `server/RECOVERY.md`.
 - **Restore:** follow `server/RECOVERY.md`.

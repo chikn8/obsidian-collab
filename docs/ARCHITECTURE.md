@@ -125,7 +125,8 @@ it (proving `ADMIN_SECRET` knowledge) and disconnects live revoked clients with 
 
 - **`rooms.ts`** — one in-memory `WSSharedDoc` per room; relays sync + awareness to all conns. Abuse
   caps: `maxPayload`, a per-connection inbound rate limit, and `bufferedAmount` backpressure (a
-  hopelessly backed-up slow peer is closed to avoid OOM). `/metrics` exposes counters.
+  hopelessly backed-up slow peer is closed to avoid OOM). `/metrics` exposes counters and room/file
+  metadata, so it is protected by `METRICS_TOKEN` whenever auth is enabled.
 - **`persistence.ts`** — atomic `.yjs` saves (tmp + rename), periodic + last-disconnect + SIGTERM flush;
   corrupt files are renamed aside and the room starts empty (one bad file never denies a room);
   `getPersistenceHealth()` powers `/health`.
@@ -137,7 +138,7 @@ it (proving `ADMIN_SECRET` knowledge) and disconnects live revoked clients with 
   (no cross-share hijack), the sender's share comes from the connection (not the client frame), viewers
   can't send, and the client-supplied ntfy `Click` is dropped (deep-link injection guard).
 - **`history.ts` / `index.ts`** — HTTP API: `/health`, `/metrics`, `/history`, `/version`, `/files`,
-  `/admin/revoke`. Read endpoints require a valid share token.
+  `/admin/revoke`. Metrics require the metrics bearer token; read endpoints require a valid share token.
 
 ## 8. Data-flow walkthroughs
 

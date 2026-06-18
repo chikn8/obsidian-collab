@@ -16,6 +16,7 @@ const AUTH_TOKEN = process.env.AUTH_TOKEN || "";
 // validates shares against a known secret rather than an empty one.
 const SERVER_SECRET = process.env.SERVER_SECRET || AUTH_TOKEN;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || SERVER_SECRET;
+const METRICS_TOKEN = process.env.METRICS_TOKEN || ADMIN_SECRET;
 const REQUIRE_AUTH = process.env.REQUIRE_AUTH === "true" || process.env.NODE_ENV === "production";
 const DISABLE_LEGACY_ROOMS = process.env.DISABLE_LEGACY_ROOMS === "true";
 const MIN_SECRET_LENGTH = Number(process.env.MIN_SECRET_LENGTH || 16);
@@ -28,6 +29,7 @@ if (REQUIRE_AUTH) {
   const problems: string[] = [];
   if (!strongSecret(SERVER_SECRET)) problems.push(`SERVER_SECRET must be at least ${MIN_SECRET_LENGTH} chars`);
   if (!strongSecret(ADMIN_SECRET)) problems.push(`ADMIN_SECRET must be at least ${MIN_SECRET_LENGTH} chars`);
+  if (!strongSecret(METRICS_TOKEN)) problems.push(`METRICS_TOKEN must be at least ${MIN_SECRET_LENGTH} chars`);
   if (!DISABLE_LEGACY_ROOMS && !strongSecret(AUTH_TOKEN)) {
     problems.push(`AUTH_TOKEN must be at least ${MIN_SECRET_LENGTH} chars, or set DISABLE_LEGACY_ROOMS=true`);
   }
@@ -41,15 +43,41 @@ function shareIdOf(room: string): string | null {
   return room.startsWith("@") ? room.slice(1).split(":")[0] || null : null;
 }
 
+function bearerOrQueryToken(req: http.IncomingMessage, url: URL): string {
+  const auth = req.headers.authorization || "";
+  const match = /^Bearer\s+(.+)$/i.exec(Array.isArray(auth) ? auth[0] || "" : auth);
+  return (match?.[1]?.trim() || url.searchParams.get("token") || "").trim();
+}
+
+function metricsAuthorized(req: http.IncomingMessage, url: URL): boolean {
+  if (!REQUIRE_AUTH && !METRICS_TOKEN) return true;
+  const provided = bearerOrQueryToken(req, url);
+  return !!provided && !!METRICS_TOKEN && timingSafeEqualStr(provided, METRICS_TOKEN);
+}
+
 // ── HTTP: health + read-only version-history API + admin revoke ──────────────
 const server = http.createServer(async (req, res) => {
   const json = (code: number, body: unknown) => {
-    res.writeHead(code, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+    res.writeHead(code, {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    });
     res.end(JSON.stringify(body));
   };
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
     const p = url.pathname;
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      });
+      res.end();
+      return;
+    }
 
     if (p === "/") {
       return json(200, { status: "ok", service: "obsidian-collab-server", version: "0.2.0" });
@@ -75,6 +103,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === "/metrics") {
+      if (!metricsAuthorized(req, url)) return json(401, { error: "unauthorized" });
       return json(200, getMetrics());
     }
 
@@ -190,7 +219,7 @@ server.listen(PORT, HOST, () => {
   │   WebSocket: ws://${HOST}:${PORT}${" ".repeat(Math.max(0, 17 - HOST.length - String(PORT).length))}│
   │   Health:    http://${HOST}:${PORT}${" ".repeat(Math.max(0, 16 - HOST.length - String(PORT).length))}│
   │                                         │
-  │   Auth: ${AUTH_TOKEN ? "enabled" : "DISABLED (set AUTH_TOKEN)"}${" ".repeat(Math.max(0, AUTH_TOKEN ? 20 : 7))}│
+  │   Auth: ${SERVER_SECRET ? "enabled" : "DISABLED (set SERVER_SECRET)"}${" ".repeat(Math.max(0, SERVER_SECRET ? 20 : 0))}│
   └─────────────────────────────────────────┘
   `);
 });

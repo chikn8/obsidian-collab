@@ -215,12 +215,13 @@ npm run build     # tsc -noEmit + esbuild production bundle
 cd server
 npm install
 npm run build     # tsc
+npm run test:e2e  # starts a temp local relay and verifies real WS sync/auth/durability
 ```
 
-CI (`.github/workflows/ci.yml`) runs the plugin tests + both typechecks on every push/PR.
+CI (`.github/workflows/ci.yml`) runs plugin tests, server tests, both builds, and the real-server
+WebSocket e2e on every push/PR.
 
-End-to-end relay check against a running server (separate processes — y-websocket cross-talks in one
-process):
+Manual relay check against an already running server:
 ```bash
 cd plugin && node test/ws-sync.test.mjs <wsBase> <token>
 ```

@@ -554,6 +554,14 @@ function closeConn(conn: WebSocket): void {
       stopPeriodicSave(roomName);
       saveState(roomName, doc)
         .then(() => {
+          if (docs.get(roomName) !== doc || doc.conns.size > 0) {
+            logEvent("info", "room.close_aborted", {
+              room: roomName,
+              ...roomInfo(roomName),
+              conns: doc.conns.size,
+            });
+            return;
+          }
           doc.destroy();
           docs.delete(roomName);
           console.log(`[rooms] room ${roomName} closed and persisted`);
@@ -597,6 +605,7 @@ export async function setupWSConnection(
   }
 
   const doc = await getOrCreateDoc(roomName);
+  startPeriodicSave(roomName, doc);
 
   // Carry the role granted at the auth/upgrade step (default editor).
   (conn as any).collabConnId = nextConnId++;

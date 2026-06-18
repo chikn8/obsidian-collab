@@ -30,7 +30,8 @@ corrupt-`.yjs` survival · `git gc` · refuse-to-start on weak secrets (`REQUIRE
 notify hardening (per-share registry, connection-derived sender, viewer gate, dropped `Click`) · folder
 move/rename/delete handling · `stampEdit` moved to a separate `edits` map (no delete-clobber) ·
 createFileProvider in-flight reservation · comment-anchor quote-verify + re-match (no mis-highlight).
-**Tier 2**: real-`FileProvider` integration test (fake vault/IDB/WS via esbuild alias) wired into CI.
+**Tier 2**: real-`FileProvider` integration test (fake vault/IDB/WS via esbuild alias) wired into CI ·
+real-server WebSocket e2e for convergence, viewer write rejection, restart durability, and revocation.
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
 (ops, not code) · per-recipient signed identities · socket multiplexing / scale ceiling
@@ -246,11 +247,10 @@ fake vault adapter; drive the **real** `FileProvider`/`SyncManager` through loop
 / offline-reconcile scenarios. Stub `IndexeddbPersistence` and the WS provider with in-memory fakes.
 **Verify.** The suite reproduces v1's original bugs when the guards are removed (red), green with them in.
 
-### 2.2 — Automated multi-client e2e (HIGH, L)
-**Fix.** Promote `ws-sync.test.mjs` to a CI job: spin a temp-`PERSIST_DIR` server, run cross-process clients
-asserting two-editor convergence, **viewer write must not persist**, reconnect-durability, and
-revoked-epoch → 4003 close.
-**Verify.** Job runs in CI and fails if any invariant breaks.
+### 2.2 — Automated multi-client e2e (implemented)
+**Status.** `server/test/ws-e2e.test.mjs` spins a temp-`PERSIST_DIR` server and drives protocol-level
+clients against the real relay. It asserts two-editor convergence, **viewer write must not persist**,
+restart durability, and revoked-epoch → 4003 close. CI runs it after the server build.
 
 ### 2.3 — Mixed-version v1↔v2 manifest migration test (MEDIUM, M)
 **Problem.** The highest-risk real-world window is cofounders upgrading at different times (old client writes

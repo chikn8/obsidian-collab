@@ -103,10 +103,11 @@ This closes a path-traversal → arbitrary-file-write vector.
 - **Link repair on rename.** A live entry with `renamedFrom` triggers a CRDT-backed rewrite of
   `[[wikilinks]]`/embeds in synced Markdown notes, preserving aliases/subpaths and skipping code.
 - **Delete-vs-edit reconciliation.** When a remote tombstone arrives for a file we still hold, the shared
-  `applyRemoteTombstone` helper makes the same decision on startup and live updates: clear local edits after
-  the tombstone resurrect the file, old local files are deleted, and ambiguous clock-skew cases create a
-  visible `(... delete conflict ...).md`/attachment copy before applying the tombstone. Rename tombstones never
-  resurrect because the content moved to the new path.
+  `applyRemoteTombstone` helper makes the same decision on startup and live updates. Mutation provenance
+  prevents wall-clock-only resurrection across devices: same-device tombstones delete, different-device
+  apparent-newer local copies become visible `(... delete conflict ...).md`/attachment copies, and old
+  no-provenance tombstones keep the legacy safety fallback. Rename tombstones never resurrect because the
+  content moved to the new path.
 - **Folder move/rename/delete.** Obsidian fires a *single* event for a folder (not per child), so
   `onFolderRename`/`onFolderDelete` enumerate descendants and route each through the per-file path,
   preserving content and lineage. (Without this, dragging a folder orphans every file inside it.)

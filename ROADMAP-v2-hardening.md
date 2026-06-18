@@ -288,9 +288,12 @@ keep). Fine as a safety bias, but ambiguous cases can surprise.
 **Status.** Implemented the deterministic fallback: ambiguous clock-skew cases now create a visible
 `(... delete conflict ...).md`/attachment copy before the remote tombstone is applied. Clear edits after the
 delete still resurrect, old local copies delete, and rename tombstones still delete because the content moved
-to the new path. The pure `tombstoneLocalDecision` helper covers these branches headlessly.
-**Remaining.** Replace the wall-clock comparison with a logical/same-clock marker (e.g., an edit lamport/seq
-on the file doc) when the file-doc protocol is revised.
+to the new path. Mutation-stamped tombstones now avoid cross-device resurrection from `mtime` alone: a
+same-device tombstone deletes, while a different-device apparent-newer local copy becomes a conflict copy.
+Old/no-provenance tombstones retain the legacy safety behavior. The pure `tombstoneLocalDecision` helper
+covers these branches headlessly.
+**Remaining.** Replace the remaining old-client fallback with a full logical/same-clock marker (e.g., an edit
+Lamport/seq on the file doc) when the file-doc protocol is revised.
 **Verify.** Unit coverage asserts resurrect/delete/conflict-copy branches. A full two-client skew simulation
 is still needed.
 

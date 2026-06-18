@@ -115,6 +115,24 @@ console.log("Delete-vs-edit tombstone decision");
     shouldResurrect({ localMtime: deletedAt + RESURRECT_GRACE_MS + 1, deletedAt }) === true);
   check("decision: edited well after delete → resurrect",
     tombstoneLocalDecision({ localMtime: deletedAt + RESURRECT_GRACE_MS + 1, deletedAt }) === "resurrect");
+  check("provenance: same-device tombstone deletes instead of resurrecting stale local file",
+    tombstoneLocalDecision({
+      localMtime: deletedAt + RESURRECT_GRACE_MS + 1,
+      deletedAt,
+      localUid: "uid-a",
+      localDeviceId: "device-a",
+      tombstoneUid: "uid-a",
+      tombstoneDeviceId: "device-a",
+    }) === "delete");
+  check("provenance: cross-device apparent newer edit becomes conflict copy",
+    tombstoneLocalDecision({
+      localMtime: deletedAt + RESURRECT_GRACE_MS + 1,
+      deletedAt,
+      localUid: "uid-a",
+      localDeviceId: "device-a",
+      tombstoneUid: "uid-b",
+      tombstoneDeviceId: "device-b",
+    }) === "conflict-copy");
   check("untouched since before delete → do not resurrect",
     shouldResurrect({ localMtime: deletedAt - 5000, deletedAt }) === false);
   check("decision: untouched since before delete → delete",

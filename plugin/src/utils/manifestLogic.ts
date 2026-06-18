@@ -61,10 +61,24 @@ export function tombstoneLocalDecision(args: {
   localMtime: number;
   deletedAt: number;
   renamedTo?: string;
+  tombstoneDeviceId?: string;
+  localDeviceId?: string;
+  tombstoneUid?: string;
+  localUid?: string;
 }): TombstoneLocalDecision {
   if (args.renamedTo) return "delete";
+  const hasTombstoneOrigin = !!args.tombstoneDeviceId || !!args.tombstoneUid;
+  const sameDeviceTombstone =
+    !!args.localDeviceId &&
+    !!args.tombstoneDeviceId &&
+    args.localDeviceId === args.tombstoneDeviceId &&
+    (!args.localUid || !args.tombstoneUid || args.localUid === args.tombstoneUid);
+  if (sameDeviceTombstone) return "delete";
+
   const delta = args.localMtime - args.deletedAt;
-  if (delta > RESURRECT_GRACE_MS) return "resurrect";
+  if (delta > RESURRECT_GRACE_MS) {
+    return hasTombstoneOrigin ? "conflict-copy" : "resurrect";
+  }
   if (Math.abs(delta) <= RESURRECT_GRACE_MS) return "conflict-copy";
   return "delete";
 }
@@ -73,6 +87,10 @@ export function shouldResurrect(args: {
   localMtime: number;
   deletedAt: number;
   renamedTo?: string;
+  tombstoneDeviceId?: string;
+  localDeviceId?: string;
+  tombstoneUid?: string;
+  localUid?: string;
 }): boolean {
   return tombstoneLocalDecision(args) === "resurrect";
 }

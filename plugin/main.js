@@ -11789,8 +11789,13 @@ function isSyncablePath(path) {
 }
 function tombstoneLocalDecision(args2) {
   if (args2.renamedTo) return "delete";
+  const hasTombstoneOrigin = !!args2.tombstoneDeviceId || !!args2.tombstoneUid;
+  const sameDeviceTombstone = !!args2.localDeviceId && !!args2.tombstoneDeviceId && args2.localDeviceId === args2.tombstoneDeviceId && (!args2.localUid || !args2.tombstoneUid || args2.localUid === args2.tombstoneUid);
+  if (sameDeviceTombstone) return "delete";
   const delta = args2.localMtime - args2.deletedAt;
-  if (delta > RESURRECT_GRACE_MS) return "resurrect";
+  if (delta > RESURRECT_GRACE_MS) {
+    return hasTombstoneOrigin ? "conflict-copy" : "resurrect";
+  }
   if (Math.abs(delta) <= RESURRECT_GRACE_MS) return "conflict-copy";
   return "delete";
 }
@@ -12535,14 +12540,25 @@ var SyncManager = class {
     const file = this.app.vault.getAbstractFileByPath(fullPath);
     const deletedAt = entry.deletedAt || entry.lastModified || 0;
     const isBinary = this.entryKind(safeRel, entry) === "binary";
-    const localDecision = this.role === "editor" && file instanceof import_obsidian4.TFile ? tombstoneLocalDecision({ localMtime: file.stat.mtime, deletedAt, renamedTo: entry.renamedTo }) : "delete";
+    const localDecision = this.role === "editor" && file instanceof import_obsidian4.TFile ? tombstoneLocalDecision({
+      localMtime: file.stat.mtime,
+      deletedAt,
+      renamedTo: entry.renamedTo,
+      localUid: this.settings.uid,
+      localDeviceId: installDeviceId(),
+      tombstoneUid: entry.mutationByUid,
+      tombstoneDeviceId: entry.mutationDeviceId
+    }) : "delete";
     if (file instanceof import_obsidian4.TFile && localDecision === "resurrect") {
       trace("manifest", "tombstone-resurrect", {
         shareId: this.histShareId,
         relPath: safeRel,
         deletedAt,
         localMtime: file.stat.mtime,
-        renamedTo: entry.renamedTo
+        renamedTo: entry.renamedTo,
+        mutationId: entry.mutationId,
+        mutationByUid: entry.mutationByUid,
+        mutationDeviceId: entry.mutationDeviceId
       });
       const fileId = entry.fileId || this.fileIds.get(relPath) || newFileId();
       const mutation = this.manifestMutation("resurrect");
@@ -12562,7 +12578,10 @@ var SyncManager = class {
         relPath: safeRel,
         conflictRel,
         deletedAt,
-        localMtime: file.stat.mtime
+        localMtime: file.stat.mtime,
+        mutationId: entry.mutationId,
+        mutationByUid: entry.mutationByUid,
+        mutationDeviceId: entry.mutationDeviceId
       });
       if (conflictRel) {
         new import_obsidian4.Notice(`"${safeRel}" changed near a remote delete \u2014 kept a conflict copy at "${conflictRel}"`);

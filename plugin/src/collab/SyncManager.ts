@@ -537,7 +537,15 @@ export class SyncManager {
     // conflict copy before the tombstone is applied, so local edits are not lost.
     const localDecision =
       this.role === "editor" && file instanceof TFile
-        ? tombstoneLocalDecision({ localMtime: file.stat.mtime, deletedAt, renamedTo: entry.renamedTo })
+        ? tombstoneLocalDecision({
+          localMtime: file.stat.mtime,
+          deletedAt,
+          renamedTo: entry.renamedTo,
+          localUid: this.settings.uid,
+          localDeviceId: installDeviceId(),
+          tombstoneUid: entry.mutationByUid,
+          tombstoneDeviceId: entry.mutationDeviceId,
+        })
         : "delete";
     if (
       file instanceof TFile &&
@@ -549,6 +557,9 @@ export class SyncManager {
         deletedAt,
         localMtime: file.stat.mtime,
         renamedTo: entry.renamedTo,
+        mutationId: entry.mutationId,
+        mutationByUid: entry.mutationByUid,
+        mutationDeviceId: entry.mutationDeviceId,
       });
       const fileId = entry.fileId || this.fileIds.get(relPath) || newFileId();
       const mutation = this.manifestMutation("resurrect");
@@ -570,6 +581,9 @@ export class SyncManager {
         conflictRel,
         deletedAt,
         localMtime: file.stat.mtime,
+        mutationId: entry.mutationId,
+        mutationByUid: entry.mutationByUid,
+        mutationDeviceId: entry.mutationDeviceId,
       });
       if (conflictRel) {
         new Notice(`"${safeRel}" changed near a remote delete — kept a conflict copy at "${conflictRel}"`);

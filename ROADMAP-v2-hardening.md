@@ -16,9 +16,10 @@ Deterministic content-fingerprint loop guard (`EchoGuard`), re-entrancy depth, s
 create/delete sentinels · never-lose: `flushSnapshot`+local trash before destroy, deleted-file
 recovery UI + restore, pre-reconcile snapshot, server git history, additive `/files` endpoint ·
 manifest schema v2 (additive, migrated): `fileId`, tombstone deletes, rename = full Y.Doc transfer,
-delete-vs-edit resurrection, shared `applyRemoteTombstone` · offline IDB-base reconcile + "N pending"
-indicator · mobile-safe presence, clipboard fallbacks, multi-instance detection · atomic `.yjs` saves,
-graceful SIGTERM, active revocation (epoch + 4003 close), per-device presence, Tier-2 per-share HMAC.
+delete-vs-edit resurrection, shared `applyRemoteTombstone`, durable `mutation*` provenance on lifecycle
+entries · offline IDB-base reconcile + "N pending" indicator · mobile-safe presence, clipboard fallbacks,
+multi-instance detection · atomic `.yjs` saves, graceful SIGTERM, active revocation (epoch + 4003 close),
+per-device presence, Tier-2 per-share HMAC.
 
 ## ✅ Completed since this roadmap was written
 **Tier 0** (durability + security quick wins): path-traversal guard (`safeRelPath`, both sides) ·

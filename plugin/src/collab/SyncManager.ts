@@ -1,6 +1,6 @@
 import { App, TFile, TFolder, Notice, debounce } from "obsidian";
 import * as Y from "yjs";
-import { createProvider } from "./YjsProvider";
+import { createProvider, detectDevice, installDeviceId } from "./YjsProvider";
 import { FileProvider } from "./FileProvider";
 import { EchoGuard, beginRemoteApply, endRemoteApply, isApplyingRemote } from "./EchoGuard";
 import { manifestRoom, fileRoom, shareToken, shareAuthParams, httpBase } from "../utils/roomName";
@@ -14,6 +14,7 @@ import {
   isSyncablePath,
   isSyncableTextPath,
   liveManifestEntry,
+  manifestMutationFields,
   safeRelPath,
   shouldPublishLocalOnStartup,
   tombstoneLocalDecision,
@@ -65,6 +66,7 @@ export class SyncManager {
   private editsMap: Y.Map<any> | null = null;
   // fileId we last saw per relPath, to detect identity changes (new file at same path).
   private fileIds: Map<string, string> = new Map();
+  private manifestMutationSeq = 0;
 
   // File providers, keyed by relPath
   private fileProviders: Map<string, FileProvider> = new Map();
@@ -210,6 +212,18 @@ export class SyncManager {
   toRel(fullPath: string): string { return this.toRelativePath(fullPath); }
   toFull(relPath: string): string { return this.toFullPath(relPath); }
 
+  private manifestMutation(action: string): Partial<ManifestEntry> {
+    return manifestMutationFields({
+      action,
+      at: Date.now(),
+      seq: ++this.manifestMutationSeq,
+      displayName: this.settings.displayName,
+      uid: this.settings.uid,
+      deviceId: installDeviceId(),
+      device: detectDevice(),
+    });
+  }
+
   /** Start syncing the share's folder */
   async start(): Promise<void> {
     if (!this.share.localFolder || !this.settings.serverUrl) return;
@@ -334,8 +348,12 @@ export class SyncManager {
             await this.publishBinaryFile(relPath, filePath, undefined, "startup-create");
           } else {
             const fileId = newFileId();
+            const mutation = this.manifestMutation("startup-create");
             this.fileIds.set(relPath, fileId);
-            this.manifestMap!.set(relPath, liveManifestEntry(undefined, relPath, fileId, this.settings.displayName, { kind: "text" }));
+            this.manifestMap!.set(relPath, liveManifestEntry(undefined, relPath, fileId, this.settings.displayName, {
+              kind: "text",
+              ...mutation,
+            }));
           }
         } else if (entry?.exists && this.entryKind(relPath, entry) === "binary") {
           const file = this.app.vault.getAbstractFileByPath(filePath);
@@ -527,9 +545,10 @@ export class SyncManager {
         renamedTo: entry.renamedTo,
       });
       const fileId = entry.fileId || this.fileIds.get(relPath) || newFileId();
+      const mutation = this.manifestMutation("resurrect");
       this.fileIds.set(safeRel, fileId);
       this.manifestMap!.set(safeRel, liveManifestEntry(entry, safeRel, fileId, this.settings.displayName, {
-        lastModified: Date.now(),
+        ...mutation,
         resurrectedBy: this.settings.displayName,
       }));
       new Notice(`"${safeRel}" was edited after being deleted — kept`);
@@ -609,9 +628,10 @@ export class SyncManager {
         const content = provider ? provider.getText() : await this.app.vault.read(file);
         await this.app.vault.create(conflictFullPath, content);
         const fileId = newFileId();
+        const mutation = this.manifestMutation("delete-conflict-copy");
         this.fileIds.set(conflictRel, fileId);
         this.manifestMap?.set(conflictRel, liveManifestEntry(undefined, conflictRel, fileId, this.settings.displayName, {
-          lastModified: Date.now(),
+          ...mutation,
           resurrectedBy: this.settings.displayName,
         }));
         await this.createFileProvider(conflictRel, conflictFullPath);
@@ -816,12 +836,14 @@ export class SyncManager {
     }
 
     const fileId = prev?.fileId || this.fileIds.get(safeRel) || newFileId();
+    const mutation = this.manifestMutation(`binary-${reason}`);
     this.fileIds.set(safeRel, fileId);
     this.manifestMap.set(safeRel, liveManifestEntry(prev, safeRel, fileId, this.settings.displayName, {
       kind: "binary",
       blobHash: info.hash,
       blobSize: info.size,
-      blobUpdatedAt: Date.now(),
+      blobUpdatedAt: mutation.mutationAt,
+      ...mutation,
     }));
     trace("blob", "published", { shareId: this.histShareId, relPath: safeRel, hash: info.hash, size: info.size, reason });
   }
@@ -977,8 +999,9 @@ export class SyncManager {
       const prev = this.manifestMap.get(relPath) as ManifestEntry | undefined;
       // Reuse an existing fileId (re-create at the same path) else mint a new one.
       const fileId = prev?.fileId || newFileId();
+      const mutation = this.manifestMutation("create");
       this.fileIds.set(relPath, fileId);
-      this.manifestMap.set(relPath, liveManifestEntry(prev, relPath, fileId, this.settings.displayName));
+      this.manifestMap.set(relPath, liveManifestEntry(prev, relPath, fileId, this.settings.displayName, mutation));
     }
 
     if (!this.fileProviders.has(relPath)) {
@@ -1062,14 +1085,15 @@ export class SyncManager {
 
     if (this.manifestMap) {
       const prev = this.manifestMap.get(relPath) as ManifestEntry | undefined;
+      const mutation = this.manifestMutation("delete");
       this.manifestMap.set(relPath, {
         ...(prev || {}),
         path: relPath,
         exists: false,
         deleted: true,
-        lastModified: Date.now(),
+        ...mutation,
         deletedBy: this.settings.displayName,
-        deletedAt: Date.now(),
+        deletedAt: mutation.mutationAt,
       });
     }
     this.fileIds.delete(relPath);
@@ -1169,9 +1193,10 @@ export class SyncManager {
     if (fp) { await fp.flushSnapshot(); await fp.saveToTrash(); }
     if (this.manifestMap) {
       const prev = this.manifestMap.get(oldRel) as ManifestEntry | undefined;
+      const mutation = this.manifestMutation("delete-moved-out");
       this.manifestMap.set(oldRel, {
         ...(prev || {}), path: oldRel, exists: false, deleted: true,
-        lastModified: Date.now(), deletedBy: this.settings.displayName, deletedAt: Date.now(),
+        ...mutation, deletedBy: this.settings.displayName, deletedAt: mutation.mutationAt,
       });
     }
     this.fileIds.delete(oldRel);
@@ -1209,17 +1234,18 @@ export class SyncManager {
     }
 
     if (this.manifestMap) {
+      const mutation = this.manifestMutation("rename");
       this.manifestDoc!.transact(() => {
         // New entry: same identity, new path.
         this.manifestMap!.set(newRel, liveManifestEntry(oldEntry, newRel, fileId, this.settings.displayName, {
           renamedFrom: oldRel,
-          lastModified: Date.now(),
+          ...mutation,
         }));
         // Old path: tombstone pointing at the new path.
         this.manifestMap!.set(oldRel, {
           ...oldEntry, fileId, path: oldRel, exists: false, deleted: true,
-          renamedTo: newRel, lastModified: Date.now(),
-          deletedBy: this.settings.displayName, deletedAt: Date.now(),
+          renamedTo: newRel, ...mutation,
+          deletedBy: this.settings.displayName, deletedAt: mutation.mutationAt,
         });
       });
     }
@@ -1245,19 +1271,20 @@ export class SyncManager {
     this.fileIds.delete(oldRel);
     this.fileIds.set(newRel, fileId);
     if (this.manifestMap) {
+      const mutation = this.manifestMutation("binary-rename");
       this.manifestDoc!.transact(() => {
         this.manifestMap!.set(newRel, liveManifestEntry(oldEntry, newRel, fileId, this.settings.displayName, {
           kind: "binary",
           blobHash: oldEntry.blobHash,
           blobSize: oldEntry.blobSize,
-          blobUpdatedAt: oldEntry.blobUpdatedAt || oldEntry.lastModified || Date.now(),
+          blobUpdatedAt: oldEntry.blobUpdatedAt || oldEntry.lastModified || mutation.mutationAt,
           renamedFrom: oldRel,
-          lastModified: Date.now(),
+          ...mutation,
         }));
         this.manifestMap!.set(oldRel, {
           ...oldEntry, fileId, path: oldRel, exists: false, deleted: true,
-          renamedTo: newRel, lastModified: Date.now(),
-          deletedBy: this.settings.displayName, deletedAt: Date.now(),
+          renamedTo: newRel, ...mutation,
+          deletedBy: this.settings.displayName, deletedAt: mutation.mutationAt,
         });
       });
     }
@@ -1405,12 +1432,12 @@ export class SyncManager {
     if (!safeRel) return false;
     const prev = this.manifestMap.get(safeRel) || {};
     const fileId = prev.fileId || this.fileIds.get(safeRel) || newFileId();
+    const mutation = this.manifestMutation("restore");
     this.fileIds.set(safeRel, fileId);
     this.manifestMap.set(safeRel, {
-      ...liveManifestEntry(prev, safeRel, fileId, this.settings.displayName),
-      lastModified: Date.now(),
+      ...liveManifestEntry(prev, safeRel, fileId, this.settings.displayName, mutation),
       restoredBy: this.settings.displayName,
-      restoredAt: Date.now(),
+      restoredAt: mutation.mutationAt,
     });
     log("delete", "restore requested", safeRel);
 

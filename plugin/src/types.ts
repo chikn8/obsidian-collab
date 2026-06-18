@@ -71,6 +71,15 @@ export interface ManifestEntry {
   blobHash?: string;
   blobSize?: number;
   blobUpdatedAt?: number;
+  /** Durable provenance for the manifest operation that last changed this lifecycle entry. */
+  mutationId?: string;
+  mutationAction?: string;
+  mutationSeq?: number;
+  mutationAt?: number;
+  mutationBy?: string;
+  mutationByUid?: string;
+  mutationDeviceId?: string;
+  mutationDevice?: string;
 }
 
 /** Current manifest schema version (stored on the manifest doc's `meta` map). */

@@ -4,7 +4,7 @@ import * as Y from "yjs";
 import type { ConnectionStatus } from "../types";
 import { MuxProvider } from "./MuxProvider";
 
-function detectDevice(): string {
+export function detectDevice(): string {
   if (Platform.isMobile) return "mobile";
   return "desktop";
 }
@@ -17,7 +17,7 @@ function cursorDisplayName(name: string, device: string): string {
 const DEVICE_ID_KEY = "obsidian-collab-device-id";
 let cachedDeviceId: string | null = null;
 
-function installDeviceId(): string {
+export function installDeviceId(): string {
   if (cachedDeviceId) return cachedDeviceId;
   try {
     const existing = globalThis.localStorage?.getItem(DEVICE_ID_KEY);

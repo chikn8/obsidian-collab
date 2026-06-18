@@ -10,6 +10,36 @@ export const RESURRECT_GRACE_MS = 2000;
 export const SYNCABLE_TEXT_EXTENSIONS = ["md", "canvas"] as const;
 export type TombstoneLocalDecision = "delete" | "resurrect" | "conflict-copy";
 
+function mutationPart(value: string | undefined, fallback: string): string {
+  const clean = (value || "").trim().replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 80);
+  return clean || fallback;
+}
+
+export function manifestMutationFields(args: {
+  action: string;
+  at: number;
+  seq: number;
+  displayName: string;
+  uid?: string;
+  deviceId: string;
+  device?: string;
+}): Partial<ManifestEntry> {
+  const actor = mutationPart(args.uid || args.displayName, "anonymous");
+  const device = mutationPart(args.deviceId, "device");
+  const fields: Partial<ManifestEntry> = {
+    lastModified: args.at,
+    mutationId: `${actor}:${device}:${args.seq}:${args.at}`,
+    mutationAction: args.action,
+    mutationSeq: args.seq,
+    mutationAt: args.at,
+    mutationBy: args.displayName,
+    mutationByUid: args.uid || "",
+    mutationDeviceId: args.deviceId,
+    mutationDevice: args.device || "",
+  };
+  return fields;
+}
+
 export function isSyncableTextPath(path: string): boolean {
   const ext = path.split("/").pop()?.split(".").pop()?.toLowerCase() || "";
   return (SYNCABLE_TEXT_EXTENSIONS as readonly string[]).includes(ext);
@@ -111,6 +141,14 @@ export function liveManifestEntry(
     restoredBy,
     restoredAt,
     resurrectedBy,
+    mutationId,
+    mutationAction,
+    mutationSeq,
+    mutationAt,
+    mutationBy,
+    mutationByUid,
+    mutationDeviceId,
+    mutationDevice,
     ...rest
   } = previous || {};
 
@@ -122,6 +160,14 @@ export function liveManifestEntry(
   void restoredBy;
   void restoredAt;
   void resurrectedBy;
+  void mutationId;
+  void mutationAction;
+  void mutationSeq;
+  void mutationAt;
+  void mutationBy;
+  void mutationByUid;
+  void mutationDeviceId;
+  void mutationDevice;
 
   return {
     ...rest,

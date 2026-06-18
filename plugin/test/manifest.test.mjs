@@ -9,6 +9,7 @@ import * as Y from "yjs";
 import {
   isRecoverableTombstone,
   liveManifestEntry,
+  manifestMutationFields,
   safeRelPath,
   shouldPublishLocalOnStartup,
   shouldResurrect,
@@ -165,15 +166,39 @@ console.log("Live entry cleanup");
     restoredBy: "old restore",
     restoredAt: 11,
     resurrectedBy: "old resurrect",
+    mutationId: "old-op",
+    mutationAction: "delete",
+    mutationSeq: 1,
+    mutationAt: 10,
+    mutationBy: "A",
+    mutationByUid: "uid-a",
+    mutationDeviceId: "device-a",
+    mutationDevice: "desktop",
     lastModified: 10,
     createdBy: "Orig",
   };
-  const live = liveManifestEntry(prior, "old.md", "id", "Me", { restoredBy: "Me", restoredAt: 20 });
+  const unstamped = liveManifestEntry(prior, "old.md", "id", "Me", { restoredBy: "Me", restoredAt: 20 });
+  const mutation = manifestMutationFields({
+    action: "restore",
+    at: 20,
+    seq: 2,
+    displayName: "Me",
+    uid: "uid-me",
+    deviceId: "device-me",
+    device: "mobile",
+  });
+  const live = liveManifestEntry(prior, "old.md", "id", "Me", { ...mutation, restoredBy: "Me", restoredAt: 20 });
   check("live entry exists", live.exists === true && live.deleted === false);
   check("live entry keeps identity", live.fileId === "id" && live.path === "old.md");
   check("live entry strips stale rename target", live.renamedTo === undefined && live.renamedFrom === undefined);
   check("live entry strips stale delete metadata", live.deletedAt === undefined && live.deletedBy === undefined);
+  check("live entry strips stale mutation metadata", unstamped.mutationId === undefined && unstamped.mutationByUid === undefined);
   check("live entry applies fresh restore metadata", live.restoredBy === "Me" && live.restoredAt === 20);
+  check("live entry applies fresh mutation metadata",
+    live.mutationId === "uid-me:device-me:2:20" &&
+    live.mutationAction === "restore" &&
+    live.mutationByUid === "uid-me" &&
+    live.mutationDevice === "mobile");
 }
 
 // ── 7. Deleted-files list should exclude rename-away tombstones ────────────────

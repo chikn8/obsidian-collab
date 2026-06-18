@@ -108,8 +108,8 @@ races. Your own devices are just "more clients on the share" — the plugin alre
   re-published, and same-time clock-skew cases create a visible sibling conflict copy before the original
   path is updated to the remote blob.
 - **Per-share manifest** is a `Y.Map("files")` keyed by relative path, tracking the file tree as
-  schema-v2 entries (`fileId`, `exists`, tombstone fields). `SyncManager` owns it and the per-file
-  providers.
+  schema-v2 entries (`fileId`, `exists`, tombstone fields, additive `mutation*` provenance). `SyncManager`
+  owns it and the per-file providers.
 - **Rooms** are namespaced per share: `@<shareId>:__manifest__`, `@<shareId>:file:<relPath>`. The
   original single-folder setup auto-migrates to a **legacy** share that keeps the old un-prefixed rooms.
 - **Server** is a content-agnostic relay: it brokers Yjs updates, persists each room's `.yjs` atomically,

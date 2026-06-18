@@ -75,11 +75,17 @@ exists       false ⇒ tombstone (entry retained, NOT hard-deleted)
 deleted, deletedBy, deletedAt
 renamedFrom, renamedTo
 restoredBy/At, resurrectedBy
+mutationId, mutationAction, mutationAt, mutationByUid, mutationDeviceId
 ```
 
 `schemaVersion` lives on a separate `meta` map; volatile "who last edited" stamps live on a separate
 `edits` map (so a stamp can never LWW-clobber a concurrent delete on the lifecycle entry). Migration is
 idempotent and LWW-converges if two clients migrate at once.
+
+Every local lifecycle mutation also stamps the manifest entry with additive operation provenance
+(`mutationId`, local sequence, actor uid, and device id/kind). These stamps do not authorize anything and
+do not replace Yjs conflict resolution; they make delete/rename/blob feedback loops traceable to one
+device operation in diagnostics, history, and exported manifest state.
 
 **Path safety:** manifest keys are remote-controlled, so every key is validated by `safeRelPath`
 (`utils/manifestLogic.ts`) on **both** the write side and the apply side — rejecting `..`, absolute

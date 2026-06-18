@@ -11759,6 +11759,26 @@ function countRun(line, start, ch) {
 // src/utils/manifestLogic.ts
 var RESURRECT_GRACE_MS = 2e3;
 var SYNCABLE_TEXT_EXTENSIONS = ["md", "canvas"];
+function mutationPart(value, fallback) {
+  const clean2 = (value || "").trim().replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 80);
+  return clean2 || fallback;
+}
+function manifestMutationFields(args2) {
+  const actor = mutationPart(args2.uid || args2.displayName, "anonymous");
+  const device = mutationPart(args2.deviceId, "device");
+  const fields = {
+    lastModified: args2.at,
+    mutationId: `${actor}:${device}:${args2.seq}:${args2.at}`,
+    mutationAction: args2.action,
+    mutationSeq: args2.seq,
+    mutationAt: args2.at,
+    mutationBy: args2.displayName,
+    mutationByUid: args2.uid || "",
+    mutationDeviceId: args2.deviceId,
+    mutationDevice: args2.device || ""
+  };
+  return fields;
+}
 function isSyncableTextPath(path) {
   var _a2, _b2;
   const ext = ((_b2 = (_a2 = path.split("/").pop()) == null ? void 0 : _a2.split(".").pop()) == null ? void 0 : _b2.toLowerCase()) || "";
@@ -11816,6 +11836,14 @@ function liveManifestEntry(previous, relPath, fileId, displayName, extra = {}) {
     restoredBy,
     restoredAt,
     resurrectedBy,
+    mutationId,
+    mutationAction,
+    mutationSeq,
+    mutationAt,
+    mutationBy,
+    mutationByUid,
+    mutationDeviceId,
+    mutationDevice,
     ...rest
   } = previous || {};
   void deleted;
@@ -11826,6 +11854,14 @@ function liveManifestEntry(previous, relPath, fileId, displayName, extra = {}) {
   void restoredBy;
   void restoredAt;
   void resurrectedBy;
+  void mutationId;
+  void mutationAction;
+  void mutationSeq;
+  void mutationAt;
+  void mutationBy;
+  void mutationByUid;
+  void mutationDeviceId;
+  void mutationDevice;
   return {
     ...rest,
     fileId,
@@ -12087,6 +12123,7 @@ var SyncManager = class {
     this.editsMap = null;
     // fileId we last saw per relPath, to detect identity changes (new file at same path).
     this.fileIds = /* @__PURE__ */ new Map();
+    this.manifestMutationSeq = 0;
     // File providers, keyed by relPath
     this.fileProviders = /* @__PURE__ */ new Map();
     // Guards. EchoGuard fingerprints every plugin-initiated vault write so the
@@ -12221,6 +12258,17 @@ var SyncManager = class {
   toFull(relPath) {
     return this.toFullPath(relPath);
   }
+  manifestMutation(action) {
+    return manifestMutationFields({
+      action,
+      at: Date.now(),
+      seq: ++this.manifestMutationSeq,
+      displayName: this.settings.displayName,
+      uid: this.settings.uid,
+      deviceId: installDeviceId(),
+      device: detectDevice()
+    });
+  }
   /** Start syncing the share's folder */
   async start() {
     if (!this.share.localFolder || !this.settings.serverUrl) return;
@@ -12322,8 +12370,12 @@ var SyncManager = class {
             await this.publishBinaryFile(relPath, filePath, void 0, "startup-create");
           } else {
             const fileId = newFileId();
+            const mutation = this.manifestMutation("startup-create");
             this.fileIds.set(relPath, fileId);
-            this.manifestMap.set(relPath, liveManifestEntry(void 0, relPath, fileId, this.settings.displayName, { kind: "text" }));
+            this.manifestMap.set(relPath, liveManifestEntry(void 0, relPath, fileId, this.settings.displayName, {
+              kind: "text",
+              ...mutation
+            }));
           }
         } else if ((entry == null ? void 0 : entry.exists) && this.entryKind(relPath, entry) === "binary") {
           const file = this.app.vault.getAbstractFileByPath(filePath);
@@ -12487,9 +12539,10 @@ var SyncManager = class {
         renamedTo: entry.renamedTo
       });
       const fileId = entry.fileId || this.fileIds.get(relPath) || newFileId();
+      const mutation = this.manifestMutation("resurrect");
       this.fileIds.set(safeRel, fileId);
       this.manifestMap.set(safeRel, liveManifestEntry(entry, safeRel, fileId, this.settings.displayName, {
-        lastModified: Date.now(),
+        ...mutation,
         resurrectedBy: this.settings.displayName
       }));
       new import_obsidian4.Notice(`"${safeRel}" was edited after being deleted \u2014 kept`);
@@ -12558,9 +12611,10 @@ var SyncManager = class {
         const content = provider ? provider.getText() : await this.app.vault.read(file);
         await this.app.vault.create(conflictFullPath, content);
         const fileId = newFileId();
+        const mutation = this.manifestMutation("delete-conflict-copy");
         this.fileIds.set(conflictRel, fileId);
         (_a2 = this.manifestMap) == null ? void 0 : _a2.set(conflictRel, liveManifestEntry(void 0, conflictRel, fileId, this.settings.displayName, {
-          lastModified: Date.now(),
+          ...mutation,
           resurrectedBy: this.settings.displayName
         }));
         await this.createFileProvider(conflictRel, conflictFullPath);
@@ -12741,12 +12795,14 @@ var SyncManager = class {
       return;
     }
     const fileId = (prev == null ? void 0 : prev.fileId) || this.fileIds.get(safeRel) || newFileId();
+    const mutation = this.manifestMutation(`binary-${reason}`);
     this.fileIds.set(safeRel, fileId);
     this.manifestMap.set(safeRel, liveManifestEntry(prev, safeRel, fileId, this.settings.displayName, {
       kind: "binary",
       blobHash: info.hash,
       blobSize: info.size,
-      blobUpdatedAt: Date.now()
+      blobUpdatedAt: mutation.mutationAt,
+      ...mutation
     }));
     trace("blob", "published", { shareId: this.histShareId, relPath: safeRel, hash: info.hash, size: info.size, reason });
   }
@@ -12888,8 +12944,9 @@ var SyncManager = class {
     if (this.manifestMap) {
       const prev = this.manifestMap.get(relPath);
       const fileId = (prev == null ? void 0 : prev.fileId) || newFileId();
+      const mutation = this.manifestMutation("create");
       this.fileIds.set(relPath, fileId);
-      this.manifestMap.set(relPath, liveManifestEntry(prev, relPath, fileId, this.settings.displayName));
+      this.manifestMap.set(relPath, liveManifestEntry(prev, relPath, fileId, this.settings.displayName, mutation));
     }
     if (!this.fileProviders.has(relPath)) {
       this.createFileProvider(relPath, file.path);
@@ -12965,14 +13022,15 @@ var SyncManager = class {
     }
     if (this.manifestMap) {
       const prev = this.manifestMap.get(relPath);
+      const mutation = this.manifestMutation("delete");
       this.manifestMap.set(relPath, {
         ...prev || {},
         path: relPath,
         exists: false,
         deleted: true,
-        lastModified: Date.now(),
+        ...mutation,
         deletedBy: this.settings.displayName,
-        deletedAt: Date.now()
+        deletedAt: mutation.mutationAt
       });
     }
     this.fileIds.delete(relPath);
@@ -13067,14 +13125,15 @@ var SyncManager = class {
     }
     if (this.manifestMap) {
       const prev = this.manifestMap.get(oldRel);
+      const mutation = this.manifestMutation("delete-moved-out");
       this.manifestMap.set(oldRel, {
         ...prev || {},
         path: oldRel,
         exists: false,
         deleted: true,
-        lastModified: Date.now(),
+        ...mutation,
         deletedBy: this.settings.displayName,
-        deletedAt: Date.now()
+        deletedAt: mutation.mutationAt
       });
     }
     this.fileIds.delete(oldRel);
@@ -13109,10 +13168,11 @@ var SyncManager = class {
       await this.createFileProvider(newRel, newPath, { seedState: state });
     }
     if (this.manifestMap) {
+      const mutation = this.manifestMutation("rename");
       this.manifestDoc.transact(() => {
         this.manifestMap.set(newRel, liveManifestEntry(oldEntry, newRel, fileId, this.settings.displayName, {
           renamedFrom: oldRel,
-          lastModified: Date.now()
+          ...mutation
         }));
         this.manifestMap.set(oldRel, {
           ...oldEntry,
@@ -13121,9 +13181,9 @@ var SyncManager = class {
           exists: false,
           deleted: true,
           renamedTo: newRel,
-          lastModified: Date.now(),
+          ...mutation,
           deletedBy: this.settings.displayName,
-          deletedAt: Date.now()
+          deletedAt: mutation.mutationAt
         });
       });
     }
@@ -13149,14 +13209,15 @@ var SyncManager = class {
     this.fileIds.delete(oldRel);
     this.fileIds.set(newRel, fileId);
     if (this.manifestMap) {
+      const mutation = this.manifestMutation("binary-rename");
       this.manifestDoc.transact(() => {
         this.manifestMap.set(newRel, liveManifestEntry(oldEntry, newRel, fileId, this.settings.displayName, {
           kind: "binary",
           blobHash: oldEntry.blobHash,
           blobSize: oldEntry.blobSize,
-          blobUpdatedAt: oldEntry.blobUpdatedAt || oldEntry.lastModified || Date.now(),
+          blobUpdatedAt: oldEntry.blobUpdatedAt || oldEntry.lastModified || mutation.mutationAt,
           renamedFrom: oldRel,
-          lastModified: Date.now()
+          ...mutation
         }));
         this.manifestMap.set(oldRel, {
           ...oldEntry,
@@ -13165,9 +13226,9 @@ var SyncManager = class {
           exists: false,
           deleted: true,
           renamedTo: newRel,
-          lastModified: Date.now(),
+          ...mutation,
           deletedBy: this.settings.displayName,
-          deletedAt: Date.now()
+          deletedAt: mutation.mutationAt
         });
       });
     }
@@ -13308,12 +13369,12 @@ var SyncManager = class {
     if (!safeRel) return false;
     const prev = this.manifestMap.get(safeRel) || {};
     const fileId = prev.fileId || this.fileIds.get(safeRel) || newFileId();
+    const mutation = this.manifestMutation("restore");
     this.fileIds.set(safeRel, fileId);
     this.manifestMap.set(safeRel, {
-      ...liveManifestEntry(prev, safeRel, fileId, this.settings.displayName),
-      lastModified: Date.now(),
+      ...liveManifestEntry(prev, safeRel, fileId, this.settings.displayName, mutation),
       restoredBy: this.settings.displayName,
-      restoredAt: Date.now()
+      restoredAt: mutation.mutationAt
     });
     log("delete", "restore requested", safeRel);
     const trash = await this.readLatestTrash(safeRel);

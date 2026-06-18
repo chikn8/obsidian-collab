@@ -221,6 +221,13 @@ process):
 cd plugin && node test/ws-sync.test.mjs <wsBase> <token>
 ```
 
+Diagnostic bundles exported from the plugin are JSON and safe to hand to an AI/debugging session. For
+a first-pass local summary:
+
+```bash
+node tools/diagnostics-summary.mjs "<vault-config>/plugins/obsidian-collab/diagnostics/diagnostic-bundle-....json"
+```
+
 ## Plugin updates
 
 Obsidian's normal auto-update path is release based: bump `plugin/manifest.json`, `plugin/package.json`,

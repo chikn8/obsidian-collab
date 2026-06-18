@@ -92,6 +92,8 @@ This closes a path-traversal → arbitrary-file-write vector.
 - **Rename = content transfer.** `transferRename` clones the old file's *full Y.Doc state* (text +
   comments + anchors) into the new room via `encodeStateAsUpdate`, keeps the same `fileId`, and
   tombstones the old path with `renamedTo`. Not a delete+create.
+- **Link repair on rename.** A live entry with `renamedFrom` triggers a CRDT-backed rewrite of
+  `[[wikilinks]]`/embeds in synced Markdown notes, preserving aliases/subpaths and skipping code.
 - **Delete-vs-edit resurrection.** When a remote tombstone arrives for a file we still hold, if our local
   file was edited after the delete (`mtime > deletedAt + grace`, and it's not a rename tombstone), we
   **keep** it and surface a notice — never a silent loss. The predicate is the pure `shouldResurrect`.

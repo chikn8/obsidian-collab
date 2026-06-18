@@ -360,10 +360,11 @@ the current sidebar and add-comment modal paths are covered.
 Notify thread author on reply/resolve; a cross-file unread-comment inbox. Async review is currently broken
 across devices.
 
-### 4.5 — Link integrity + follow-presence (partial)
+### 4.5 — Link integrity + follow-presence (implemented)
 **Status.** Presence avatars in the file tree and workspace tab headers can open a collaborator's active
-local file. The active-editor facepile still jumps to a peer's caret in the same file.
-**Remaining.** Rewrite `[[wikilinks]]`/embeds in sibling notes on remote rename.
+local file. The active-editor facepile still jumps to a peer's caret in the same file. Remote rename now
+repairs `[[wikilinks]]`/embeds in synced Markdown notes as a CRDT edit, preserving aliases/subpaths and
+skipping code.
 
 ### 4.6 — Join-by-code UX (S/M)
 Deep-link opens a pre-filled join modal; prompt for a friendly folder + label instead of dumping into

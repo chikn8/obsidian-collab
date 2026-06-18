@@ -463,6 +463,38 @@ export class FileProvider {
     });
   }
 
+  /**
+   * Apply a plugin-owned text rewrite as a CRDT edit, then flush it to disk.
+   * Unlike vault.on("modify") changes, there is no originating disk event, so
+   * headless files need the explicit flush. Editor-bound files also work:
+   * yCollab renders the local transaction and this write persists the result.
+   */
+  async applyProgrammaticChange(newContent: string, reason: string): Promise<boolean> {
+    if (this.destroyed || !this.ydoc || !this.ytext) return false;
+    const old = this.ytext.toString();
+    if (!this.isInitialized && old.length === 0 && newContent.length > 0) {
+      trace("file", "programmatic-change-skipped", {
+        path: this.filePath,
+        room: this.roomName,
+        reason,
+        cause: "not-initialized-empty-doc",
+        newLen: newContent.length,
+      });
+      return false;
+    }
+    if (old === newContent) return false;
+    trace("file", "programmatic-change", {
+      path: this.filePath,
+      room: this.roomName,
+      reason,
+      oldLen: old.length,
+      newLen: newContent.length,
+    });
+    this.applyDiff(old, newContent, reason);
+    await this.writeToFile(true, reason);
+    return true;
+  }
+
   /** No editor binding in headless mode */
   hasEditor(): boolean {
     return false;
@@ -479,7 +511,7 @@ export class FileProvider {
     const old = this.ytext.toString();
     if (old === newText) return;
     await this.saveSnapshot(old).catch((e) => console.error("[FileProvider] pre-restore snapshot failed", e));
-    this.applyDiff(old, newText);
+    this.applyDiff(old, newText, "restore");
     await this.writeToFile(true, "restore");
   }
 
@@ -496,13 +528,13 @@ export class FileProvider {
   }
 
   /** Apply a diff between two strings as Yjs operations */
-  private applyDiff(oldContent: string, newContent: string): void {
+  private applyDiff(oldContent: string, newContent: string, origin?: unknown): void {
     const { start, delCount, insert } = diffRange(oldContent, newContent);
     if (delCount > 0 || insert.length > 0) {
       this.ydoc.transact(() => {
         if (delCount > 0) this.ytext.delete(start, delCount);
         if (insert.length > 0) this.ytext.insert(start, insert);
-      });
+      }, origin);
     }
   }
 

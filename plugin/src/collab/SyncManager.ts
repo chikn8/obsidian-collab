@@ -8,6 +8,7 @@ import { sendFrame, MSG_NOTIFY, MSG_TOPIC_REGISTER } from "../utils/frames";
 import { getBinary, putBinary } from "../utils/http";
 import { buffersEqual, isSyncableBinaryPath, MAX_SYNCABLE_BINARY_BYTES, sha256Hex } from "../utils/binary";
 import { log, trace } from "../utils/log";
+import { rewriteObsidianLinks } from "../utils/wikiLinks";
 import {
   isRecoverableTombstone,
   isSyncablePath,
@@ -36,6 +37,10 @@ import {
 function newFileId(): string {
   return (globalThis.crypto?.randomUUID?.() as string) ||
     `f-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -79,6 +84,7 @@ export class SyncManager {
   private renderedPresence: Map<string, HTMLElement[]> = new Map();
   private renderedTabPresence: Map<string, HTMLElement[]> = new Map();
   private lastPresenceSig = "";
+  private linkRewriteRenames: Set<string> = new Set();
   private debouncedPresence: () => void;
   private debouncedStatus: () => void;
 
@@ -366,6 +372,12 @@ export class SyncManager {
       }
     }
 
+    for (const [relPath, entry] of manifestEntries) {
+      const safeRel = this.safeManifestRelPath(relPath, "startup link rewrite");
+      if (!safeRel || !entry.exists || !entry.renamedFrom) continue;
+      await this.rewriteLinksForRemoteRename(entry.renamedFrom, safeRel, entry.fileId);
+    }
+
     this.syncStatus = "connected";
     this.emitStatus();
     trace("manifest", "startup-reconcile-done", {
@@ -420,6 +432,7 @@ export class SyncManager {
         if (this.entryKind(relPath, entry) === "binary") {
           if (entry.fileId) this.fileIds.set(relPath, entry.fileId);
           await this.applyRemoteBinary(relPath, entry);
+          await this.rewriteLinksForRemoteRename(entry.renamedFrom, relPath, entry.fileId);
           continue;
         }
 
@@ -445,6 +458,7 @@ export class SyncManager {
         if (!this.fileProviders.has(relPath)) {
           await this.createFileProvider(relPath, fullPath);
         }
+        await this.rewriteLinksForRemoteRename(entry.renamedFrom, relPath, entry.fileId);
       } else if (!entry.exists) {
         // File was deleted (or renamed-away) remotely.
         await this.applyRemoteTombstone(relPath, entry, true);
@@ -1018,6 +1032,93 @@ export class SyncManager {
     }
     trace("blob", "renamed", { shareId: this.histShareId, oldRel, newRel, fileId, hash: oldEntry.blobHash });
     this.emitStatus();
+  }
+
+  private async rewriteLinksForRemoteRename(oldRelCandidate: unknown, newRelCandidate: string, fileId?: string): Promise<void> {
+    if (this.role !== "editor" || !oldRelCandidate) return;
+    const oldRel = this.safeManifestRelPath(oldRelCandidate, "link rewrite old");
+    const newRel = this.safeManifestRelPath(newRelCandidate, "link rewrite new");
+    if (!oldRel || !newRel || oldRel === newRel) return;
+
+    const key = `${fileId || ""}:${oldRel}->${newRel}`;
+    if (this.linkRewriteRenames.has(key)) return;
+    this.linkRewriteRenames.add(key);
+
+    let scanned = 0;
+    let changed = 0;
+    let replacements = 0;
+    let skipped = 0;
+
+    for (const filePath of this.getLocalFiles()) {
+      if (!/\.md$/i.test(filePath)) continue;
+      const file = this.app.vault.getAbstractFileByPath(filePath);
+      if (!(file instanceof TFile)) continue;
+      const sourceRel = this.toRelativePath(filePath);
+      if (!this.safeManifestRelPath(sourceRel, "link rewrite source")) continue;
+      const sourceEntry = this.manifestMap?.get(sourceRel) as ManifestEntry | undefined;
+      if (!sourceEntry?.exists || this.entryKind(sourceRel, sourceEntry) !== "text") continue;
+      scanned++;
+
+      let existingProvider = this.fileProviders.get(sourceRel);
+      if (!existingProvider) {
+        await this.createFileProvider(sourceRel, filePath);
+        existingProvider = this.fileProviders.get(sourceRel);
+      }
+      const provider = existingProvider ? await this.waitForUsableFileProvider(sourceRel, 6000) : null;
+      const current = provider ? provider.getText() : await this.app.vault.read(file);
+      const result = rewriteObsidianLinks(current, {
+        oldRelPath: oldRel,
+        newRelPath: newRel,
+        sourceRelPath: sourceRel,
+        resolveLink: (linkPath, source) => this.resolveWikiLinkRel(linkPath, source),
+      });
+      if (result.replacements === 0) continue;
+
+      replacements += result.replacements;
+      if (provider) {
+        if (await provider.applyProgrammaticChange(result.content, "link-rewrite-rename")) changed++;
+      } else {
+        skipped++;
+        trace("manifest", "link-rewrite-skipped", {
+          shareId: this.histShareId,
+          oldRel,
+          newRel,
+          sourceRel,
+          reason: "provider-not-ready",
+        });
+      }
+    }
+
+    trace("manifest", "link-rewrite-rename", {
+      shareId: this.histShareId,
+      oldRel,
+      newRel,
+      fileId,
+      scanned,
+      changed,
+      replacements,
+      skipped,
+    });
+  }
+
+  private async waitForUsableFileProvider(relPath: string, timeoutMs: number): Promise<FileProvider | null> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const fp = this.fileProviders.get(relPath);
+      if (!fp) return null;
+      if (fp.isReady() || fp.getText().length > 0) return fp;
+      await sleepMs(150);
+    }
+    const fp = this.fileProviders.get(relPath);
+    return fp && (fp.isReady() || fp.getText().length > 0) ? fp : null;
+  }
+
+  private resolveWikiLinkRel(linkPath: string, sourceRel: string): string | null {
+    const cache = (this.app as any).metadataCache;
+    const sourceFullPath = this.toFullPath(sourceRel);
+    const dest = cache?.getFirstLinkpathDest?.(linkPath, sourceFullPath);
+    if (dest instanceof TFile && this.isInLinkedFolder(dest.path)) return this.toRelativePath(dest.path);
+    return null;
   }
 
   /** Broadcast which file (if any) this user has open, for presence avatars. */

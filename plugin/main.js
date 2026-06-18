@@ -11086,6 +11086,37 @@ var FileProvider = class _FileProvider {
       if (insert.length > 0) this.ytext.insert(start, insert);
     });
   }
+  /**
+   * Apply a plugin-owned text rewrite as a CRDT edit, then flush it to disk.
+   * Unlike vault.on("modify") changes, there is no originating disk event, so
+   * headless files need the explicit flush. Editor-bound files also work:
+   * yCollab renders the local transaction and this write persists the result.
+   */
+  async applyProgrammaticChange(newContent, reason) {
+    if (this.destroyed || !this.ydoc || !this.ytext) return false;
+    const old = this.ytext.toString();
+    if (!this.isInitialized && old.length === 0 && newContent.length > 0) {
+      trace("file", "programmatic-change-skipped", {
+        path: this.filePath,
+        room: this.roomName,
+        reason,
+        cause: "not-initialized-empty-doc",
+        newLen: newContent.length
+      });
+      return false;
+    }
+    if (old === newContent) return false;
+    trace("file", "programmatic-change", {
+      path: this.filePath,
+      room: this.roomName,
+      reason,
+      oldLen: old.length,
+      newLen: newContent.length
+    });
+    this.applyDiff(old, newContent, reason);
+    await this.writeToFile(true, reason);
+    return true;
+  }
   /** No editor binding in headless mode */
   hasEditor() {
     return false;
@@ -11101,7 +11132,7 @@ var FileProvider = class _FileProvider {
     const old = this.ytext.toString();
     if (old === newText) return;
     await this.saveSnapshot(old).catch((e) => console.error("[FileProvider] pre-restore snapshot failed", e));
-    this.applyDiff(old, newText);
+    this.applyDiff(old, newText, "restore");
     await this.writeToFile(true, "restore");
   }
   updateUsers() {
@@ -11116,13 +11147,13 @@ var FileProvider = class _FileProvider {
     this.onUsersChange(users);
   }
   /** Apply a diff between two strings as Yjs operations */
-  applyDiff(oldContent, newContent) {
+  applyDiff(oldContent, newContent, origin) {
     const { start, delCount, insert } = diffRange(oldContent, newContent);
     if (delCount > 0 || insert.length > 0) {
       this.ydoc.transact(() => {
         if (delCount > 0) this.ytext.delete(start, delCount);
         if (insert.length > 0) this.ytext.insert(start, insert);
-      });
+      }, origin);
     }
   }
   /** Current Y.Text content (for transferring/preserving across destroy). */
@@ -11465,6 +11496,115 @@ function buffersEqual(a, b) {
   return true;
 }
 
+// src/utils/wikiLinks.ts
+function rewriteObsidianLinks(content, opts) {
+  const oldRel = normalizeRel(opts.oldRelPath);
+  const newRel = normalizeRel(opts.newRelPath);
+  const sourceRel = normalizeRel(opts.sourceRelPath || "");
+  let replacements = 0;
+  let inFence = null;
+  const rewritten = content.split(/(\r\n|\n|\r)/).map((part) => {
+    if (part === "\n" || part === "\r" || part === "\r\n") return part;
+    const fence = fenceMarker(part);
+    if (fence) {
+      if (inFence === fence) inFence = null;
+      else if (!inFence) inFence = fence;
+      return part;
+    }
+    if (inFence) return part;
+    return rewriteLine(part, (raw) => {
+      const next = rewriteRawLink(raw, oldRel, newRel, sourceRel, opts.resolveLink);
+      if (next !== raw) replacements++;
+      return next;
+    });
+  }).join("");
+  return { content: rewritten, replacements };
+}
+function rewriteLine(line, rewrite) {
+  let out = "";
+  let i = 0;
+  let codeTickLen = 0;
+  while (i < line.length) {
+    if (line[i] === "`") {
+      const len = countRun(line, i, "`");
+      out += line.slice(i, i + len);
+      if (codeTickLen === 0) codeTickLen = len;
+      else if (len === codeTickLen) codeTickLen = 0;
+      i += len;
+      continue;
+    }
+    if (codeTickLen === 0) {
+      const embed = line[i] === "!" && line.slice(i + 1, i + 3) === "[[";
+      const plain = line.slice(i, i + 2) === "[[";
+      if (embed || plain) {
+        const open = i + (embed ? 1 : 0);
+        const close = line.indexOf("]]", open + 2);
+        if (close >= 0) {
+          out += embed ? "![[" : "[[";
+          out += rewrite(line.slice(open + 2, close));
+          out += "]]";
+          i = close + 2;
+          continue;
+        }
+      }
+    }
+    out += line[i];
+    i++;
+  }
+  return out;
+}
+function rewriteRawLink(raw, oldRel, newRel, sourceRel, resolveLink) {
+  const pipe = raw.indexOf("|");
+  const target = pipe >= 0 ? raw.slice(0, pipe) : raw;
+  const alias = pipe >= 0 ? raw.slice(pipe) : "";
+  const split = splitSubpath(target);
+  if (!split.path) return raw;
+  const resolved = resolveLink == null ? void 0 : resolveLink(split.path, sourceRel);
+  const matches = resolved == null ? directLinkMatch(split.path, oldRel) : sameMarkdownTarget(resolved, oldRel);
+  if (!matches) return raw;
+  return `${replacementTarget(split.path, newRel)}${split.subpath}${alias}`;
+}
+function splitSubpath(target) {
+  const idx = target.search(/[#^]/);
+  if (idx < 0) return { path: target, subpath: "" };
+  return { path: target.slice(0, idx), subpath: target.slice(idx) };
+}
+function replacementTarget(originalPath, newRel) {
+  const originalHadSlash = originalPath.includes("/");
+  const originalHadMd = /\.md$/i.test(originalPath);
+  const next = originalHadSlash ? newRel : basename(newRel);
+  if (/\.md$/i.test(next) && !originalHadMd) return next.slice(0, -3);
+  return next;
+}
+function directLinkMatch(linkPath, oldRel) {
+  const clean2 = normalizeRel(linkPath);
+  if (sameMarkdownTarget(clean2, oldRel)) return true;
+  if (clean2.includes("/")) return false;
+  return stripMarkdownExt(clean2).toLowerCase() === stripMarkdownExt(basename(oldRel)).toLowerCase();
+}
+function sameMarkdownTarget(a, b) {
+  return stripMarkdownExt(normalizeRel(a)).toLowerCase() === stripMarkdownExt(normalizeRel(b)).toLowerCase();
+}
+function stripMarkdownExt(path) {
+  return path.replace(/\.md$/i, "");
+}
+function normalizeRel(path) {
+  return path.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+/g, "/");
+}
+function basename(path) {
+  return normalizeRel(path).split("/").pop() || path;
+}
+function fenceMarker(line) {
+  const m = line.match(/^\s*(```+|~~~+)/);
+  if (!m) return null;
+  return m[1][0];
+}
+function countRun(line, start, ch) {
+  let i = start;
+  while (i < line.length && line[i] === ch) i++;
+  return i - start;
+}
+
 // src/utils/manifestLogic.ts
 var RESURRECT_GRACE_MS = 2e3;
 var SYNCABLE_TEXT_EXTENSIONS = ["md", "canvas"];
@@ -11774,6 +11914,9 @@ function newFileId() {
   var _a2, _b2;
   return ((_b2 = (_a2 = globalThis.crypto) == null ? void 0 : _a2.randomUUID) == null ? void 0 : _b2.call(_a2)) || `f-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 var SyncManager = class {
   constructor(app, settings, share, onStatusChange, onUsersChange) {
     // Manifest
@@ -11802,6 +11945,7 @@ var SyncManager = class {
     this.renderedPresence = /* @__PURE__ */ new Map();
     this.renderedTabPresence = /* @__PURE__ */ new Map();
     this.lastPresenceSig = "";
+    this.linkRewriteRenames = /* @__PURE__ */ new Set();
     // last-edited-by stamping (debounced per file to bound manifest churn). Written
     // to the SEPARATE `edits` map, never the files map, so it cannot LWW-clobber a
     // concurrent delete/rename tombstone (the bug a whole-object stamp would cause).
@@ -12061,6 +12205,11 @@ var SyncManager = class {
         await this.createFileProvider(safeRel, fullPath);
       }
     }
+    for (const [relPath, entry] of manifestEntries) {
+      const safeRel = this.safeManifestRelPath(relPath, "startup link rewrite");
+      if (!safeRel || !entry.exists || !entry.renamedFrom) continue;
+      await this.rewriteLinksForRemoteRename(entry.renamedFrom, safeRel, entry.fileId);
+    }
     this.syncStatus = "connected";
     this.emitStatus();
     trace("manifest", "startup-reconcile-done", {
@@ -12111,6 +12260,7 @@ var SyncManager = class {
         if (this.entryKind(relPath, entry) === "binary") {
           if (entry.fileId) this.fileIds.set(relPath, entry.fileId);
           await this.applyRemoteBinary(relPath, entry);
+          await this.rewriteLinksForRemoteRename(entry.renamedFrom, relPath, entry.fileId);
           continue;
         }
         const knownId = this.fileIds.get(relPath);
@@ -12132,6 +12282,7 @@ var SyncManager = class {
         if (!this.fileProviders.has(relPath)) {
           await this.createFileProvider(relPath, fullPath);
         }
+        await this.rewriteLinksForRemoteRename(entry.renamedFrom, relPath, entry.fileId);
       } else if (!entry.exists) {
         await this.applyRemoteTombstone(relPath, entry, true);
       }
@@ -12663,6 +12814,86 @@ var SyncManager = class {
     }
     trace("blob", "renamed", { shareId: this.histShareId, oldRel, newRel, fileId, hash: oldEntry.blobHash });
     this.emitStatus();
+  }
+  async rewriteLinksForRemoteRename(oldRelCandidate, newRelCandidate, fileId) {
+    var _a2;
+    if (this.role !== "editor" || !oldRelCandidate) return;
+    const oldRel = this.safeManifestRelPath(oldRelCandidate, "link rewrite old");
+    const newRel = this.safeManifestRelPath(newRelCandidate, "link rewrite new");
+    if (!oldRel || !newRel || oldRel === newRel) return;
+    const key = `${fileId || ""}:${oldRel}->${newRel}`;
+    if (this.linkRewriteRenames.has(key)) return;
+    this.linkRewriteRenames.add(key);
+    let scanned = 0;
+    let changed = 0;
+    let replacements = 0;
+    let skipped = 0;
+    for (const filePath of this.getLocalFiles()) {
+      if (!/\.md$/i.test(filePath)) continue;
+      const file = this.app.vault.getAbstractFileByPath(filePath);
+      if (!(file instanceof import_obsidian4.TFile)) continue;
+      const sourceRel = this.toRelativePath(filePath);
+      if (!this.safeManifestRelPath(sourceRel, "link rewrite source")) continue;
+      const sourceEntry = (_a2 = this.manifestMap) == null ? void 0 : _a2.get(sourceRel);
+      if (!(sourceEntry == null ? void 0 : sourceEntry.exists) || this.entryKind(sourceRel, sourceEntry) !== "text") continue;
+      scanned++;
+      let existingProvider = this.fileProviders.get(sourceRel);
+      if (!existingProvider) {
+        await this.createFileProvider(sourceRel, filePath);
+        existingProvider = this.fileProviders.get(sourceRel);
+      }
+      const provider = existingProvider ? await this.waitForUsableFileProvider(sourceRel, 6e3) : null;
+      const current = provider ? provider.getText() : await this.app.vault.read(file);
+      const result = rewriteObsidianLinks(current, {
+        oldRelPath: oldRel,
+        newRelPath: newRel,
+        sourceRelPath: sourceRel,
+        resolveLink: (linkPath, source) => this.resolveWikiLinkRel(linkPath, source)
+      });
+      if (result.replacements === 0) continue;
+      replacements += result.replacements;
+      if (provider) {
+        if (await provider.applyProgrammaticChange(result.content, "link-rewrite-rename")) changed++;
+      } else {
+        skipped++;
+        trace("manifest", "link-rewrite-skipped", {
+          shareId: this.histShareId,
+          oldRel,
+          newRel,
+          sourceRel,
+          reason: "provider-not-ready"
+        });
+      }
+    }
+    trace("manifest", "link-rewrite-rename", {
+      shareId: this.histShareId,
+      oldRel,
+      newRel,
+      fileId,
+      scanned,
+      changed,
+      replacements,
+      skipped
+    });
+  }
+  async waitForUsableFileProvider(relPath, timeoutMs) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const fp2 = this.fileProviders.get(relPath);
+      if (!fp2) return null;
+      if (fp2.isReady() || fp2.getText().length > 0) return fp2;
+      await sleepMs(150);
+    }
+    const fp = this.fileProviders.get(relPath);
+    return fp && (fp.isReady() || fp.getText().length > 0) ? fp : null;
+  }
+  resolveWikiLinkRel(linkPath, sourceRel) {
+    var _a2;
+    const cache = this.app.metadataCache;
+    const sourceFullPath = this.toFullPath(sourceRel);
+    const dest = (_a2 = cache == null ? void 0 : cache.getFirstLinkpathDest) == null ? void 0 : _a2.call(cache, linkPath, sourceFullPath);
+    if (dest instanceof import_obsidian4.TFile && this.isInLinkedFolder(dest.path)) return this.toRelativePath(dest.path);
+    return null;
   }
   /** Broadcast which file (if any) this user has open, for presence avatars. */
   setPresence(activeFile) {

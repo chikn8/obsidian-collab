@@ -57,7 +57,8 @@ These are the properties the system is engineered to hold, and how:
 - **Deletes are recoverable.** Deletes are **tombstones** (the manifest entry is retained, not hard
   deleted) + a local `trash/` copy + server git history. One-click restore from the history panel.
 - **Renames preserve everything.** A rename transfers the file's full Yjs doc (text + comments +
-  anchors) and stable identity (`fileId`) into the new room — not a delete+create.
+  anchors) and stable identity (`fileId`) into the new room — not a delete+create. Synced Markdown
+  notes also repair `[[wikilinks]]` and embeds that pointed at the old path.
 - **Folder moves don't orphan files.** A folder move re-derives each child's rename so content and
   lineage transfer.
 - **Delete-vs-edit never silently loses an edit.** If you edited a file after someone else deleted it,

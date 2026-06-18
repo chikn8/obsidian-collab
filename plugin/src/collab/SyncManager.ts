@@ -6,7 +6,14 @@ import { EchoGuard, beginRemoteApply, endRemoteApply, isApplyingRemote } from ".
 import { manifestRoom, fileRoom, shareToken, shareAuthParams } from "../utils/roomName";
 import { sendFrame, MSG_NOTIFY, MSG_TOPIC_REGISTER } from "../utils/frames";
 import { log, trace } from "../utils/log";
-import { isRecoverableTombstone, liveManifestEntry, safeRelPath, shouldPublishLocalOnStartup, shouldResurrect } from "../utils/manifestLogic";
+import {
+  isRecoverableTombstone,
+  isSyncableTextPath,
+  liveManifestEntry,
+  safeRelPath,
+  shouldPublishLocalOnStartup,
+  shouldResurrect,
+} from "../utils/manifestLogic";
 import { colorFor, MANIFEST_SCHEMA_VERSION } from "../types";
 import type { CollabPluginSettings, ConnectedUser, SyncStatus, Share, ManifestEntry } from "../types";
 import {
@@ -268,7 +275,7 @@ export class SyncManager {
       if (entry?.fileId) this.fileIds.set(relPath, entry.fileId);
     });
 
-    // Get all local .md files in linked folder
+    // Get all local synced text files in linked folder.
     const localFiles = this.getLocalFiles();
 
     // First reconcile tombstones for local files. This must run BEFORE publishing
@@ -670,7 +677,7 @@ export class SyncManager {
   async onFileRename(file: TFile, oldPath: string): Promise<void> {
     if (this.role !== "editor") return;
     if (isApplyingRemote()) return; // never re-enter while applying a remote change
-    const oldWasSyncable = this.isInLinkedFolder(oldPath) && oldPath.toLowerCase().endsWith(".md");
+    const oldWasSyncable = this.isInLinkedFolder(oldPath) && isSyncableTextPath(oldPath);
     const newIsSyncable = this.isInLinkedFolder(file.path) && this.isSyncableFile(file);
     trace("vault", "local-rename", {
       shareId: this.histShareId,
@@ -693,7 +700,7 @@ export class SyncManager {
 
   /**
    * Folder move/rename. Obsidian fires a SINGLE rename event for the folder (no
-   * per-child events), so we re-derive each descendant .md file's old path by
+   * per-child events), so we re-derive each descendant synced file's old path by
    * prefix substitution and route it through the per-file rename — preserving
    * content, comments, identity, and version lineage for every moved file.
    */
@@ -704,7 +711,7 @@ export class SyncManager {
     const children: TFile[] = [];
     const walk = (f: TFolder) => {
       for (const c of f.children) {
-        if (c instanceof TFile && c.extension.toLowerCase() === "md") children.push(c);
+        if (c instanceof TFile && this.isSyncableFile(c)) children.push(c);
         else if (c instanceof TFolder) walk(c);
       }
     };
@@ -1060,7 +1067,7 @@ export class SyncManager {
     const files: string[] = [];
     const recurse = (f: TFolder) => {
       for (const child of f.children) {
-        if (child instanceof TFile && child.extension === "md") {
+        if (child instanceof TFile && this.isSyncableFile(child)) {
           files.push(child.path);
         } else if (child instanceof TFolder) {
           recurse(child);
@@ -1088,6 +1095,6 @@ export class SyncManager {
   }
 
   private isSyncableFile(file: TFile): boolean {
-    return file.extension.toLowerCase() === "md";
+    return isSyncableTextPath(file.path);
   }
 }

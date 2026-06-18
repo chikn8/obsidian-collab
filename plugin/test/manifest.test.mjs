@@ -181,6 +181,8 @@ console.log("Safe manifest paths");
 {
   check("accepts nested markdown path",
     safeRelPath("a/b/note.md", "Shared") === "a/b/note.md");
+  check("accepts canvas path",
+    safeRelPath("boards/plan.canvas", "Shared") === "boards/plan.canvas");
   check("rejects parent traversal",
     safeRelPath("../x.md", "Shared") === null);
   check("rejects normalized traversal",
@@ -191,7 +193,7 @@ console.log("Safe manifest paths");
     safeRelPath("..\\b.md", "Shared") === null);
   check("rejects colon",
     safeRelPath("a:b.md", "Shared") === null);
-  check("rejects non-markdown file",
+  check("rejects non-text file",
     safeRelPath("note.exe", "Shared") === null);
   check("rejects empty segment",
     safeRelPath("a//b.md", "Shared") === null);

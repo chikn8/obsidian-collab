@@ -17,6 +17,11 @@ function trashDir(app: App): string {
   return pluginDataPath(app, "trash");
 }
 
+function backupExtension(fullPath: string): string {
+  const ext = fullPath.split("/").pop()?.split(".").pop()?.toLowerCase() || "md";
+  return ext === "canvas" ? "canvas" : "md";
+}
+
 /**
  * Headless-only file sync with offline persistence.
  *
@@ -547,7 +552,8 @@ export class FileProvider {
     const dir = `${root}/${(shareId || "legacy").replace(/[^A-Za-z0-9_.-]/g, "_")}`;
     await adapter.mkdir(root).catch(() => {});
     await adapter.mkdir(dir).catch(() => {});
-    await adapter.write(`${dir}/${safeName}__${ts}.md`, content).catch((e) => log("delete", "saveToTrash failed", fullPath, e));
+    await adapter.write(`${dir}/${safeName}__${ts}.${backupExtension(fullPath)}`, content)
+      .catch((e) => log("delete", "saveToTrash failed", fullPath, e));
   }
 
   /** Save a pre-sync snapshot for disaster recovery */
@@ -563,7 +569,7 @@ export class FileProvider {
     const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const safeName = fullPath.replace(/\//g, "__");
     const dir = backupDir(app);
-    const snapshotPath = `${dir}/${safeName}__${ts}.md`;
+    const snapshotPath = `${dir}/${safeName}__${ts}.${backupExtension(fullPath)}`;
 
     await adapter.mkdir(dir).catch(() => {});
     await adapter.write(snapshotPath, content);

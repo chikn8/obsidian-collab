@@ -29,10 +29,10 @@ function safeShareId(shareId: string): boolean {
   return /^[A-Za-z0-9_.-]{1,128}$/.test(shareId);
 }
 
-function safeSnapshotRelPath(relPath: string): string | null {
+export function safeSnapshotRelPath(relPath: string): string | null {
   if (!relPath || relPath.startsWith("/") || relPath.includes("\\") || relPath.includes(":")) return null;
   if (/[\x00-\x1F\x7F]/.test(relPath)) return null;
-  if (!relPath.toLowerCase().endsWith(".md")) return null;
+  if (!/\.(md|canvas)$/i.test(relPath)) return null;
   const parts = relPath.split("/");
   if (parts.some((part) => !part || part === "." || part === "..")) return null;
   return parts.join("/");
@@ -41,7 +41,7 @@ function safeSnapshotRelPath(relPath: string): string | null {
 /**
  * Parse a room name into the share + relative file path we snapshot under.
  * Handles both legacy rooms ("file:<enc>") and namespaced share rooms
- * ("@<shareId>:file:<enc>"). Returns null for manifest/blob/canvas/other rooms.
+ * ("@<shareId>:file:<enc>"). Returns null for manifest/blob/other rooms.
  *
  * Legacy files keep their existing snapshots/<relPath> location (so existing
  * git history is not orphaned); namespaced shares write under snapshots/<shareId>/.
@@ -53,9 +53,9 @@ function parseFileRoom(roomName: string): { shareId: string; relPath: string } |
     const idx = rest.indexOf(":");
     if (idx < 0) return null;
     shareId = rest.slice(1, idx);
-    rest = rest.slice(idx + 1); // -> "file:..." | "blob:..." | "canvas:..." | "__manifest__"
+    rest = rest.slice(idx + 1); // -> "file:..." | "blob:..." | "__manifest__"
   }
-  // Only snapshot text file rooms; explicitly exclude blobs, canvas, and manifest.
+  // Only snapshot text file rooms; explicitly exclude blobs and manifest.
   if (!rest.startsWith("file:")) return null;
   const relPath = safeSnapshotRelPath(decodeURIComponent(rest.slice(5)));
   if (!safeShareId(shareId) || !relPath) return null;
@@ -63,8 +63,8 @@ function parseFileRoom(roomName: string): { shareId: string; relPath: string } |
 }
 
 /**
- * Write human-readable .md files from Y.Doc state for a room.
- * Only writes text file rooms (skips __manifest__, blob:, canvas:).
+ * Write human-readable text files from Y.Doc state for a room.
+ * Only writes text file rooms (skips __manifest__ and blob:).
  */
 export async function writeSnapshot(roomName: string, ydoc: Y.Doc): Promise<void> {
   const parsed = parseFileRoom(roomName);

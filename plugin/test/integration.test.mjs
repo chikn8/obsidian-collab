@@ -80,6 +80,22 @@ console.log("Joining with a matching local copy does not duplicate the note");
   A.fp.destroy(); B.fp.destroy();
 }
 
+// ── 1c. Canvas files use the same text-sync path ──────────────────────────────
+console.log("Canvas JSON files sync over the text provider");
+{
+  __resetIdb(); __resetHubs();
+  const room = "@test:file:board.canvas";
+  const canvas = JSON.stringify({ nodes: [{ id: "a", type: "text", text: "Idea" }], edges: [] }, null, 2);
+  const A = await makeClient("A", room, "board.canvas", canvas);
+  const B = await makeClient("B", room, "board.canvas", "");
+  await sleep(900);
+  check("B's canvas received A's JSON", B.disk() === canvas, `B="${B.disk()}"`);
+  await A.edit(canvas.replace("Idea", "Updated idea"));
+  await sleep(900);
+  check("canvas update converges", B.disk().includes("Updated idea"), `B="${B.disk()}"`);
+  A.fp.destroy(); B.fp.destroy();
+}
+
 // ── 2. Bidirectional edits converge (CRDT) ────────────────────────────────────
 console.log("Bidirectional edits converge");
 {

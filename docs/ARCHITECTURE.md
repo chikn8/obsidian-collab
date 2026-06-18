@@ -72,7 +72,7 @@ idempotent and LWW-converges if two clients migrate at once.
 
 **Path safety:** manifest keys are remote-controlled, so every key is validated by `safeRelPath`
 (`utils/manifestLogic.ts`) on **both** the write side and the apply side — rejecting `..`, absolute
-paths, drive letters, control chars, and non-`.md` — before it can touch the vault. This closes a
+paths, drive letters, control chars, and non-text types (anything outside `.md` / `.canvas`) — before it can touch the vault. This closes a
 path-traversal → arbitrary-file-write vector.
 
 ## 4. Delete, rename, resurrection, folder ops
@@ -141,7 +141,7 @@ legacy `/admin/revoke` raises it and disconnects live revoked clients with close
 - **`persistence.ts`** — atomic `.yjs` saves (tmp + rename), periodic + last-disconnect + SIGTERM flush;
   corrupt files are renamed aside and the room starts empty (one bad file never denies a room);
   `getPersistenceHealth()` powers `/health`.
-- **`snapshots.ts`** — writes human-readable `.md` per file into a git repo and commits on a cadence +
+- **`snapshots.ts`** — writes human-readable `.md` / `.canvas` text snapshots into a git repo and commits on a cadence +
   SIGTERM. This is the **version-history + deleted-file recovery source**. Optional `git push` to
   `SNAPSHOT_GIT_REMOTE` for off-box history; `git gc` keeps it bounded.
 - **`backups.ts`** — runs `PERSIST_BACKUP_COMMAND` on an interval for a full-corpus off-box archive.

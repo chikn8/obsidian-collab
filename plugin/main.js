@@ -10444,6 +10444,11 @@ function backupDir(app) {
 function trashDir(app) {
   return pluginDataPath(app, "trash");
 }
+function backupExtension(fullPath) {
+  var _a2, _b2;
+  const ext = ((_b2 = (_a2 = fullPath.split("/").pop()) == null ? void 0 : _a2.split(".").pop()) == null ? void 0 : _b2.toLowerCase()) || "md";
+  return ext === "canvas" ? "canvas" : "md";
+}
 var FileProvider = class _FileProvider {
   constructor(params2) {
     this.idbProvider = null;
@@ -10873,7 +10878,7 @@ var FileProvider = class _FileProvider {
     });
     await adapter.mkdir(dir).catch(() => {
     });
-    await adapter.write(`${dir}/${safeName}__${ts}.md`, content).catch((e) => log("delete", "saveToTrash failed", fullPath, e));
+    await adapter.write(`${dir}/${safeName}__${ts}.${backupExtension(fullPath)}`, content).catch((e) => log("delete", "saveToTrash failed", fullPath, e));
   }
   /** Save a pre-sync snapshot for disaster recovery */
   async saveSnapshot(content) {
@@ -10887,7 +10892,7 @@ var FileProvider = class _FileProvider {
     const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const safeName = fullPath.replace(/\//g, "__");
     const dir = backupDir(app);
-    const snapshotPath = `${dir}/${safeName}__${ts}.md`;
+    const snapshotPath = `${dir}/${safeName}__${ts}.${backupExtension(fullPath)}`;
     await adapter.mkdir(dir).catch(() => {
     });
     await adapter.write(snapshotPath, content);
@@ -11089,6 +11094,12 @@ function sendFrame(provider, type, payload) {
 
 // src/utils/manifestLogic.ts
 var RESURRECT_GRACE_MS = 2e3;
+var SYNCABLE_TEXT_EXTENSIONS = ["md", "canvas"];
+function isSyncableTextPath(path) {
+  var _a2, _b2;
+  const ext = ((_b2 = (_a2 = path.split("/").pop()) == null ? void 0 : _a2.split(".").pop()) == null ? void 0 : _b2.toLowerCase()) || "";
+  return SYNCABLE_TEXT_EXTENSIONS.includes(ext);
+}
 function shouldResurrect(args2) {
   if (args2.renamedTo) return false;
   return args2.localMtime > args2.deletedAt + RESURRECT_GRACE_MS;
@@ -11106,7 +11117,7 @@ function safeRelPath(relPath, localFolder = "") {
   if (typeof relPath !== "string" || relPath.length === 0) return null;
   if (relPath.startsWith("/") || relPath.includes("\\") || relPath.includes(":")) return null;
   if (/[\x00-\x1F\x7F]/.test(relPath)) return null;
-  if (!relPath.toLowerCase().endsWith(".md")) return null;
+  if (!isSyncableTextPath(relPath)) return null;
   const parts = relPath.split("/");
   if (parts.some((part) => !part || part === "." || part === "..")) return null;
   const normalizedRel = parts.join("/");
@@ -11930,7 +11941,7 @@ var SyncManager = class {
   async onFileRename(file, oldPath) {
     if (this.role !== "editor") return;
     if (isApplyingRemote()) return;
-    const oldWasSyncable = this.isInLinkedFolder(oldPath) && oldPath.toLowerCase().endsWith(".md");
+    const oldWasSyncable = this.isInLinkedFolder(oldPath) && isSyncableTextPath(oldPath);
     const newIsSyncable = this.isInLinkedFolder(file.path) && this.isSyncableFile(file);
     trace("vault", "local-rename", {
       shareId: this.histShareId,
@@ -11949,7 +11960,7 @@ var SyncManager = class {
   }
   /**
    * Folder move/rename. Obsidian fires a SINGLE rename event for the folder (no
-   * per-child events), so we re-derive each descendant .md file's old path by
+   * per-child events), so we re-derive each descendant synced file's old path by
    * prefix substitution and route it through the per-file rename — preserving
    * content, comments, identity, and version lineage for every moved file.
    */
@@ -11960,7 +11971,7 @@ var SyncManager = class {
     const children = [];
     const walk = (f) => {
       for (const c of f.children) {
-        if (c instanceof import_obsidian3.TFile && c.extension.toLowerCase() === "md") children.push(c);
+        if (c instanceof import_obsidian3.TFile && this.isSyncableFile(c)) children.push(c);
         else if (c instanceof import_obsidian3.TFolder) walk(c);
       }
     };
@@ -12292,7 +12303,7 @@ var SyncManager = class {
     const files = [];
     const recurse = (f) => {
       for (const child of f.children) {
-        if (child instanceof import_obsidian3.TFile && child.extension === "md") {
+        if (child instanceof import_obsidian3.TFile && this.isSyncableFile(child)) {
           files.push(child.path);
         } else if (child instanceof import_obsidian3.TFolder) {
           recurse(child);
@@ -12318,7 +12329,7 @@ var SyncManager = class {
     }
   }
   isSyncableFile(file) {
-    return file.extension.toLowerCase() === "md";
+    return isSyncableTextPath(file.path);
   }
 };
 
@@ -14045,7 +14056,7 @@ var HistoryView = class extends import_obsidian9.ItemView {
     root.addClass("collab-history-view");
     root.createEl("div", { text: this.ctx ? `History \u2014 ${this.ctx.fileName}` : "Version history", cls: "collab-history-title" });
     if (!this.ctx) {
-      root.createEl("p", { text: "Open a synced note to see its version history.", cls: "collab-comments-empty" });
+      root.createEl("p", { text: "Open a synced file to see its version history.", cls: "collab-comments-empty" });
       return;
     }
     this.renderDeleted(root);
@@ -14407,12 +14418,18 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     }
   }
   // ── Active editor binding (perf: yCollab) ──────────────────────
+  activeFocusedFile() {
+    var _a2;
+    const activeView = (_a2 = this.app.workspace.activeLeaf) == null ? void 0 : _a2.view;
+    return (activeView == null ? void 0 : activeView.file) instanceof import_obsidian10.TFile ? activeView.file : null;
+  }
   async handleActiveLeafChange() {
     var _a2, _b2;
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
-    const activeFile = (_a2 = view == null ? void 0 : view.file) != null ? _a2 : null;
+    const activeFile = this.activeFocusedFile();
+    const markdownView = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
+    const markdownFile = (_a2 = markdownView == null ? void 0 : markdownView.file) != null ? _a2 : null;
     this.eachManager((m) => m.setPresence(activeFile));
-    await this.bindActiveEditor(activeFile, 0);
+    await this.bindActiveEditor(markdownFile, 0);
     (_b2 = this.getHistoryView()) == null ? void 0 : _b2.setContext(this.buildHistoryContext());
   }
   async bindActiveEditor(activeFile, attempt) {
@@ -14562,7 +14579,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
   }
   buildHistoryContext() {
     var _a2;
-    const file = this.app.workspace.getActiveFile();
+    const file = this.activeFocusedFile();
     if (!file) return null;
     const m = this.managerOwning(file.path);
     if (!m) return null;

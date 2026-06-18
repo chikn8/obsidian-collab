@@ -289,15 +289,19 @@ export default class CollabPlugin extends Plugin {
 
   // ── Active editor binding (perf: yCollab) ──────────────────────
 
+  private activeFocusedFile(): TFile | null {
+    const activeView = (this.app.workspace as any).activeLeaf?.view as any;
+    return activeView?.file instanceof TFile ? activeView.file : null;
+  }
+
   private async handleActiveLeafChange(): Promise<void> {
-    // Presence + editor binding follow the actively-FOCUSED markdown view, not
-    // getActiveFile() — the latter lingers on the last note when you focus a
-    // non-note pane (terminal, graph) or close the tab, leaving a stale presence
-    // avatar on a note you're no longer viewing. null when no note is focused.
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-    const activeFile = view?.file ?? null;
+    // Presence follows the actively focused file view (Markdown, Canvas, etc.).
+    // Editor binding still only attaches to Markdown's CodeMirror instance.
+    const activeFile = this.activeFocusedFile();
+    const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const markdownFile = markdownView?.file ?? null;
     this.eachManager((m) => m.setPresence(activeFile));
-    await this.bindActiveEditor(activeFile, 0);
+    await this.bindActiveEditor(markdownFile, 0);
     // Keep an open history panel in sync with the active file.
     this.getHistoryView()?.setContext(this.buildHistoryContext());
   }
@@ -465,7 +469,7 @@ export default class CollabPlugin extends Plugin {
   }
 
   private buildHistoryContext(): HistoryContext | null {
-    const file = this.app.workspace.getActiveFile();
+    const file = this.activeFocusedFile();
     if (!file) return null;
     const m = this.managerOwning(file.path);
     if (!m) return null;

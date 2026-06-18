@@ -7,7 +7,7 @@
     "start": "node dist/index.js",
     "build": "tsc",
     "dev": "tsx watch src/index.ts",
-    "test": "tsx test/auth.test.mjs && tsx test/awareness.test.mjs"
+    "test": "tsx test/auth.test.mjs && tsx test/awareness.test.mjs && tsx test/snapshots.test.mjs"
   },
   "dependencies": {
     "ws": "^8.16.0",

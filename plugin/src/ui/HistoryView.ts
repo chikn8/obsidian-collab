@@ -56,7 +56,7 @@ export class HistoryView extends ItemView {
     root.createEl("div", { text: this.ctx ? `History — ${this.ctx.fileName}` : "Version history", cls: "collab-history-title" });
 
     if (!this.ctx) {
-      root.createEl("p", { text: "Open a synced note to see its version history.", cls: "collab-comments-empty" });
+      root.createEl("p", { text: "Open a synced file to see its version history.", cls: "collab-comments-empty" });
       return;
     }
 

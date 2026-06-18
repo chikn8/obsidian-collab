@@ -34,7 +34,7 @@ createFileProvider in-flight reservation · comment-anchor quote-verify + re-mat
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
 (ops, not code) · per-recipient signed identities/audit log · socket multiplexing / scale ceiling
-(Tier 3.1) · binary/attachment + `.canvas` sync (Tier 4.1) · hunk-level version restore · human device-matrix test.
+(Tier 3.1) · binary/attachment sync (Tier 4.1) · hunk-level version restore · human device-matrix test.
 
 ---
 
@@ -64,7 +64,7 @@ normalization. Manifest `Y.Map("files")` keys are remote-controlled; `handleMani
 → silent RCE (Obsidian executes plugin `main.js`) or cross-folder corruption outside the share.
 **Fix.** Add `safeRelPath(relPath): string | null` in a util:
 - reject segments that are `..`, `.`, empty, absolute, contain `:` / backslash / control chars / NUL;
-- reject non-`.md` (the only synced type today);
+- reject non-text types (currently `.md` and `.canvas`);
 - assert `normalizePath(localFolder + "/" + relPath)` stays within `localFolder + "/"`.
 Apply on **both** sides:
 - **Write side** — `onFileCreate`/`onFileModify`/rename: only publish keys that pass.
@@ -319,10 +319,11 @@ a shared relay (Redis/NATS) for cross-instance fan-out. Unlocks horizontal scale
 
 # Tier 4 — Feature parity (L/XL, after robustness)
 
-### 4.1 — Binary/attachment + `.canvas` sync (HIGH user value, L/XL)
-Only `.md` syncs today (`isSyncableFile`). Embedded images/PDFs/`.canvas` silently never reach peers and
-render as broken links — the biggest visible-correctness gap. Sync binaries via content-addressed blobs
-(hash → `blob:` room or object store), referenced from the manifest; lazy-fetch on demand.
+### 4.1 — Binary/attachment sync (HIGH user value, L/XL)
+Markdown and `.canvas` text files now sync through the existing Y.Text path. Embedded images/PDFs and
+other binary assets still silently never reach peers and render as broken links — the biggest
+visible-correctness gap. Sync binaries via content-addressed blobs (hash → `blob:` room or object store),
+referenced from the manifest; lazy-fetch on demand.
 
 ### 4.2 — Inline / side-by-side version diff (M)
 History preview is no longer only a raw 4000-char dump: the sidebar can compare a saved version with

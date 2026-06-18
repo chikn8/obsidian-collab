@@ -6,6 +6,12 @@ import type { ManifestEntry } from "../types";
 
 /** Grace window (ms) for clock skew between the deleter's clock and our mtime. */
 export const RESURRECT_GRACE_MS = 2000;
+export const SYNCABLE_TEXT_EXTENSIONS = ["md", "canvas"] as const;
+
+export function isSyncableTextPath(path: string): boolean {
+  const ext = path.split("/").pop()?.split(".").pop()?.toLowerCase() || "";
+  return (SYNCABLE_TEXT_EXTENSIONS as readonly string[]).includes(ext);
+}
 
 /**
  * Delete-vs-edit resurrection: when a remote tombstone arrives for a file we
@@ -40,7 +46,7 @@ export function safeRelPath(relPath: unknown, localFolder = ""): string | null {
   if (typeof relPath !== "string" || relPath.length === 0) return null;
   if (relPath.startsWith("/") || relPath.includes("\\") || relPath.includes(":")) return null;
   if (/[\x00-\x1F\x7F]/.test(relPath)) return null;
-  if (!relPath.toLowerCase().endsWith(".md")) return null;
+  if (!isSyncableTextPath(relPath)) return null;
 
   const parts = relPath.split("/");
   if (parts.some((part) => !part || part === "." || part === "..")) return null;

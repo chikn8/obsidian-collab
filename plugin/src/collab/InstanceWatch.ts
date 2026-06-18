@@ -1,5 +1,5 @@
 import { App, Notice } from "obsidian";
-import { log } from "../utils/log";
+import { err, log } from "../utils/log";
 import { pluginDataPath } from "../utils/pluginPaths";
 
 const HEARTBEAT_MS = 30_000;
@@ -33,7 +33,7 @@ export class InstanceWatch {
     await this.beat();
     await this.check();
     this.timer = setInterval(() => {
-      this.beat().then(() => this.check()).catch(() => {});
+      this.beat().then(() => this.check()).catch((e) => err("loop", "instance watch heartbeat failed", e));
     }, HEARTBEAT_MS);
     this.registerInterval(this.timer as unknown as number);
   }
@@ -46,8 +46,8 @@ export class InstanceWatch {
   private async beat(): Promise<void> {
     const adapter = this.app.vault.adapter;
     const dir = this.dir();
-    await adapter.mkdir(dir).catch(() => {});
-    await adapter.write(`${dir}/${this.id}.json`, JSON.stringify({ ts: Date.now() })).catch(() => {});
+    await adapter.mkdir(dir).catch((e) => err("loop", "instance watch mkdir failed", e));
+    await adapter.write(`${dir}/${this.id}.json`, JSON.stringify({ ts: Date.now() })).catch((e) => err("loop", "instance watch write failed", e));
   }
 
   private async check(): Promise<void> {
@@ -61,13 +61,18 @@ export class InstanceWatch {
         try {
           const stat = await adapter.stat(f);
           if (stat && now - stat.mtime > FRESH_MS) {
-            await adapter.remove(f).catch(() => {}); // stale — reap
+            await adapter.remove(f).catch((e) => log("loop", "stale instance reap failed", f, e));
             continue;
           }
           others++;
-        } catch { /* skip */ }
+        } catch (e) {
+          log("loop", "instance watch stat failed", f, e);
+        }
       }
-    } catch { return; }
+    } catch (e) {
+      log("loop", "instance watch list failed", e);
+      return;
+    }
 
     if (others > 0 && !this.warned) {
       this.warned = true;

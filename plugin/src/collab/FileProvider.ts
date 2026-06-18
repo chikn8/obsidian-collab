@@ -111,7 +111,13 @@ export class FileProvider {
   reconnect(): void {
     const p = this.provider;
     if (!p) return;
-    try { p.wsUnsuccessfulReconnects = 0; p.disconnect(); p.connect(); } catch (e) { /* ignore */ }
+    try {
+      p.wsUnsuccessfulReconnects = 0;
+      p.disconnect();
+      p.connect();
+    } catch (e) {
+      trace("ws", "file-reconnect-failed", { path: this.filePath, room: this.roomName, error: e });
+    }
   }
 
   /** Y.Text + awareness for the active-editor yCollab binding. */

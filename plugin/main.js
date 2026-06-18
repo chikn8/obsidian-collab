@@ -10837,6 +10837,7 @@ var FileProvider = class _FileProvider {
       p.disconnect();
       p.connect();
     } catch (e) {
+      trace("ws", "file-reconnect-failed", { path: this.filePath, room: this.roomName, error: e });
     }
   }
   /** Y.Text + awareness for the active-editor yCollab binding. */
@@ -12114,6 +12115,7 @@ var SyncManager = class {
         mp.disconnect();
         mp.connect();
       } catch (e) {
+        trace("ws", "manifest-reconnect-failed", { shareId: this.histShareId, error: e });
       }
     }
     for (const [, fp] of this.fileProviders) fp.reconnect();
@@ -13335,8 +13337,7 @@ var InstanceWatch = class {
     await this.beat();
     await this.check();
     this.timer = setInterval(() => {
-      this.beat().then(() => this.check()).catch(() => {
-      });
+      this.beat().then(() => this.check()).catch((e) => err("loop", "instance watch heartbeat failed", e));
     }, HEARTBEAT_MS);
     this.registerInterval(this.timer);
   }
@@ -13353,10 +13354,8 @@ var InstanceWatch = class {
   async beat() {
     const adapter = this.app.vault.adapter;
     const dir = this.dir();
-    await adapter.mkdir(dir).catch(() => {
-    });
-    await adapter.write(`${dir}/${this.id}.json`, JSON.stringify({ ts: Date.now() })).catch(() => {
-    });
+    await adapter.mkdir(dir).catch((e) => err("loop", "instance watch mkdir failed", e));
+    await adapter.write(`${dir}/${this.id}.json`, JSON.stringify({ ts: Date.now() })).catch((e) => err("loop", "instance watch write failed", e));
   }
   async check() {
     const adapter = this.app.vault.adapter;
@@ -13369,15 +13368,16 @@ var InstanceWatch = class {
         try {
           const stat = await adapter.stat(f);
           if (stat && now - stat.mtime > FRESH_MS) {
-            await adapter.remove(f).catch(() => {
-            });
+            await adapter.remove(f).catch((e) => log("loop", "stale instance reap failed", f, e));
             continue;
           }
           others++;
         } catch (e) {
+          log("loop", "instance watch stat failed", f, e);
         }
       }
     } catch (e) {
+      log("loop", "instance watch list failed", e);
       return;
     }
     if (others > 0 && !this.warned) {
@@ -15753,11 +15753,9 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     this.registerView(HISTORY_VIEW_TYPE, (leaf) => new HistoryView(leaf));
     this.addCommand({ id: "open-history", name: "Open version history", callback: () => this.openHistoryPanel() });
     this.registerEditorExtension([collabEditorExtension]);
-    FileProvider.cleanupSnapshots(this.app, 7, 30).catch(() => {
-    });
+    FileProvider.cleanupSnapshots(this.app, 7, 30).catch((e) => err("cleanup", "snapshot cleanup failed", e));
     this.instanceWatch = new InstanceWatch(this.app, (id2) => this.registerInterval(id2));
-    this.instanceWatch.start().catch(() => {
-    });
+    this.instanceWatch.start().catch((e) => err("loop", "instance watch start failed", e));
     await this.startAllShares();
     this.startPresenceDomObserver();
     void this.handleActiveLeafChange();

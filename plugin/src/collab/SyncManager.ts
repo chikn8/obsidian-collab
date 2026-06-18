@@ -164,7 +164,15 @@ export class SyncManager {
   /** Force-reconnect every socket for this share (manifest + files). */
   reconnect(): void {
     const mp = this.manifestProvider;
-    if (mp) { try { mp.wsUnsuccessfulReconnects = 0; mp.disconnect(); mp.connect(); } catch { /* ignore */ } }
+    if (mp) {
+      try {
+        mp.wsUnsuccessfulReconnects = 0;
+        mp.disconnect();
+        mp.connect();
+      } catch (e) {
+        trace("ws", "manifest-reconnect-failed", { shareId: this.histShareId, error: e });
+      }
+    }
     for (const [, fp] of this.fileProviders) fp.reconnect();
   }
 

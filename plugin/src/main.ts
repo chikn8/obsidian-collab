@@ -99,11 +99,11 @@ export default class CollabPlugin extends Plugin {
     this.registerEditorExtension([collabEditorExtension]);
 
     // Clean up old backup snapshots (>7 days) and trashed deletions (>30 days)
-    FileProvider.cleanupSnapshots(this.app, 7, 30).catch(() => {});
+    FileProvider.cleanupSnapshots(this.app, 7, 30).catch((e) => err("cleanup", "snapshot cleanup failed", e));
 
     // Warn if the same vault is open in another Obsidian instance (loop risk).
     this.instanceWatch = new InstanceWatch(this.app, (id) => this.registerInterval(id));
-    this.instanceWatch.start().catch(() => {});
+    this.instanceWatch.start().catch((e) => err("loop", "instance watch start failed", e));
 
     await this.startAllShares();
     this.startPresenceDomObserver();

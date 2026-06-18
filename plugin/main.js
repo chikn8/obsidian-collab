@@ -10410,6 +10410,7 @@ var traceUntil = 0;
 var flushTimer = null;
 var flushChain = Promise.resolve();
 var lastWritePath = "";
+var contextProvider = null;
 var _a, _b;
 var sessionId = ((_b = (_a = globalThis.crypto) == null ? void 0 : _a.randomUUID) == null ? void 0 : _b.call(_a)) || `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 var rows = [];
@@ -10419,6 +10420,7 @@ function configureDiagnostics(config) {
   if (config.uid !== void 0) uidHint = config.uid;
   if (config.debugLogging !== void 0) DEBUG = config.debugLogging;
   if (config.diagnosticLogging !== void 0) DIAGNOSTIC_FILE = config.diagnosticLogging;
+  if (config.context !== void 0) contextProvider = config.context;
 }
 function setDiagnosticLogging(on) {
   DIAGNOSTIC_FILE = on;
@@ -10433,10 +10435,12 @@ async function exportDiagnosticBundle() {
   const app = appRef;
   if (!app) throw new Error("diagnostics not configured");
   const path = `${diagnosticDir()}/diagnostic-bundle-${stamp()}.json`;
+  record("info", "diag", "bundle-exported", { path, rows: rows.length });
   const body = JSON.stringify({
     exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
     sessionId,
     uid: uidHint ? redactUid(uidHint) : "",
+    context: collectContext(),
     rows
   }, null, 2);
   await app.vault.adapter.mkdir(diagnosticDir()).catch(() => {
@@ -10500,6 +10504,23 @@ function sanitizeRecord(fields) {
     out[key] = SECRET_KEY_RE.test(key) ? "[redacted]" : clean(value, key, 0);
   }
   return out;
+}
+function collectContext() {
+  const base = {
+    debugLogging: DEBUG,
+    diagnosticLogging: DIAGNOSTIC_FILE,
+    traceActive: Date.now() < traceUntil,
+    traceUntil: traceUntil ? new Date(traceUntil).toISOString() : "",
+    tracePath: tracePath(),
+    rowCount: rows.length,
+    traceLineCount: traceLines.length
+  };
+  if (!contextProvider) return sanitizeRecord({ diagnostics: base });
+  try {
+    return sanitizeRecord({ ...contextProvider(), diagnostics: base });
+  } catch (e) {
+    return sanitizeRecord({ diagnostics: base, contextError: e });
+  }
 }
 function clean(value, key, depth) {
   if (SECRET_KEY_RE.test(key)) return "[redacted]";
@@ -15208,7 +15229,8 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       app: this.app,
       uid: this.settings.uid,
       debugLogging: this.settings.debugLogging,
-      diagnosticLogging: this.settings.diagnosticLogging
+      diagnosticLogging: this.settings.diagnosticLogging,
+      context: () => this.diagnosticContext()
     });
     log("load", "starting; uid=", (_a2 = this.settings.uid) == null ? void 0 : _a2.slice(0, 8), "shares=", this.settings.shares.length);
     this.statusBar = new StatusBarWidget(this.addStatusBarItem());
@@ -15359,6 +15381,44 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       err("diag", e);
       new import_obsidian10.Notice("Could not export collab diagnostic bundle.");
     }
+  }
+  diagnosticContext() {
+    var _a2, _b2;
+    const roles = this.settings.shares.reduce((acc, share) => {
+      const role = share.role || "editor";
+      acc[role] = (acc[role] || 0) + 1;
+      return acc;
+    }, {});
+    return {
+      plugin: {
+        id: this.manifest.id,
+        version: this.manifest.version
+      },
+      platform: {
+        mobile: import_obsidian10.Platform.isMobile,
+        desktop: import_obsidian10.Platform.isDesktop,
+        mobileApp: import_obsidian10.Platform.isMobileApp,
+        desktopApp: import_obsidian10.Platform.isDesktopApp,
+        ios: import_obsidian10.Platform.isIosApp,
+        android: import_obsidian10.Platform.isAndroidApp,
+        phone: import_obsidian10.Platform.isPhone,
+        tablet: import_obsidian10.Platform.isTablet
+      },
+      settings: {
+        shareCount: this.settings.shares.length,
+        legacyShareCount: this.settings.shares.filter((s) => s.legacy).length,
+        roles,
+        ntfyConfigured: !!this.settings.ntfyTopic,
+        customCursorColor: !!this.settings.cursorColor
+      },
+      runtime: {
+        managerCount: this.syncManagers.size,
+        boundPath: this.boundPath || "",
+        boundProviderReady: (_b2 = (_a2 = this.boundProvider) == null ? void 0 : _a2.isReady()) != null ? _b2 : false,
+        boundHasPresence: !!this.boundPresence,
+        pendingModifyDebounces: this.modifyDebounceMap.size
+      }
+    };
   }
   async startAllShares() {
     for (const share of this.settings.shares) await this.startShare(share);
@@ -16058,7 +16118,8 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       app: this.app,
       uid: this.settings.uid,
       debugLogging: this.settings.debugLogging,
-      diagnosticLogging: this.settings.diagnosticLogging
+      diagnosticLogging: this.settings.diagnosticLogging,
+      context: () => this.diagnosticContext()
     });
     setDiagnosticLogging(this.settings.diagnosticLogging);
     await this.persist();

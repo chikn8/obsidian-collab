@@ -24,7 +24,17 @@ const app = {
   },
 };
 
-configureDiagnostics({ app, uid: "user-123456789", debugLogging: false, diagnosticLogging: false });
+configureDiagnostics({
+  app,
+  uid: "user-123456789",
+  debugLogging: false,
+  diagnosticLogging: false,
+  context: () => ({
+    plugin: { version: "0.1-test" },
+    settings: { shareCount: 2, serverToken: "should-not-export" },
+    runtime: { boundPath: "Shared/note.md" },
+  }),
+});
 trace("test", "redaction", {
   token: "should-not-export",
   serverSecret: "should-not-export",
@@ -41,8 +51,12 @@ check("redacts content fields", last?.fields?.content === "[redacted]" && last?.
 check("keeps safe metadata", last?.fields?.path === "Shared/note.md" && last?.fields?.len === 27);
 
 const bundlePath = await exportDiagnosticBundle();
+const bundle = JSON.parse(writes.get(bundlePath));
 check("exports under vault config dir", bundlePath.startsWith(".mobile-config/plugins/obsidian-collab/diagnostics/"), bundlePath);
 check("writes bundle file", writes.has(bundlePath));
+check("bundle includes sanitized context", bundle.context.plugin.version === "0.1-test" && bundle.context.settings.shareCount === 2);
+check("bundle context redacts secret-like fields", bundle.context.settings.serverToken === "[redacted]");
+check("bundle includes diagnostics state", bundle.context.diagnostics.rowCount >= 1 && typeof bundle.context.diagnostics.tracePath === "string");
 check("bundle excludes secret values", !writes.get(bundlePath).includes("should-not-export"));
 
 console.log("");

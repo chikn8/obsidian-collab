@@ -7,7 +7,8 @@ if (!file) {
   process.exit(2);
 }
 
-const rows = readRows(file);
+const input = readInput(file);
+const rows = input.rows;
 if (rows.length === 0) {
   console.log("No diagnostic rows found.");
   process.exit(0);
@@ -26,6 +27,10 @@ line("Rows", rows.length);
 line("Time range", `${rows[0]?.ts || "?"} -> ${rows[rows.length - 1]?.ts || "?"}`);
 line("Levels", formatCounts(byLevel));
 line("Warnings/errors", warnings.length);
+if (input.context) {
+  section("Bundle Context");
+  printContext(input.context);
+}
 
 section("Top Events");
 for (const [key, count] of top(byEvent, 15)) line(key, count);
@@ -62,14 +67,14 @@ for (const row of rows.slice(-20)) {
   console.log(`- ${row.ts} [${row.level}] ${row.ns}.${row.event} ${compactFields(row.fields)}`);
 }
 
-function readRows(path) {
+function readInput(path) {
   const body = fs.readFileSync(path, "utf8");
   if (path.endsWith(".jsonl")) {
-    return body.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+    return { rows: body.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line)) };
   }
   const parsed = JSON.parse(body);
-  if (Array.isArray(parsed)) return parsed;
-  if (Array.isArray(parsed.rows)) return parsed.rows;
+  if (Array.isArray(parsed)) return { rows: parsed };
+  if (Array.isArray(parsed.rows)) return { rows: parsed.rows, context: parsed.context };
   throw new Error("Expected a diagnostic bundle with .rows or a JSONL trace");
 }
 
@@ -108,6 +113,29 @@ function line(label, value) {
 
 function formatCounts(counts) {
   return [...counts.entries()].map(([k, v]) => `${k}=${v}`).join(", ") || "none";
+}
+
+function printContext(context) {
+  const plugin = context.plugin || {};
+  const platform = context.platform || {};
+  const settings = context.settings || {};
+  const runtime = context.runtime || {};
+  const diagnostics = context.diagnostics || {};
+  line("Plugin", [plugin.id, plugin.version].filter(Boolean).join("@") || "unknown");
+  line("Platform", formatFlags(platform, ["desktop", "mobile", "desktopApp", "mobileApp", "ios", "android", "phone", "tablet"]));
+  line("Shares", `count=${settings.shareCount ?? "?"}, legacy=${settings.legacyShareCount ?? "?"}, roles=${JSON.stringify(settings.roles || {})}`);
+  line("Settings", `ntfy=${bool(settings.ntfyConfigured)}, customColor=${bool(settings.customCursorColor)}`);
+  line("Runtime", `managers=${runtime.managerCount ?? "?"}, bound=${runtime.boundPath || "none"}, ready=${bool(runtime.boundProviderReady)}, presence=${bool(runtime.boundHasPresence)}`);
+  line("Trace", `active=${bool(diagnostics.traceActive)}, rows=${diagnostics.rowCount ?? "?"}, lines=${diagnostics.traceLineCount ?? "?"}, path=${diagnostics.tracePath || "?"}`);
+}
+
+function formatFlags(obj, keys) {
+  const active = keys.filter((key) => obj[key]);
+  return active.length ? active.join(", ") : "none";
+}
+
+function bool(value) {
+  return value === true ? "yes" : value === false ? "no" : "?";
 }
 
 function field(row, key) {

@@ -18,6 +18,7 @@ interface DiagnosticsConfig {
   uid?: string;
   debugLogging?: boolean;
   diagnosticLogging?: boolean;
+  context?: () => Record<string, unknown>;
 }
 
 const MAX_ROWS = 2500;
@@ -33,6 +34,7 @@ let traceUntil = 0;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let flushChain: Promise<void> = Promise.resolve();
 let lastWritePath = "";
+let contextProvider: (() => Record<string, unknown>) | null = null;
 
 const sessionId =
   (globalThis.crypto?.randomUUID?.() as string | undefined) ||
@@ -45,6 +47,7 @@ export function configureDiagnostics(config: DiagnosticsConfig): void {
   if (config.uid !== undefined) uidHint = config.uid;
   if (config.debugLogging !== undefined) DEBUG = config.debugLogging;
   if (config.diagnosticLogging !== undefined) DIAGNOSTIC_FILE = config.diagnosticLogging;
+  if (config.context !== undefined) contextProvider = config.context;
 }
 
 export function setDebug(on: boolean): void {
@@ -71,10 +74,12 @@ export async function exportDiagnosticBundle(): Promise<string> {
   const app = appRef;
   if (!app) throw new Error("diagnostics not configured");
   const path = `${diagnosticDir()}/diagnostic-bundle-${stamp()}.json`;
+  record("info", "diag", "bundle-exported", { path, rows: rows.length });
   const body = JSON.stringify({
     exportedAt: new Date().toISOString(),
     sessionId,
     uid: uidHint ? redactUid(uidHint) : "",
+    context: collectContext(),
     rows,
   }, null, 2);
   await app.vault.adapter.mkdir(diagnosticDir()).catch(() => {});
@@ -157,6 +162,24 @@ function sanitizeRecord(fields: Record<string, unknown>): Record<string, unknown
     out[key] = SECRET_KEY_RE.test(key) ? "[redacted]" : clean(value, key, 0);
   }
   return out;
+}
+
+function collectContext(): Record<string, unknown> {
+  const base = {
+    debugLogging: DEBUG,
+    diagnosticLogging: DIAGNOSTIC_FILE,
+    traceActive: Date.now() < traceUntil,
+    traceUntil: traceUntil ? new Date(traceUntil).toISOString() : "",
+    tracePath: tracePath(),
+    rowCount: rows.length,
+    traceLineCount: traceLines.length,
+  };
+  if (!contextProvider) return sanitizeRecord({ diagnostics: base });
+  try {
+    return sanitizeRecord({ ...contextProvider(), diagnostics: base });
+  } catch (e) {
+    return sanitizeRecord({ diagnostics: base, contextError: e });
+  }
 }
 
 function clean(value: unknown, key: string, depth: number): unknown {

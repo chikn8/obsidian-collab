@@ -51,6 +51,7 @@ export default class CollabPlugin extends Plugin {
       uid: this.settings.uid,
       debugLogging: this.settings.debugLogging,
       diagnosticLogging: this.settings.diagnosticLogging,
+      context: () => this.diagnosticContext(),
     });
     log("load", "starting; uid=", this.settings.uid?.slice(0, 8), "shares=", this.settings.shares.length);
 
@@ -237,6 +238,44 @@ export default class CollabPlugin extends Plugin {
       err("diag", e);
       new Notice("Could not export collab diagnostic bundle.");
     }
+  }
+
+  private diagnosticContext(): Record<string, unknown> {
+    const roles = this.settings.shares.reduce<Record<string, number>>((acc, share) => {
+      const role = share.role || "editor";
+      acc[role] = (acc[role] || 0) + 1;
+      return acc;
+    }, {});
+    return {
+      plugin: {
+        id: this.manifest.id,
+        version: this.manifest.version,
+      },
+      platform: {
+        mobile: Platform.isMobile,
+        desktop: Platform.isDesktop,
+        mobileApp: Platform.isMobileApp,
+        desktopApp: Platform.isDesktopApp,
+        ios: Platform.isIosApp,
+        android: Platform.isAndroidApp,
+        phone: Platform.isPhone,
+        tablet: Platform.isTablet,
+      },
+      settings: {
+        shareCount: this.settings.shares.length,
+        legacyShareCount: this.settings.shares.filter((s) => s.legacy).length,
+        roles,
+        ntfyConfigured: !!this.settings.ntfyTopic,
+        customCursorColor: !!this.settings.cursorColor,
+      },
+      runtime: {
+        managerCount: this.syncManagers.size,
+        boundPath: this.boundPath || "",
+        boundProviderReady: this.boundProvider?.isReady() ?? false,
+        boundHasPresence: !!this.boundPresence,
+        pendingModifyDebounces: this.modifyDebounceMap.size,
+      },
+    };
   }
 
   private async startAllShares(): Promise<void> {
@@ -978,6 +1017,7 @@ export default class CollabPlugin extends Plugin {
       uid: this.settings.uid,
       debugLogging: this.settings.debugLogging,
       diagnosticLogging: this.settings.diagnosticLogging,
+      context: () => this.diagnosticContext(),
     });
     setDiagnosticLogging(this.settings.diagnosticLogging);
     await this.persist();

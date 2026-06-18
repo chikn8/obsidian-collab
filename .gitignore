@@ -6,6 +6,7 @@ server/dist/
 
 # Runtime data
 server/collab-data/
+tools/ai-regression-report.json
 
 # Env / secrets
 .env

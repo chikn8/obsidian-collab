@@ -221,6 +221,19 @@ process):
 cd plugin && node test/ws-sync.test.mjs <wsBase> <token>
 ```
 
+## Plugin updates
+
+Obsidian's normal auto-update path is release based: bump `plugin/manifest.json`, `plugin/package.json`,
+and `versions.json`, tag the commit with the exact version (`0.1.2`, no `v` prefix), and push the tag.
+The `Release plugin` GitHub Action builds the plugin and publishes `main.js`, `manifest.json`, and
+`styles.css` as release assets. Public Community Plugin listing is still what gives ordinary users
+automatic updates inside Obsidian; for private testing, friends can use BRAT or manual installs against
+the same GitHub releases.
+
+Public submission note: the current plugin id is `obsidian-collab`, which is convenient for existing
+manual installs but violates Obsidian's current community-directory naming rule against ids containing
+`obsidian`. Before submitting publicly, pick a new id and plan a settings/data migration.
+
 ## Operations & recovery
 
 - **Health:** `GET /health` returns 503 when persistence/snapshots/backups are unhealthy (so Railway

@@ -38,7 +38,7 @@ namespaced set of rooms plus a manifest.
 | **Presence** | Top-of-editor facepile, file-explorer avatars (desktop), click-to-jump, per-device identity |
 | **Attachments** | Images/PDF/audio/video sync as content-addressed blobs referenced from the manifest |
 | **Comments** | Threaded, anchored to text, replies + emoji reactions; survive edits; `@mention` → phone push |
-| **History** | Server-side git snapshots per file; browse, preview, restore any version |
+| **History** | Server-side git snapshots per file; browse, diff, restore whole versions or individual changes |
 | **Recovery** | Deleted-file list with one-click restore; local `trash/` + `backups/`; off-box server backups |
 | **Offline** | Edits persist locally (IndexedDB) and merge on reconnect; "N changes pending" indicator |
 | **Mobile** | Works on Obsidian mobile (presence degrades gracefully; no desktop-only APIs) |
@@ -273,7 +273,7 @@ manual installs but violates Obsidian's current community-directory naming rule 
 
 The reliability core (loops, lost-content, deletes/renames, offline, folder ops) is implemented and
 test-covered; backend durability and security hardening are largely in place. Remaining work
-(scale/HA, account-grade identity/key rotation, blob GC/object-store polish, hunk-level version restore, and the human
+(scale/HA, account-grade identity/key rotation, blob GC/object-store polish, side-by-side diff polish, and the human
 device-matrix test) is tracked in **[ROADMAP-v2-hardening.md](ROADMAP-v2-hardening.md)**.
 
 **Before trusting it with important notes:** exclude the shared folder from Obsidian Sync, confirm an

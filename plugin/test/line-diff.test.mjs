@@ -1,4 +1,4 @@
-import { buildInlineDiff } from "../src/utils/lineDiff.ts";
+import { applyRestoreHunk, buildInlineDiff, buildRestoreHunks } from "../src/utils/lineDiff.ts";
 
 let failures = 0;
 function check(name, cond, extra = "") {
@@ -37,6 +37,37 @@ console.log("line diff\n");
   const diff = buildInlineDiff(oldText, newText, { maxRows: 10 });
   check("large rendered diff truncates", diff.truncated);
   check("truncation adds omitted row", diff.rows[diff.rows.length - 1].kind === "omitted");
+}
+
+{
+  const saved = "a\nb\nc\n";
+  const current = "a\nB\nc\n";
+  const hunks = buildRestoreHunks(saved, current);
+  check("builds replacement hunk", hunks.length === 1 && hunks[0].newStart === 2 && hunks[0].newDeleteCount === 1);
+  check("restores replacement hunk", applyRestoreHunk(current, hunks[0]) === saved);
+}
+
+{
+  const saved = "a\nc\n";
+  const current = "a\nb\nc\n";
+  const hunk = buildRestoreHunks(saved, current)[0];
+  check("restores by deleting current insertion", applyRestoreHunk(current, hunk) === saved);
+}
+
+{
+  const saved = "a\nb\nc\n";
+  const current = "a\nc\n";
+  const hunk = buildRestoreHunks(saved, current)[0];
+  check("restores saved deletion", applyRestoreHunk(current, hunk) === saved);
+}
+
+{
+  const saved = "one\ntwo\nthree\nfour\n";
+  const current = "ONE\ntwo\nthree\nFOUR\n";
+  const hunks = buildRestoreHunks(saved, current);
+  const partial = applyRestoreHunk(current, hunks[0]);
+  check("multiple hunks are separate", hunks.length === 2);
+  check("restores only selected hunk", partial === "one\ntwo\nthree\nFOUR\n", partial);
 }
 
 console.log("");

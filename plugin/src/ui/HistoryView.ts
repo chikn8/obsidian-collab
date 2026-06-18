@@ -1,5 +1,5 @@
 import { ItemView, WorkspaceLeaf, setIcon, Notice } from "obsidian";
-import { buildInlineDiff, type DiffRow } from "../utils/lineDiff";
+import { applyRestoreHunk, buildInlineDiff, buildRestoreHunks, type DiffRow, type RestoreHunk } from "../utils/lineDiff";
 
 export const HISTORY_VIEW_TYPE = "collab-history";
 
@@ -153,6 +153,7 @@ export class HistoryView extends ItemView {
     existing?.remove();
     const current = this.ctx?.currentText() ?? "";
     const diff = buildInlineDiff(savedContent, current, { contextLines: 3 });
+    const hunks = buildRestoreHunks(savedContent, current);
     const box = root.createDiv({ cls: "collab-history-preview collab-history-output" });
     const title = `Diff — ${relTime(v.date)} to current (+${diff.added}/-${diff.removed})`;
     box.createEl("div", { text: title, cls: "collab-history-when" });
@@ -162,12 +163,34 @@ export class HistoryView extends ItemView {
       return;
     }
 
+    this.renderHunkActions(box, current, hunks);
+
     if (diff.truncated) {
       box.createEl("p", { text: "Large diff truncated for display.", cls: "collab-comments-empty" });
     }
 
     const table = box.createDiv({ cls: "collab-history-diff" });
     for (const row of diff.rows) this.renderDiffRow(table, row);
+  }
+
+  private renderHunkActions(box: HTMLElement, baselineCurrent: string, hunks: RestoreHunk[]): void {
+    if (!this.ctx || hunks.length === 0) return;
+    const actions = box.createDiv({ cls: "collab-history-hunks" });
+    for (const hunk of hunks) {
+      const btn = actions.createEl("button", { cls: "collab-comment-btn" });
+      setIcon(btn, "rotate-ccw");
+      btn.appendText(` Restore change ${hunk.id + 1} (+${hunk.added}/-${hunk.removed})`);
+      btn.onclick = async () => {
+        if (!this.ctx) return;
+        if (this.ctx.currentText() !== baselineCurrent) {
+          new Notice("Note changed since this diff loaded. Reopen the diff and try again.");
+          return;
+        }
+        btn.disabled = true;
+        await this.ctx.restore(applyRestoreHunk(baselineCurrent, hunk));
+        new Notice("Restored that change. A pre-restore backup was saved.");
+      };
+    }
   }
 
   private renderDiffRow(table: HTMLElement, row: DiffRow): void {

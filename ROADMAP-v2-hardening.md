@@ -39,7 +39,7 @@ manifest `kind:"binary"` entries.
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
 (ops, not code) · account-grade identity/key rotation · socket multiplexing / scale ceiling
-(Tier 3.1) · blob GC/object-store polish · hunk-level version restore · human device-matrix test.
+(Tier 3.1) · blob GC/object-store polish · side-by-side diff polish · human device-matrix test.
 
 ---
 
@@ -341,9 +341,10 @@ viewer upload rejection.
 same binary changed on two devices, and human mobile testing with real images/PDFs.
 
 ### 4.2 — Inline / side-by-side version diff (M)
-History preview is no longer only a raw 4000-char dump: the sidebar can compare a saved version with
-the current local note and render an inline line diff. Still open: hunk-level restore and a richer
-side-by-side editor view.
+**Status.** History preview is no longer only a raw 4000-char dump: the sidebar can compare a saved
+version with the current local note, render an inline line diff, and restore either the whole version or
+one selected change hunk. Hunk restore refuses to apply if the note changed since the diff loaded.
+**Remaining.** Richer side-by-side editor view.
 
 ### 4.3 — @mention autocomplete + working deep-link (M)
 CM6 `EditorSuggest` from the share roster; the push's tap opens the file. Today mentions need exact

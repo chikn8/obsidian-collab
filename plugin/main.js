@@ -14460,6 +14460,49 @@ function buildInlineDiff(oldText, newText, options = {}) {
   const omitted = compact.omitted + (truncated ? compact.rows.length - maxRows : 0);
   return { rows: rows2, added, removed, omitted, truncated };
 }
+function buildRestoreHunks(oldText, newText, options = {}) {
+  var _a2, _b2, _c, _d, _e;
+  const maxCells = Math.max(1, (_a2 = options.maxCells) != null ? _a2 : 25e4);
+  const rows2 = rawLineDiff(oldText, newText, maxCells);
+  const newLineCount = splitLines(newText).length;
+  const hunks = [];
+  for (let i = 0; i < rows2.length; ) {
+    while (i < rows2.length && rows2[i].kind === "context") i++;
+    if (i >= rows2.length) break;
+    const start = i;
+    while (i < rows2.length && rows2[i].kind !== "context") i++;
+    const hunkRows = rows2.slice(start, i);
+    const addRows = hunkRows.filter((row) => row.kind === "add");
+    const removeRows = hunkRows.filter((row) => row.kind === "remove");
+    const nextContext = ((_b2 = rows2[i]) == null ? void 0 : _b2.kind) === "context" ? rows2[i] : void 0;
+    const newStart = (_e = (_d = (_c = addRows[0]) == null ? void 0 : _c.newLine) != null ? _d : nextContext == null ? void 0 : nextContext.newLine) != null ? _e : newLineCount + 1;
+    const oldLines = removeRows.map((row) => {
+      var _a3;
+      return (_a3 = row.text) != null ? _a3 : "";
+    });
+    const oldNums = removeRows.map((row) => row.oldLine).filter((n) => !!n);
+    hunks.push({
+      id: hunks.length,
+      rows: hunkRows,
+      oldStart: oldNums.length ? Math.min(...oldNums) : null,
+      oldEnd: oldNums.length ? Math.max(...oldNums) : null,
+      newStart,
+      newDeleteCount: addRows.length,
+      insertLines: oldLines,
+      added: addRows.length,
+      removed: removeRows.length
+    });
+  }
+  return hunks;
+}
+function applyRestoreHunk(currentText, hunk) {
+  const hadTrailingNewline = currentText.endsWith("\n");
+  const lines = splitLines(currentText);
+  const start = Math.max(0, Math.min(lines.length, hunk.newStart - 1));
+  const deleteCount = Math.max(0, Math.min(hunk.newDeleteCount, lines.length - start));
+  lines.splice(start, deleteCount, ...hunk.insertLines);
+  return lines.join("\n") + (hadTrailingNewline ? "\n" : "");
+}
 
 // src/ui/HistoryView.ts
 var HISTORY_VIEW_TYPE = "collab-history";
@@ -14596,6 +14639,7 @@ var HistoryView = class extends import_obsidian9.ItemView {
     existing == null ? void 0 : existing.remove();
     const current = (_b2 = (_a2 = this.ctx) == null ? void 0 : _a2.currentText()) != null ? _b2 : "";
     const diff = buildInlineDiff(savedContent, current, { contextLines: 3 });
+    const hunks = buildRestoreHunks(savedContent, current);
     const box = root.createDiv({ cls: "collab-history-preview collab-history-output" });
     const title = `Diff \u2014 ${relTime(v.date)} to current (+${diff.added}/-${diff.removed})`;
     box.createEl("div", { text: title, cls: "collab-history-when" });
@@ -14603,11 +14647,31 @@ var HistoryView = class extends import_obsidian9.ItemView {
       box.createEl("p", { text: "No differences from the current note.", cls: "collab-comments-empty" });
       return;
     }
+    this.renderHunkActions(box, current, hunks);
     if (diff.truncated) {
       box.createEl("p", { text: "Large diff truncated for display.", cls: "collab-comments-empty" });
     }
     const table = box.createDiv({ cls: "collab-history-diff" });
     for (const row of diff.rows) this.renderDiffRow(table, row);
+  }
+  renderHunkActions(box, baselineCurrent, hunks) {
+    if (!this.ctx || hunks.length === 0) return;
+    const actions = box.createDiv({ cls: "collab-history-hunks" });
+    for (const hunk of hunks) {
+      const btn = actions.createEl("button", { cls: "collab-comment-btn" });
+      (0, import_obsidian9.setIcon)(btn, "rotate-ccw");
+      btn.appendText(` Restore change ${hunk.id + 1} (+${hunk.added}/-${hunk.removed})`);
+      btn.onclick = async () => {
+        if (!this.ctx) return;
+        if (this.ctx.currentText() !== baselineCurrent) {
+          new import_obsidian9.Notice("Note changed since this diff loaded. Reopen the diff and try again.");
+          return;
+        }
+        btn.disabled = true;
+        await this.ctx.restore(applyRestoreHunk(baselineCurrent, hunk));
+        new import_obsidian9.Notice("Restored that change. A pre-restore backup was saved.");
+      };
+    }
   }
   renderDiffRow(table, row) {
     var _a2, _b2;

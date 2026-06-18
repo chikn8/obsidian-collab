@@ -290,6 +290,7 @@
 .collab-history-subtitle { font-weight: 600; font-size: 0.85em; color: var(--text-muted); margin-bottom: 4px; }
 .collab-history-deleted .collab-history-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: default; }
 .collab-history-preview { margin-top: 10px; border-top: 1px solid var(--background-modifier-border); padding-top: 6px; }
+.collab-history-hunks { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
 .collab-history-preview pre {
   white-space: pre-wrap; font-size: 0.78em; max-height: 300px; overflow: auto;
   background: var(--background-primary-alt); padding: 6px; border-radius: 6px;

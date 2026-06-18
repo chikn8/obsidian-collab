@@ -16,6 +16,18 @@ export interface InlineDiff {
   truncated: boolean;
 }
 
+export interface RestoreHunk {
+  id: number;
+  rows: DiffRow[];
+  oldStart: number | null;
+  oldEnd: number | null;
+  newStart: number;
+  newDeleteCount: number;
+  insertLines: string[];
+  added: number;
+  removed: number;
+}
+
 export interface InlineDiffOptions {
   contextLines?: number;
   maxCells?: number;
@@ -179,4 +191,47 @@ export function buildInlineDiff(oldText: string, newText: string, options: Inlin
     : compact.rows;
   const omitted = compact.omitted + (truncated ? compact.rows.length - maxRows : 0);
   return { rows, added, removed, omitted, truncated };
+}
+
+export function buildRestoreHunks(oldText: string, newText: string, options: Pick<InlineDiffOptions, "maxCells"> = {}): RestoreHunk[] {
+  const maxCells = Math.max(1, options.maxCells ?? 250_000);
+  const rows = rawLineDiff(oldText, newText, maxCells);
+  const newLineCount = splitLines(newText).length;
+  const hunks: RestoreHunk[] = [];
+
+  for (let i = 0; i < rows.length;) {
+    while (i < rows.length && rows[i].kind === "context") i++;
+    if (i >= rows.length) break;
+    const start = i;
+    while (i < rows.length && rows[i].kind !== "context") i++;
+    const hunkRows = rows.slice(start, i);
+    const addRows = hunkRows.filter((row) => row.kind === "add");
+    const removeRows = hunkRows.filter((row) => row.kind === "remove");
+    const nextContext = rows[i]?.kind === "context" ? rows[i] : undefined;
+    const newStart = addRows[0]?.newLine ?? nextContext?.newLine ?? (newLineCount + 1);
+    const oldLines = removeRows.map((row) => row.text ?? "");
+    const oldNums = removeRows.map((row) => row.oldLine).filter((n): n is number => !!n);
+    hunks.push({
+      id: hunks.length,
+      rows: hunkRows,
+      oldStart: oldNums.length ? Math.min(...oldNums) : null,
+      oldEnd: oldNums.length ? Math.max(...oldNums) : null,
+      newStart,
+      newDeleteCount: addRows.length,
+      insertLines: oldLines,
+      added: addRows.length,
+      removed: removeRows.length,
+    });
+  }
+
+  return hunks;
+}
+
+export function applyRestoreHunk(currentText: string, hunk: RestoreHunk): string {
+  const hadTrailingNewline = currentText.endsWith("\n");
+  const lines = splitLines(currentText);
+  const start = Math.max(0, Math.min(lines.length, hunk.newStart - 1));
+  const deleteCount = Math.max(0, Math.min(hunk.newDeleteCount, lines.length - start));
+  lines.splice(start, deleteCount, ...hunk.insertLines);
+  return lines.join("\n") + (hadTrailingNewline ? "\n" : "");
 }

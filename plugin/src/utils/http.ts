@@ -19,3 +19,23 @@ export async function postJson<T = any>(
   });
   return { ok: res.status >= 200 && res.status < 300, status: res.status, body: res.json as T };
 }
+
+export async function putBinary<T = any>(
+  url: string,
+  body: ArrayBuffer,
+  headers?: Record<string, string>
+): Promise<{ ok: boolean; status: number; body: T | null }> {
+  const res = await requestUrl({
+    url,
+    method: "PUT",
+    body,
+    headers: { "Content-Type": "application/octet-stream", ...(headers || {}) },
+    throw: false,
+  });
+  return { ok: res.status >= 200 && res.status < 300, status: res.status, body: res.json as T };
+}
+
+export async function getBinary(url: string): Promise<{ ok: boolean; status: number; body: ArrayBuffer | null }> {
+  const res = await requestUrl({ url, method: "GET", throw: false });
+  return { ok: res.status >= 200 && res.status < 300, status: res.status, body: res.arrayBuffer || null };
+}

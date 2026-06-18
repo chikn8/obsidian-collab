@@ -2,6 +2,7 @@ import http from "http";
 import { randomBytes } from "crypto";
 import { WebSocketServer } from "ws";
 import { setupWSConnection, getMetrics, saveAllDocs, closeRevokedConnections, closeInviteConnections } from "./rooms.js";
+import { BLOB_MAX_BYTES, loadBlob, readBlobBody, safeBlobHash, safeBlobRelPath, storeBlob } from "./blobs.js";
 import {
   authenticate,
   timingSafeEqualStr,
@@ -175,7 +176,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(204, {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Headers": "Authorization, Content-Type",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
       });
       res.end();
       return;
@@ -207,6 +208,53 @@ const server = http.createServer(async (req, res) => {
     if (p === "/metrics") {
       if (!metricsAuthorized(req, url)) return json(401, { error: "unauthorized" });
       return json(200, getMetrics());
+    }
+
+    if (p === "/blob" && (req.method === "GET" || req.method === "PUT")) {
+      const shareId = url.searchParams.get("share") || "";
+      const hash = (url.searchParams.get("hash") || "").toLowerCase();
+      const token = bearerOrQueryToken(req, url);
+      const role = (url.searchParams.get("role") as Role | null) || undefined;
+      const epoch = url.searchParams.get("epoch") != null ? Number(url.searchParams.get("epoch")) : undefined;
+      const inviteId = url.searchParams.get("invite") || undefined;
+      const expiresAt = inviteExpiresAt(url);
+      const identity = identityParams(url);
+      if (!shareId || !safeBlobHash(hash)) return json(400, { error: "bad request" });
+      const granted =
+        shareId === "legacy" && !DISABLE_LEGACY_ROOMS && authenticate(token, AUTH_TOKEN)
+          ? "editor"
+          : await verifyNamespacedAccess({ shareId, token, role, epoch, inviteId, expiresAt, ...identity });
+      if (!granted) return json(401, { error: "unauthorized" });
+
+      if (req.method === "PUT") {
+        const relPath = safeBlobRelPath(url.searchParams.get("path") || "");
+        if (!relPath) return json(400, { error: "bad path" });
+        if (granted !== "editor") return json(403, { error: "forbidden" });
+        let body: Buffer;
+        try {
+          body = await readBlobBody(req);
+        } catch (e: any) {
+          if (String(e?.message || e) === "blob too large") {
+            return json(413, { error: "blob too large", maxBytes: BLOB_MAX_BYTES });
+          }
+          throw e;
+        }
+        await storeBlob(shareId, hash, body);
+        void auditEvent("blob.put", { shareId, relPath, hash, size: body.byteLength, role: granted, remote: remoteAddress(req) });
+        return json(200, { ok: true, shareId, hash, size: body.byteLength });
+      }
+
+      const body = await loadBlob(shareId, hash);
+      if (!body) return json(404, { error: "not found" });
+      void auditEvent("blob.get", { shareId, hash, size: body.byteLength, role: granted, remote: remoteAddress(req) });
+      res.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(body.byteLength),
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "private, max-age=31536000, immutable",
+      });
+      res.end(body);
+      return;
     }
 
     // Server-side share minting. Clients receive scoped per-share keys; the raw

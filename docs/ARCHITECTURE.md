@@ -5,15 +5,18 @@ How Obsidian Collab works, end to end. Pairs with the top-level
 
 ## 1. The two-layer model
 
-Each **share** (one local folder ↔ one namespaced room set) is synced by two cooperating layers:
+Each **share** (one local folder ↔ one namespaced room set) is synced by three cooperating layers:
 
-1. **Per-file Y.Docs** — each file is its own Yjs document. Text lives in `Y.Text("codemirror")`;
+1. **Per-file text Y.Docs** — each Markdown/Canvas file is its own Yjs document. Text lives in `Y.Text("codemirror")`;
    threaded comments live in a sibling `Y.Map("comments")` on the same doc (so they ride the same room,
    auth, and offline persistence). `FileProvider` (`plugin/src/collab/FileProvider.ts`) owns one file's
    doc and its disk round-trip.
 2. **A per-share manifest** — a single `Y.Map("files")` keyed by relative path, describing the file
    tree. `SyncManager` (`plugin/src/collab/SyncManager.ts`) owns the manifest doc, all the file
    providers for the share, and file-explorer presence. The plugin runs one `SyncManager` per share.
+3. **Content-addressed blobs** — binary attachments are uploaded to `/blob` by SHA-256 hash and referenced
+   from manifest entries (`kind:"binary"`, `blobHash`, `blobSize`). They are last-writer-wins, not CRDT
+   merged.
 
 The **active editor** additionally binds to its file's `Y.Text` via `yCollab` (`EditorBinding.ts`),
 which is what makes typing feel instant and renders remote cursors/selections natively. Background
@@ -22,7 +25,7 @@ which is what makes typing feel instant and renders remote cursors/selections na
 ### Rooms
 Room names are namespaced per share so shares never collide:
 - `@<shareId>:__manifest__` — the folder manifest
-- `@<shareId>:file:<encodeURIComponent(relPath)>` — one per file
+- `@<shareId>:file:<encodeURIComponent(relPath)>` — one per text file
 
 The original single-folder setup auto-migrates to a **legacy** share that keeps the old *un-prefixed*
 rooms (`__manifest__`, `file:…`) so existing data and collaborators are untouched. `share.legacy` and
@@ -72,8 +75,9 @@ idempotent and LWW-converges if two clients migrate at once.
 
 **Path safety:** manifest keys are remote-controlled, so every key is validated by `safeRelPath`
 (`utils/manifestLogic.ts`) on **both** the write side and the apply side — rejecting `..`, absolute
-paths, drive letters, control chars, and non-text types (anything outside `.md` / `.canvas`) — before it can touch the vault. This closes a
-path-traversal → arbitrary-file-write vector.
+paths, drive letters, control chars, and unsupported extensions before it can touch the vault. Text is
+limited to `.md` / `.canvas`; binary attachments are limited to known image/PDF/audio/video extensions.
+This closes a path-traversal → arbitrary-file-write vector.
 
 ## 4. Delete, rename, resurrection, folder ops
 
@@ -150,12 +154,14 @@ legacy `/admin/revoke` raises it and disconnects live revoked clients with close
 - **`snapshots.ts`** — writes human-readable `.md` / `.canvas` text snapshots into a git repo and commits on a cadence +
   SIGTERM. This is the **version-history + deleted-file recovery source**. Optional `git push` to
   `SNAPSHOT_GIT_REMOTE` for off-box history; `git gc` keeps it bounded.
+- **`blobs.ts`** — stores content-addressed attachment blobs under `$PERSIST_DIR/blobs/<share>/<hash>`.
+  Upload is editor-only, download is any valid share role, and the server verifies SHA-256 before writing.
 - **`backups.ts`** — runs `PERSIST_BACKUP_COMMAND` on an interval for a full-corpus off-box archive.
 - **`notify.ts`** — `@mention` pushes via ntfy. The topic registry is **namespaced per authed share**
   (no cross-share hijack), the sender's share comes from the connection (not the client frame), viewers
   can't send, and the client-supplied ntfy `Click` is dropped (deep-link injection guard).
 - **`history.ts` / `index.ts`** — HTTP API: `/health`, `/metrics`, `/history`, `/version`, `/files`,
-  `/admin/revoke`, `/share/invite`, `/share/invite/revoke`. Metrics require the metrics bearer token;
+  `/blob`, `/admin/revoke`, `/share/invite`, `/share/invite/revoke`. Metrics require the metrics bearer token;
   read endpoints require a valid share token, and invite reads require the same signed install identity
   binding as WebSocket joins.
 
@@ -170,9 +176,10 @@ echo is dropped.
 observer fires (remote) → `writeToFile` marks the echo and writes the merged text to disk → the vault
 `modify` echo is recognized and dropped.
 
-**You delete a file.** `onFileDelete` snapshots + trashes it, tombstones the manifest entry, tears down
-the provider. Peers see `exists:false`, snapshot/trash their copy, and remove it — unless they edited it
-after your `deletedAt`, in which case they resurrect it and notify.
+**You delete a file.** `onFileDelete` tombstones the manifest entry; text files also snapshot/trash local
+content and tear down their provider. Peers see `exists:false` and remove their copy — unless they edited
+it after your `deletedAt`, in which case they resurrect it and notify. Binary deletes retain the blob hash
+on the tombstone, so restore can download the attachment again.
 
 **You go offline and edit.** Edits persist in IndexedDB and bump the "pending" counter. On reconnect, the
 provider re-syncs; the offline ops merge into the server state conflict-free.

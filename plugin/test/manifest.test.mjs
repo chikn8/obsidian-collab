@@ -183,6 +183,10 @@ console.log("Safe manifest paths");
     safeRelPath("a/b/note.md", "Shared") === "a/b/note.md");
   check("accepts canvas path",
     safeRelPath("boards/plan.canvas", "Shared") === "boards/plan.canvas");
+  check("accepts image attachment path",
+    safeRelPath("images/photo.png", "Shared") === "images/photo.png");
+  check("accepts pdf attachment path",
+    safeRelPath("docs/file.pdf", "Shared") === "docs/file.pdf");
   check("rejects parent traversal",
     safeRelPath("../x.md", "Shared") === null);
   check("rejects normalized traversal",
@@ -193,7 +197,7 @@ console.log("Safe manifest paths");
     safeRelPath("..\\b.md", "Shared") === null);
   check("rejects colon",
     safeRelPath("a:b.md", "Shared") === null);
-  check("rejects non-text file",
+  check("rejects unsupported file type",
     safeRelPath("note.exe", "Shared") === null);
   check("rejects empty segment",
     safeRelPath("a//b.md", "Shared") === null);

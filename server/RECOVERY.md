@@ -5,6 +5,8 @@ This service persists all durable state under `PERSIST_DIR` (default `./collab-d
 - `*.yjs` room state files
 - `share-state.json` revocation watermarks
 - `notify-registry.json`
+- `audit.jsonl`
+- `blobs/` content-addressed attachment files
 - `snapshots/` git repo with human-readable note history
 
 ## Off-box backup setup

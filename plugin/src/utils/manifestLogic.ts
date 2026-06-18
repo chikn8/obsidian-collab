@@ -3,6 +3,7 @@
  * can be unit-tested headlessly (no Obsidian/Yjs/network).
  */
 import type { ManifestEntry } from "../types";
+import { isSyncableBinaryPath } from "./binary";
 
 /** Grace window (ms) for clock skew between the deleter's clock and our mtime. */
 export const RESURRECT_GRACE_MS = 2000;
@@ -11,6 +12,10 @@ export const SYNCABLE_TEXT_EXTENSIONS = ["md", "canvas"] as const;
 export function isSyncableTextPath(path: string): boolean {
   const ext = path.split("/").pop()?.split(".").pop()?.toLowerCase() || "";
   return (SYNCABLE_TEXT_EXTENSIONS as readonly string[]).includes(ext);
+}
+
+export function isSyncablePath(path: string): boolean {
+  return isSyncableTextPath(path) || isSyncableBinaryPath(path);
 }
 
 /**
@@ -42,11 +47,11 @@ function normalizeVaultPath(input: string): string {
 }
 
 /** Validate a remotely-controlled manifest key before it can touch the vault. */
-export function safeRelPath(relPath: unknown, localFolder = ""): string | null {
+export function safeRelPath(relPath: unknown, localFolder = "", opts?: { textOnly?: boolean }): string | null {
   if (typeof relPath !== "string" || relPath.length === 0) return null;
   if (relPath.startsWith("/") || relPath.includes("\\") || relPath.includes(":")) return null;
   if (/[\x00-\x1F\x7F]/.test(relPath)) return null;
-  if (!isSyncableTextPath(relPath)) return null;
+  if (opts?.textOnly ? !isSyncableTextPath(relPath) : !isSyncablePath(relPath)) return null;
 
   const parts = relPath.split("/");
   if (parts.some((part) => !part || part === "." || part === "..")) return null;

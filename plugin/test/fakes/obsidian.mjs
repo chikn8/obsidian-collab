@@ -62,18 +62,28 @@ export class Vault {
   _emit(ev, ...args) { for (const cb of this.listeners[ev]) cb(...args); }
   getAbstractFileByPath(p) { return this.tree.get(p) || null; }
   async read(file) { return this.content.get(file.path) ?? ""; }
+  async readBinary(file) {
+    const value = this.content.get(file.path);
+    if (value instanceof ArrayBuffer) return value;
+    if (ArrayBuffer.isView(value)) return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+    return new TextEncoder().encode(value ?? "").buffer;
+  }
   async create(path, data) {
     const f = new TFile(path, this);
     this.tree.set(path, f);
     this.content.set(path, data);
+    f.stat.size = typeof data === "string" ? data.length : data?.byteLength || 0;
     this._emit("create", f);
     return f;
   }
+  async createBinary(path, data) { return this.create(path, data); }
   async modify(file, data) {
     this.content.set(file.path, data);
     if (file.stat) file.stat.mtime = Date.now();
+    if (file.stat) file.stat.size = typeof data === "string" ? data.length : data?.byteLength || 0;
     this._emit("modify", file);
   }
+  async modifyBinary(file, data) { await this.modify(file, data); }
   async process(file, fn) {
     const current = await this.read(file);
     const next = fn(current);

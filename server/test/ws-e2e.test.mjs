@@ -1,5 +1,5 @@
 import { spawn } from "child_process";
-import { createHmac, webcrypto } from "crypto";
+import { createHash, createHmac, webcrypto } from "crypto";
 import fs from "fs/promises";
 import net from "net";
 import os from "os";
@@ -31,6 +31,10 @@ function sleep(ms) {
 
 function hmac(secret, msg) {
   return createHmac("sha256", secret).update(msg).digest("base64url");
+}
+
+function sha256Hex(data) {
+  return createHash("sha256").update(data).digest("hex");
 }
 
 function roleKey(shareId, role, epoch) {
@@ -296,6 +300,12 @@ function inviteAuthParams(invite, identity) {
   };
 }
 
+function queryParams(params) {
+  const q = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) q.set(key, String(value));
+  return q.toString();
+}
+
 console.log("real server WebSocket e2e\n");
 
 const persistDir = await fs.mkdtemp(path.join(os.tmpdir(), "obsidian-collab-ws-e2e-"));
@@ -384,6 +394,58 @@ try {
     ]);
     check("old epoch socket closed with 4003", closed?.code === 4003, `code=${closed?.code}`);
     client.doc.destroy();
+  }
+
+  console.log("Blob API syncs content-addressed attachments");
+  {
+    const shareId = "e2e-blob";
+    const epoch = 1;
+    const body = Buffer.from("fake image bytes");
+    const hash = sha256Hex(body);
+    const editorPutParams = {
+      ...authParams("editor", epoch, shareId),
+      share: shareId,
+      path: "assets/photo.png",
+      hash,
+    };
+    const putRes = await fetch(`${server.httpBase}/blob?${queryParams(editorPutParams)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/octet-stream" },
+      body,
+    });
+    check("editor blob upload succeeds", putRes.status === 200, `status=${putRes.status}`);
+
+    const getRes = await fetch(`${server.httpBase}/blob?${queryParams({
+      ...authParams("viewer", epoch, shareId),
+      share: shareId,
+      hash,
+    })}`);
+    const downloaded = Buffer.from(await getRes.arrayBuffer());
+    check("viewer blob download succeeds", getRes.status === 200 && downloaded.equals(body), `status=${getRes.status}`);
+
+    const viewerPutRes = await fetch(`${server.httpBase}/blob?${queryParams({
+      ...authParams("viewer", epoch, shareId),
+      share: shareId,
+      path: "assets/photo.png",
+      hash,
+    })}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/octet-stream" },
+      body,
+    });
+    check("viewer blob upload is rejected", viewerPutRes.status === 403, `status=${viewerPutRes.status}`);
+
+    const badPathRes = await fetch(`${server.httpBase}/blob?${queryParams({
+      ...authParams("editor", epoch, shareId),
+      share: shareId,
+      path: "scripts/run.js",
+      hash,
+    })}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/octet-stream" },
+      body,
+    });
+    check("unsupported blob extension is rejected", badPathRes.status === 400, `status=${badPathRes.status}`);
   }
 
   console.log("Per-recipient invite can be revoked independently");

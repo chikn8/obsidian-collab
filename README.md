@@ -36,6 +36,7 @@ namespaced set of rooms plus a manifest.
 | **Sharing** | Per-folder shares; mount the same share at any local path; multiple independent shares |
 | **Roles** | `editor` / `commenter` / `viewer`, enforced server-side; signed per-recipient invites + revoke-all |
 | **Presence** | Top-of-editor facepile, file-explorer avatars (desktop), click-to-jump, per-device identity |
+| **Attachments** | Images/PDF/audio/video sync as content-addressed blobs referenced from the manifest |
 | **Comments** | Threaded, anchored to text, replies + emoji reactions; survive edits; `@mention` → phone push |
 | **History** | Server-side git snapshots per file; browse, preview, restore any version |
 | **Recovery** | Deleted-file list with one-click restore; local `trash/` + `backups/`; off-box server backups |
@@ -91,7 +92,7 @@ races. Your own devices are just "more clients on the share" — the plugin alre
 │  active editor ──yCollab──┐                              │  WSS   │  per-room Y.Doc (in memory)    │
 │                           ├─ per-file Y.Doc ── FileProvider ───────┼─ relay updates to all conns   │
 │  file explorer / disk ────┘   (headless sync)            │        │  atomic .yjs persistence       │
-│                                                          │        │  git snapshots → history       │
+│                                                          │        │  git snapshots + blob store    │
 │  manifest Y.Map ───────────── SyncManager ───────────────┼────────┼─ off-box backups (git/archive) │
 │   (file tree, tombstones)                                │        │  HMAC auth + role enforcement  │
 └──────────────────────────────────────────────────────────┘        └────────────────────────────────┘
@@ -99,6 +100,8 @@ races. Your own devices are just "more clients on the share" — the plugin alre
 
 - **Per-file Y.Doc** holds text in `Y.Text("codemirror")` and comments in `Y.Map("comments")`. The
   active editor binds via `yCollab` (live cursors); background files sync headlessly via `FileProvider`.
+- **Binary attachments** (images, PDFs, audio/video) are uploaded as content-addressed blobs and referenced
+  from the manifest by SHA-256 hash. They are not merged like text; the newest manifest entry wins.
 - **Per-share manifest** is a `Y.Map("files")` keyed by relative path, tracking the file tree as
   schema-v2 entries (`fileId`, `exists`, tombstone fields). `SyncManager` owns it and the per-file
   providers.
@@ -115,7 +118,7 @@ plugin/        Obsidian plugin (TypeScript → esbuild bundle)
   src/         source; collab/ = sync engine, ui/ = panels, utils/ = pure helpers
   test/        headless unit + integration tests (run by CI)
 server/        Node.js WebSocket relay (TypeScript → tsc)
-  src/         rooms/persistence/snapshots/auth/notify/backups/…
+  src/         rooms/persistence/snapshots/blobs/auth/notify/backups/…
 docs/          ARCHITECTURE.md and design notes
 ROADMAP-v2-hardening.md   what's done and what's next
 server/RECOVERY.md        disaster-recovery runbook
@@ -177,6 +180,7 @@ Settings → Real-Time Collaboration:
 | `DISABLE_LEGACY_ROOMS` | `false` | Reject un-namespaced rooms entirely (no `AUTH_TOKEN` needed) |
 | `PERSIST_DIR` | `./collab-data` | Durable state dir — **mount a persistent volume here** |
 | `WS_MAX_PAYLOAD` | `2097152` | Max inbound WS frame (anti-bloat/OOM) |
+| `BLOB_MAX_BYTES` | `26214400` | Max attachment/blob upload size |
 | `STALE_SAVE_MS` | — | `/health` 503s if a save is older than this while rooms are active |
 | `MIN_FREE_BYTES` | — | `/health` 503s below this much free disk |
 | `SNAPSHOT_GIT_REMOTE` / `SNAPSHOT_GIT_BRANCH` | — / `main` | Push note-history snapshots off-box |
@@ -269,7 +273,7 @@ manual installs but violates Obsidian's current community-directory naming rule 
 
 The reliability core (loops, lost-content, deletes/renames, offline, folder ops) is implemented and
 test-covered; backend durability and security hardening are largely in place. Remaining work
-(scale/HA, account-grade identity/key rotation, attachment sync, hunk-level version restore, and the human
+(scale/HA, account-grade identity/key rotation, blob GC/object-store polish, hunk-level version restore, and the human
 device-matrix test) is tracked in **[ROADMAP-v2-hardening.md](ROADMAP-v2-hardening.md)**.
 
 **Before trusting it with important notes:** exclude the shared folder from Obsidian Sync, confirm an

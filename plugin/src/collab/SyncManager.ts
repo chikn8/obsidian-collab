@@ -3,11 +3,14 @@ import * as Y from "yjs";
 import { createProvider } from "./YjsProvider";
 import { FileProvider } from "./FileProvider";
 import { EchoGuard, beginRemoteApply, endRemoteApply, isApplyingRemote } from "./EchoGuard";
-import { manifestRoom, fileRoom, shareToken, shareAuthParams } from "../utils/roomName";
+import { manifestRoom, fileRoom, shareToken, shareAuthParams, httpBase } from "../utils/roomName";
 import { sendFrame, MSG_NOTIFY, MSG_TOPIC_REGISTER } from "../utils/frames";
+import { getBinary, putBinary } from "../utils/http";
+import { buffersEqual, isSyncableBinaryPath, MAX_SYNCABLE_BINARY_BYTES, sha256Hex } from "../utils/binary";
 import { log, trace } from "../utils/log";
 import {
   isRecoverableTombstone,
+  isSyncablePath,
   isSyncableTextPath,
   liveManifestEntry,
   safeRelPath,
@@ -307,9 +310,22 @@ export class SyncManager {
         if (!this.safeManifestRelPath(relPath, "startup local publish")) continue;
         const entry = this.manifestMap!.get(relPath) as ManifestEntry | undefined;
         if (shouldPublishLocalOnStartup(entry)) {
-          const fileId = newFileId();
-          this.fileIds.set(relPath, fileId);
-          this.manifestMap!.set(relPath, liveManifestEntry(undefined, relPath, fileId, this.settings.displayName));
+          if (isSyncableBinaryPath(relPath)) {
+            await this.publishBinaryFile(relPath, filePath, undefined, "startup-create");
+          } else {
+            const fileId = newFileId();
+            this.fileIds.set(relPath, fileId);
+            this.manifestMap!.set(relPath, liveManifestEntry(undefined, relPath, fileId, this.settings.displayName, { kind: "text" }));
+          }
+        } else if (entry?.exists && this.entryKind(relPath, entry) === "binary") {
+          const file = this.app.vault.getAbstractFileByPath(filePath);
+          const info = file instanceof TFile ? await this.readBinaryInfo(file) : null;
+          if (info && (info.hash !== entry.blobHash || info.size !== entry.blobSize)) {
+            const localMtime = file instanceof TFile ? file.stat.mtime : 0;
+            if (localMtime > (entry.blobUpdatedAt || entry.lastModified || 0) + 2000) {
+              await this.publishBinaryFile(relPath, filePath, entry, "startup-offline");
+            }
+          }
         }
       }
     }
@@ -321,6 +337,10 @@ export class SyncManager {
       if (!safeRel) continue;
       if (!entry.exists) continue;
       const fullPath = this.toFullPath(safeRel);
+      if (this.entryKind(safeRel, entry) === "binary") {
+        await this.applyRemoteBinary(safeRel, entry);
+        continue;
+      }
       const file = this.app.vault.getAbstractFileByPath(fullPath);
       if (!file) {
         // Ensure parent folders exist
@@ -339,6 +359,7 @@ export class SyncManager {
       const safeRel = this.safeManifestRelPath(relPath, "startup provider");
       if (!safeRel) continue;
       if (!entry.exists) continue;
+      if (this.entryKind(safeRel, entry) !== "text") continue;
       const fullPath = this.toFullPath(safeRel);
       if (!this.fileProviders.has(safeRel)) {
         await this.createFileProvider(safeRel, fullPath);
@@ -396,6 +417,12 @@ export class SyncManager {
       const fullPath = this.toFullPath(relPath);
 
       if (entry.exists && change.action !== "delete") {
+        if (this.entryKind(relPath, entry) === "binary") {
+          if (entry.fileId) this.fileIds.set(relPath, entry.fileId);
+          await this.applyRemoteBinary(relPath, entry);
+          continue;
+        }
+
         // Identity check: a DIFFERENT file now occupies this path (concurrent
         // same-path create, or a path reused after deletion). Drop the stale
         // local doc so we adopt the new file's room cleanly instead of merging
@@ -440,6 +467,7 @@ export class SyncManager {
     const provider = this.fileProviders.get(safeRel);
     const file = this.app.vault.getAbstractFileByPath(fullPath);
     const deletedAt = entry.deletedAt || entry.lastModified || 0;
+    const isBinary = this.entryKind(safeRel, entry) === "binary";
 
     // Delete-vs-edit resurrection: if WE edited this file locally AFTER it was
     // deleted elsewhere, keep it. Renames carry `renamedTo` and must NOT
@@ -486,7 +514,7 @@ export class SyncManager {
       if (provider) {
         await provider.flushSnapshot();
         await provider.saveToTrash();
-      } else {
+      } else if (!isBinary) {
         const content = await this.app.vault.read(file).catch(() => "");
         if (content.length > 0) {
           await FileProvider.saveTextSnapshot(this.app, fullPath, content).catch((e) => log("delete", "startup snapshot failed", fullPath, e));
@@ -562,6 +590,128 @@ export class SyncManager {
     }
   }
 
+  private entryKind(relPath: string, entry?: ManifestEntry): "text" | "binary" {
+    if (entry?.kind === "binary") return "binary";
+    return isSyncableBinaryPath(relPath) ? "binary" : "text";
+  }
+
+  private blobQuery(params: Record<string, string | number>): string {
+    const q = new URLSearchParams();
+    q.set("token", shareToken(this.share, this.settings.serverPassword));
+    for (const [key, value] of Object.entries(shareAuthParams(this.share))) q.set(key, value);
+    if (this.share.inviteId && this.settings.identityPublicKey && this.settings.identitySignature) {
+      q.set("uid", this.settings.uid);
+      q.set("identityKey", this.settings.identityPublicKey);
+      q.set("identitySig", this.settings.identitySignature);
+    }
+    for (const [key, value] of Object.entries(params)) q.set(key, String(value));
+    return q.toString();
+  }
+
+  private async readBinaryInfo(file: TFile): Promise<{ data: ArrayBuffer; hash: string; size: number } | null> {
+    try {
+      const data = await this.app.vault.readBinary(file);
+      if (data.byteLength > MAX_SYNCABLE_BINARY_BYTES) {
+        new Notice(`"${file.name}" is too large to sync as an attachment.`);
+        trace("blob", "local-too-large", { path: file.path, size: data.byteLength, max: MAX_SYNCABLE_BINARY_BYTES });
+        return null;
+      }
+      return { data, hash: await sha256Hex(data), size: data.byteLength };
+    } catch (e) {
+      trace("blob", "read-error", { path: file.path, error: e });
+      return null;
+    }
+  }
+
+  private async publishBinaryFile(relPath: string, fullPath: string, prev?: ManifestEntry, reason = "local"): Promise<void> {
+    if (!this.manifestMap || this.role !== "editor") return;
+    const safeRel = this.safeManifestRelPath(relPath, `binary ${reason}`);
+    if (!safeRel || !isSyncableBinaryPath(safeRel)) return;
+    const file = this.app.vault.getAbstractFileByPath(fullPath);
+    if (!(file instanceof TFile)) return;
+    const info = await this.readBinaryInfo(file);
+    if (!info) return;
+    if (prev?.kind === "binary" && prev.blobHash === info.hash && prev.blobSize === info.size) return;
+
+    const url = `${httpBase(this.settings.serverUrl)}/blob?${this.blobQuery({
+      share: this.histShareId,
+      path: safeRel,
+      hash: info.hash,
+      size: info.size,
+    })}`;
+    const res = await putBinary(url, info.data);
+    if (!res.ok) {
+      trace("blob", "upload-failed", { shareId: this.histShareId, relPath: safeRel, status: res.status, hash: info.hash, size: info.size });
+      new Notice(`Could not sync attachment "${file.name}" (${res.status}).`);
+      return;
+    }
+
+    const fileId = prev?.fileId || this.fileIds.get(safeRel) || newFileId();
+    this.fileIds.set(safeRel, fileId);
+    this.manifestMap.set(safeRel, liveManifestEntry(prev, safeRel, fileId, this.settings.displayName, {
+      kind: "binary",
+      blobHash: info.hash,
+      blobSize: info.size,
+      blobUpdatedAt: Date.now(),
+    }));
+    trace("blob", "published", { shareId: this.histShareId, relPath: safeRel, hash: info.hash, size: info.size, reason });
+  }
+
+  private async applyRemoteBinary(relPath: string, entry: ManifestEntry): Promise<void> {
+    const safeRel = this.safeManifestRelPath(relPath, "remote binary");
+    if (!safeRel || !entry.blobHash) return;
+    const fullPath = this.toFullPath(safeRel);
+    const existing = this.app.vault.getAbstractFileByPath(fullPath);
+    if (existing instanceof TFile) {
+      const local = await this.readBinaryInfo(existing);
+      if (local?.hash === entry.blobHash && local.size === entry.blobSize) return;
+    }
+
+    const url = `${httpBase(this.settings.serverUrl)}/blob?${this.blobQuery({
+      share: this.histShareId,
+      hash: entry.blobHash,
+    })}`;
+    const res = await getBinary(url);
+    if (!res.ok || !res.body) {
+      trace("blob", "download-failed", { shareId: this.histShareId, relPath: safeRel, status: res.status, hash: entry.blobHash });
+      return;
+    }
+    const hash = await sha256Hex(res.body);
+    if (hash !== entry.blobHash || (entry.blobSize != null && res.body.byteLength !== entry.blobSize)) {
+      trace("blob", "download-hash-mismatch", {
+        shareId: this.histShareId,
+        relPath: safeRel,
+        expectedHash: entry.blobHash,
+        actualHash: hash,
+        expectedSize: entry.blobSize,
+        actualSize: res.body.byteLength,
+      });
+      return;
+    }
+
+    if (existing instanceof TFile) {
+      const current = await this.app.vault.readBinary(existing).catch(() => null);
+      if (current && buffersEqual(current, res.body)) return;
+    } else {
+      const dir = fullPath.substring(0, fullPath.lastIndexOf("/"));
+      if (dir) await this.ensureFolder(dir);
+    }
+
+    beginRemoteApply();
+    try {
+      this.echo.mark(fullPath, hash);
+      if (existing instanceof TFile) {
+        await this.app.vault.modifyBinary(existing, res.body);
+      } else {
+        this.echo.markCreated(fullPath);
+        await this.app.vault.createBinary(fullPath, res.body);
+      }
+      trace("blob", "applied", { shareId: this.histShareId, relPath: safeRel, hash, size: res.body.byteLength });
+    } finally {
+      endRemoteApply();
+    }
+  }
+
   /** Create an empty file, marking it so its create event is dropped as an echo. */
   private async guardedCreate(fullPath: string): Promise<void> {
     this.echo.markCreated(fullPath);
@@ -602,6 +752,12 @@ export class SyncManager {
     if (!this.safeManifestRelPath(relPath, "local create")) return;
     trace("vault", "local-create", { shareId: this.histShareId, relPath, path: file.path });
 
+    if (isSyncableBinaryPath(relPath)) {
+      void this.publishBinaryFile(relPath, file.path, this.manifestMap?.get(relPath) as ManifestEntry | undefined, "create")
+        .then(() => this.emitStatus());
+      return;
+    }
+
     if (this.manifestMap) {
       const prev = this.manifestMap.get(relPath) as ManifestEntry | undefined;
       // Reuse an existing fileId (re-create at the same path) else mint a new one.
@@ -624,6 +780,14 @@ export class SyncManager {
 
     const relPath = this.toRelativePath(file.path);
     if (!this.safeManifestRelPath(relPath, "local modify")) return;
+    if (isSyncableBinaryPath(relPath)) {
+      const info = await this.readBinaryInfo(file);
+      if (!info) return;
+      if (this.echo.isEcho(file.path, info.hash)) return;
+      await this.publishBinaryFile(relPath, file.path, this.manifestMap?.get(relPath) as ManifestEntry | undefined, "modify");
+      this.emitStatus();
+      return;
+    }
     const fp = this.fileProviders.get(relPath);
     if (fp) {
       const content = await this.app.vault.read(file);
@@ -683,7 +847,7 @@ export class SyncManager {
   async onFileRename(file: TFile, oldPath: string): Promise<void> {
     if (this.role !== "editor") return;
     if (isApplyingRemote()) return; // never re-enter while applying a remote change
-    const oldWasSyncable = this.isInLinkedFolder(oldPath) && isSyncableTextPath(oldPath);
+    const oldWasSyncable = this.isInLinkedFolder(oldPath) && isSyncablePath(oldPath);
     const newIsSyncable = this.isInLinkedFolder(file.path) && this.isSyncableFile(file);
     trace("vault", "local-rename", {
       shareId: this.histShareId,
@@ -693,8 +857,13 @@ export class SyncManager {
       newIsSyncable,
     });
 
-    if (oldWasSyncable && newIsSyncable) {
+    if (oldWasSyncable && newIsSyncable && isSyncableTextPath(oldPath) && isSyncableTextPath(file.path)) {
       await this.transferRename(oldPath, file.path);
+    } else if (oldWasSyncable && newIsSyncable && isSyncableBinaryPath(oldPath) && isSyncableBinaryPath(file.path)) {
+      await this.transferBinaryRename(oldPath, file.path);
+    } else if (oldWasSyncable && newIsSyncable) {
+      await this.tombstoneByRelPath(this.toRelativePath(oldPath));
+      this.onFileCreate(file);
     } else if (oldWasSyncable && !newIsSyncable) {
       // Moved/renamed out of the share → treat as a delete of the old path.
       await this.tombstoneByRelPath(this.toRelativePath(oldPath));
@@ -811,6 +980,43 @@ export class SyncManager {
     }
     log("delete", "renamed", oldRel, "→", newRel, "(content transferred)");
     trace("manifest", "rename-transfer-done", { shareId: this.histShareId, oldRel, newRel, fileId });
+    this.emitStatus();
+  }
+
+  /** Rename a binary attachment by moving its blob metadata to the new path. */
+  private async transferBinaryRename(oldPath: string, newPath: string): Promise<void> {
+    const oldRel = this.toRelativePath(oldPath);
+    const newRel = this.toRelativePath(newPath);
+    if (!this.safeManifestRelPath(oldRel, "local binary rename old")) return;
+    if (!this.safeManifestRelPath(newRel, "local binary rename new")) return;
+    if (oldRel === newRel) return;
+    const oldEntry = (this.manifestMap?.get(oldRel) as ManifestEntry | undefined) || ({} as ManifestEntry);
+    if (!oldEntry.blobHash) {
+      await this.publishBinaryFile(newRel, newPath, undefined, "rename-create");
+      await this.tombstoneByRelPath(oldRel);
+      return;
+    }
+    const fileId = oldEntry.fileId || this.fileIds.get(oldRel) || newFileId();
+    this.fileIds.delete(oldRel);
+    this.fileIds.set(newRel, fileId);
+    if (this.manifestMap) {
+      this.manifestDoc!.transact(() => {
+        this.manifestMap!.set(newRel, liveManifestEntry(oldEntry, newRel, fileId, this.settings.displayName, {
+          kind: "binary",
+          blobHash: oldEntry.blobHash,
+          blobSize: oldEntry.blobSize,
+          blobUpdatedAt: oldEntry.blobUpdatedAt || oldEntry.lastModified || Date.now(),
+          renamedFrom: oldRel,
+          lastModified: Date.now(),
+        }));
+        this.manifestMap!.set(oldRel, {
+          ...oldEntry, fileId, path: oldRel, exists: false, deleted: true,
+          renamedTo: newRel, lastModified: Date.now(),
+          deletedBy: this.settings.displayName, deletedAt: Date.now(),
+        });
+      });
+    }
+    trace("blob", "renamed", { shareId: this.histShareId, oldRel, newRel, fileId, hash: oldEntry.blobHash });
     this.emitStatus();
   }
 
@@ -1101,6 +1307,6 @@ export class SyncManager {
   }
 
   private isSyncableFile(file: TFile): boolean {
-    return isSyncableTextPath(file.path);
+    return isSyncablePath(file.path);
   }
 }

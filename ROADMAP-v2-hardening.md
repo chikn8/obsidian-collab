@@ -34,10 +34,12 @@ createFileProvider in-flight reservation · comment-anchor quote-verify + re-mat
 real-server WebSocket e2e for convergence, viewer write rejection, restart durability, and revocation.
 **Tier 3 foundation**: signed per-install identities bind invite links on first use; invite reuse from a
 different signed install is rejected before joining the room.
+**Tier 4 foundation**: binary attachments sync through content-addressed `/blob` uploads/downloads and
+manifest `kind:"binary"` entries.
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
 (ops, not code) · account-grade identity/key rotation · socket multiplexing / scale ceiling
-(Tier 3.1) · binary/attachment sync (Tier 4.1) · hunk-level version restore · human device-matrix test.
+(Tier 3.1) · blob GC/object-store polish · hunk-level version restore · human device-matrix test.
 
 ---
 
@@ -69,7 +71,7 @@ normalization. Manifest `Y.Map("files")` keys are remote-controlled; `handleMani
 → silent RCE (Obsidian executes plugin `main.js`) or cross-folder corruption outside the share.
 **Fix.** Add `safeRelPath(relPath): string | null` in a util:
 - reject segments that are `..`, `.`, empty, absolute, contain `:` / backslash / control chars / NUL;
-- reject non-text types (currently `.md` and `.canvas`);
+- reject unsupported types (text is `.md`/`.canvas`; attachments are safe-listed binary extensions);
 - assert `normalizePath(localFolder + "/" + relPath)` stays within `localFolder + "/"`.
 Apply on **both** sides:
 - **Write side** — `onFileCreate`/`onFileModify`/rename: only publish keys that pass.
@@ -329,10 +331,14 @@ A persisted audit log of joins/revokes/security rejections also exists.
 # Tier 4 — Feature parity (L/XL, after robustness)
 
 ### 4.1 — Binary/attachment sync (HIGH user value, L/XL)
-Markdown and `.canvas` text files now sync through the existing Y.Text path. Embedded images/PDFs and
-other binary assets still silently never reach peers and render as broken links — the biggest
-visible-correctness gap. Sync binaries via content-addressed blobs (hash → `blob:` room or object store),
-referenced from the manifest; lazy-fetch on demand.
+**Status.** Implemented the foundation: Markdown and `.canvas` text files still sync through the Y.Text
+path; safe-listed image/PDF/audio/video attachments now upload to `/blob` as content-addressed SHA-256
+objects under `$PERSIST_DIR/blobs`, with manifest `kind:"binary"`/`blobHash`/`blobSize` metadata. Editors
+can upload; any valid role can download. Peers download and write the attachment when the manifest entry
+appears. Server tests and real-server e2e cover blob validation, editor upload, viewer download, and
+viewer upload rejection.
+**Remaining.** Blob garbage collection, object-store offload for very large vaults, richer conflict UI for
+same binary changed on two devices, and human mobile testing with real images/PDFs.
 
 ### 4.2 — Inline / side-by-side version diff (M)
 History preview is no longer only a raw 4000-char dump: the sidebar can compare a saved version with

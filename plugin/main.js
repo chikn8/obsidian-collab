@@ -42,7 +42,7 @@ module.exports = __toCommonJS(main_exports);
 var import_obsidian10 = require("obsidian");
 
 // src/collab/SyncManager.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 
 // node_modules/lib0/map.js
 var create = () => /* @__PURE__ */ new Map();
@@ -11101,6 +11101,82 @@ function sendFrame(provider, type, payload) {
   }
 }
 
+// src/utils/http.ts
+var import_obsidian3 = require("obsidian");
+async function getJson(url) {
+  const res = await (0, import_obsidian3.requestUrl)({ url, method: "GET", throw: false });
+  return { ok: res.status >= 200 && res.status < 300, status: res.status, body: res.json };
+}
+async function postJson(url, body, headers) {
+  const res = await (0, import_obsidian3.requestUrl)({
+    url,
+    method: "POST",
+    body: body === void 0 ? void 0 : JSON.stringify(body),
+    headers: body === void 0 ? headers : { "Content-Type": "application/json", ...headers || {} },
+    throw: false
+  });
+  return { ok: res.status >= 200 && res.status < 300, status: res.status, body: res.json };
+}
+async function putBinary(url, body, headers) {
+  const res = await (0, import_obsidian3.requestUrl)({
+    url,
+    method: "PUT",
+    body,
+    headers: { "Content-Type": "application/octet-stream", ...headers || {} },
+    throw: false
+  });
+  return { ok: res.status >= 200 && res.status < 300, status: res.status, body: res.json };
+}
+async function getBinary(url) {
+  const res = await (0, import_obsidian3.requestUrl)({ url, method: "GET", throw: false });
+  return { ok: res.status >= 200 && res.status < 300, status: res.status, body: res.arrayBuffer || null };
+}
+
+// src/utils/binary.ts
+var SYNCABLE_BINARY_EXTENSIONS = [
+  "avif",
+  "bmp",
+  "gif",
+  "heic",
+  "jpeg",
+  "jpg",
+  "png",
+  "svg",
+  "webp",
+  "pdf",
+  "aac",
+  "flac",
+  "m4a",
+  "mp3",
+  "ogg",
+  "opus",
+  "wav",
+  "m4v",
+  "mov",
+  "mp4",
+  "mpeg",
+  "webm"
+];
+var MAX_SYNCABLE_BINARY_BYTES = 25 * 1024 * 1024;
+function binaryExtension(path) {
+  var _a2, _b2;
+  return ((_b2 = (_a2 = path.split("/").pop()) == null ? void 0 : _a2.split(".").pop()) == null ? void 0 : _b2.toLowerCase()) || "";
+}
+function isSyncableBinaryPath(path) {
+  return SYNCABLE_BINARY_EXTENSIONS.includes(binaryExtension(path));
+}
+async function sha256Hex(data) {
+  const hash2 = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hash2)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+function buffersEqual(a, b) {
+  if (a.byteLength !== b.byteLength) return false;
+  const av = new Uint8Array(a);
+  const bv = new Uint8Array(b);
+  for (let i = 0; i < av.length; i++) if (av[i] !== bv[i]) return false;
+  return true;
+}
+
 // src/utils/manifestLogic.ts
 var RESURRECT_GRACE_MS = 2e3;
 var SYNCABLE_TEXT_EXTENSIONS = ["md", "canvas"];
@@ -11108,6 +11184,9 @@ function isSyncableTextPath(path) {
   var _a2, _b2;
   const ext = ((_b2 = (_a2 = path.split("/").pop()) == null ? void 0 : _a2.split(".").pop()) == null ? void 0 : _b2.toLowerCase()) || "";
   return SYNCABLE_TEXT_EXTENSIONS.includes(ext);
+}
+function isSyncablePath(path) {
+  return isSyncableTextPath(path) || isSyncableBinaryPath(path);
 }
 function shouldResurrect(args2) {
   if (args2.renamedTo) return false;
@@ -11122,11 +11201,11 @@ function normalizeVaultPath(input) {
   }
   return out.join("/");
 }
-function safeRelPath(relPath, localFolder = "") {
+function safeRelPath(relPath, localFolder = "", opts) {
   if (typeof relPath !== "string" || relPath.length === 0) return null;
   if (relPath.startsWith("/") || relPath.includes("\\") || relPath.includes(":")) return null;
   if (/[\x00-\x1F\x7F]/.test(relPath)) return null;
-  if (!isSyncableTextPath(relPath)) return null;
+  if ((opts == null ? void 0 : opts.textOnly) ? !isSyncableTextPath(relPath) : !isSyncablePath(relPath)) return null;
   const parts = relPath.split("/");
   if (parts.some((part) => !part || part === "." || part === "..")) return null;
   const normalizedRel = parts.join("/");
@@ -11437,8 +11516,8 @@ var SyncManager = class {
     this.share = share;
     this.onStatusChange = onStatusChange;
     this.onUsersChange = onUsersChange;
-    this.debouncedPresence = (0, import_obsidian3.debounce)(() => this.renderPresence(), 120, false);
-    this.debouncedStatus = (0, import_obsidian3.debounce)(() => this.emitStatus(), 400, false);
+    this.debouncedPresence = (0, import_obsidian4.debounce)(() => this.renderPresence(), 120, false);
+    this.debouncedStatus = (0, import_obsidian4.debounce)(() => this.emitStatus(), 400, false);
   }
   get shareId() {
     return this.share.id;
@@ -11485,7 +11564,7 @@ var SyncManager = class {
   stampEdit(relPath) {
     let fn = this.stampDebounce.get(relPath);
     if (!fn) {
-      fn = (0, import_obsidian3.debounce)(() => {
+      fn = (0, import_obsidian4.debounce)(() => {
         if (!this.editsMap) return;
         this.editsMap.set(relPath, { by: this.settings.displayName, at: Date.now() });
       }, 3e3, false);
@@ -11630,14 +11709,27 @@ var SyncManager = class {
     }
     if (this.role === "editor") {
       for (const filePath of localFiles) {
-        if (!(this.app.vault.getAbstractFileByPath(filePath) instanceof import_obsidian3.TFile)) continue;
+        if (!(this.app.vault.getAbstractFileByPath(filePath) instanceof import_obsidian4.TFile)) continue;
         const relPath = this.toRelativePath(filePath);
         if (!this.safeManifestRelPath(relPath, "startup local publish")) continue;
         const entry = this.manifestMap.get(relPath);
         if (shouldPublishLocalOnStartup(entry)) {
-          const fileId = newFileId();
-          this.fileIds.set(relPath, fileId);
-          this.manifestMap.set(relPath, liveManifestEntry(void 0, relPath, fileId, this.settings.displayName));
+          if (isSyncableBinaryPath(relPath)) {
+            await this.publishBinaryFile(relPath, filePath, void 0, "startup-create");
+          } else {
+            const fileId = newFileId();
+            this.fileIds.set(relPath, fileId);
+            this.manifestMap.set(relPath, liveManifestEntry(void 0, relPath, fileId, this.settings.displayName, { kind: "text" }));
+          }
+        } else if ((entry == null ? void 0 : entry.exists) && this.entryKind(relPath, entry) === "binary") {
+          const file = this.app.vault.getAbstractFileByPath(filePath);
+          const info = file instanceof import_obsidian4.TFile ? await this.readBinaryInfo(file) : null;
+          if (info && (info.hash !== entry.blobHash || info.size !== entry.blobSize)) {
+            const localMtime = file instanceof import_obsidian4.TFile ? file.stat.mtime : 0;
+            if (localMtime > (entry.blobUpdatedAt || entry.lastModified || 0) + 2e3) {
+              await this.publishBinaryFile(relPath, filePath, entry, "startup-offline");
+            }
+          }
         }
       }
     }
@@ -11647,6 +11739,10 @@ var SyncManager = class {
       if (!safeRel) continue;
       if (!entry.exists) continue;
       const fullPath = this.toFullPath(safeRel);
+      if (this.entryKind(safeRel, entry) === "binary") {
+        await this.applyRemoteBinary(safeRel, entry);
+        continue;
+      }
       const file = this.app.vault.getAbstractFileByPath(fullPath);
       if (!file) {
         const dir = fullPath.substring(0, fullPath.lastIndexOf("/"));
@@ -11661,6 +11757,7 @@ var SyncManager = class {
       const safeRel = this.safeManifestRelPath(relPath, "startup provider");
       if (!safeRel) continue;
       if (!entry.exists) continue;
+      if (this.entryKind(safeRel, entry) !== "text") continue;
       const fullPath = this.toFullPath(safeRel);
       if (!this.fileProviders.has(safeRel)) {
         await this.createFileProvider(safeRel, fullPath);
@@ -11713,6 +11810,11 @@ var SyncManager = class {
       });
       const fullPath = this.toFullPath(relPath);
       if (entry.exists && change.action !== "delete") {
+        if (this.entryKind(relPath, entry) === "binary") {
+          if (entry.fileId) this.fileIds.set(relPath, entry.fileId);
+          await this.applyRemoteBinary(relPath, entry);
+          continue;
+        }
         const knownId = this.fileIds.get(relPath);
         if (entry.fileId && knownId && knownId !== entry.fileId) {
           const stale = this.fileProviders.get(relPath);
@@ -11752,7 +11854,8 @@ var SyncManager = class {
     const provider = this.fileProviders.get(safeRel);
     const file = this.app.vault.getAbstractFileByPath(fullPath);
     const deletedAt = entry.deletedAt || entry.lastModified || 0;
-    if (this.role === "editor" && file instanceof import_obsidian3.TFile && shouldResurrect({ localMtime: file.stat.mtime, deletedAt, renamedTo: entry.renamedTo })) {
+    const isBinary = this.entryKind(safeRel, entry) === "binary";
+    if (this.role === "editor" && file instanceof import_obsidian4.TFile && shouldResurrect({ localMtime: file.stat.mtime, deletedAt, renamedTo: entry.renamedTo })) {
       trace("manifest", "tombstone-resurrect", {
         shareId: this.histShareId,
         relPath: safeRel,
@@ -11766,11 +11869,11 @@ var SyncManager = class {
         lastModified: Date.now(),
         resurrectedBy: this.settings.displayName
       }));
-      new import_obsidian3.Notice(`"${safeRel}" was edited after being deleted \u2014 kept`);
+      new import_obsidian4.Notice(`"${safeRel}" was edited after being deleted \u2014 kept`);
       log("delete", "resurrected (edited after delete)", safeRel);
       return true;
     }
-    if (file instanceof import_obsidian3.TFile) {
+    if (file instanceof import_obsidian4.TFile) {
       trace("manifest", "tombstone-apply", {
         shareId: this.histShareId,
         relPath: safeRel,
@@ -11781,13 +11884,13 @@ var SyncManager = class {
       if (notifyIfOpen) {
         const activeFile = this.app.workspace.getActiveFile();
         if (activeFile && activeFile.path === fullPath && !entry.renamedTo) {
-          new import_obsidian3.Notice(`"${safeRel}" was deleted by ${entry.deletedBy || "collaborator"}`);
+          new import_obsidian4.Notice(`"${safeRel}" was deleted by ${entry.deletedBy || "collaborator"}`);
         }
       }
       if (provider) {
         await provider.flushSnapshot();
         await provider.saveToTrash();
-      } else {
+      } else if (!isBinary) {
         const content = await this.app.vault.read(file).catch(() => "");
         if (content.length > 0) {
           await FileProvider.saveTextSnapshot(this.app, fullPath, content).catch((e) => log("delete", "startup snapshot failed", fullPath, e));
@@ -11819,7 +11922,7 @@ var SyncManager = class {
       });
       let content = "";
       const file = this.app.vault.getAbstractFileByPath(fullPath);
-      if (file instanceof import_obsidian3.TFile) {
+      if (file instanceof import_obsidian4.TFile) {
         content = await this.app.vault.read(file);
       }
       const fp = new FileProvider({
@@ -11854,6 +11957,118 @@ var SyncManager = class {
       this.creatingProviders.delete(relPath);
     }
   }
+  entryKind(relPath, entry) {
+    if ((entry == null ? void 0 : entry.kind) === "binary") return "binary";
+    return isSyncableBinaryPath(relPath) ? "binary" : "text";
+  }
+  blobQuery(params2) {
+    const q = new URLSearchParams();
+    q.set("token", shareToken(this.share, this.settings.serverPassword));
+    for (const [key, value] of Object.entries(shareAuthParams(this.share))) q.set(key, value);
+    if (this.share.inviteId && this.settings.identityPublicKey && this.settings.identitySignature) {
+      q.set("uid", this.settings.uid);
+      q.set("identityKey", this.settings.identityPublicKey);
+      q.set("identitySig", this.settings.identitySignature);
+    }
+    for (const [key, value] of Object.entries(params2)) q.set(key, String(value));
+    return q.toString();
+  }
+  async readBinaryInfo(file) {
+    try {
+      const data = await this.app.vault.readBinary(file);
+      if (data.byteLength > MAX_SYNCABLE_BINARY_BYTES) {
+        new import_obsidian4.Notice(`"${file.name}" is too large to sync as an attachment.`);
+        trace("blob", "local-too-large", { path: file.path, size: data.byteLength, max: MAX_SYNCABLE_BINARY_BYTES });
+        return null;
+      }
+      return { data, hash: await sha256Hex(data), size: data.byteLength };
+    } catch (e) {
+      trace("blob", "read-error", { path: file.path, error: e });
+      return null;
+    }
+  }
+  async publishBinaryFile(relPath, fullPath, prev, reason = "local") {
+    if (!this.manifestMap || this.role !== "editor") return;
+    const safeRel = this.safeManifestRelPath(relPath, `binary ${reason}`);
+    if (!safeRel || !isSyncableBinaryPath(safeRel)) return;
+    const file = this.app.vault.getAbstractFileByPath(fullPath);
+    if (!(file instanceof import_obsidian4.TFile)) return;
+    const info = await this.readBinaryInfo(file);
+    if (!info) return;
+    if ((prev == null ? void 0 : prev.kind) === "binary" && prev.blobHash === info.hash && prev.blobSize === info.size) return;
+    const url = `${httpBase(this.settings.serverUrl)}/blob?${this.blobQuery({
+      share: this.histShareId,
+      path: safeRel,
+      hash: info.hash,
+      size: info.size
+    })}`;
+    const res = await putBinary(url, info.data);
+    if (!res.ok) {
+      trace("blob", "upload-failed", { shareId: this.histShareId, relPath: safeRel, status: res.status, hash: info.hash, size: info.size });
+      new import_obsidian4.Notice(`Could not sync attachment "${file.name}" (${res.status}).`);
+      return;
+    }
+    const fileId = (prev == null ? void 0 : prev.fileId) || this.fileIds.get(safeRel) || newFileId();
+    this.fileIds.set(safeRel, fileId);
+    this.manifestMap.set(safeRel, liveManifestEntry(prev, safeRel, fileId, this.settings.displayName, {
+      kind: "binary",
+      blobHash: info.hash,
+      blobSize: info.size,
+      blobUpdatedAt: Date.now()
+    }));
+    trace("blob", "published", { shareId: this.histShareId, relPath: safeRel, hash: info.hash, size: info.size, reason });
+  }
+  async applyRemoteBinary(relPath, entry) {
+    const safeRel = this.safeManifestRelPath(relPath, "remote binary");
+    if (!safeRel || !entry.blobHash) return;
+    const fullPath = this.toFullPath(safeRel);
+    const existing = this.app.vault.getAbstractFileByPath(fullPath);
+    if (existing instanceof import_obsidian4.TFile) {
+      const local = await this.readBinaryInfo(existing);
+      if ((local == null ? void 0 : local.hash) === entry.blobHash && local.size === entry.blobSize) return;
+    }
+    const url = `${httpBase(this.settings.serverUrl)}/blob?${this.blobQuery({
+      share: this.histShareId,
+      hash: entry.blobHash
+    })}`;
+    const res = await getBinary(url);
+    if (!res.ok || !res.body) {
+      trace("blob", "download-failed", { shareId: this.histShareId, relPath: safeRel, status: res.status, hash: entry.blobHash });
+      return;
+    }
+    const hash2 = await sha256Hex(res.body);
+    if (hash2 !== entry.blobHash || entry.blobSize != null && res.body.byteLength !== entry.blobSize) {
+      trace("blob", "download-hash-mismatch", {
+        shareId: this.histShareId,
+        relPath: safeRel,
+        expectedHash: entry.blobHash,
+        actualHash: hash2,
+        expectedSize: entry.blobSize,
+        actualSize: res.body.byteLength
+      });
+      return;
+    }
+    if (existing instanceof import_obsidian4.TFile) {
+      const current = await this.app.vault.readBinary(existing).catch(() => null);
+      if (current && buffersEqual(current, res.body)) return;
+    } else {
+      const dir = fullPath.substring(0, fullPath.lastIndexOf("/"));
+      if (dir) await this.ensureFolder(dir);
+    }
+    beginRemoteApply();
+    try {
+      this.echo.mark(fullPath, hash2);
+      if (existing instanceof import_obsidian4.TFile) {
+        await this.app.vault.modifyBinary(existing, res.body);
+      } else {
+        this.echo.markCreated(fullPath);
+        await this.app.vault.createBinary(fullPath, res.body);
+      }
+      trace("blob", "applied", { shareId: this.histShareId, relPath: safeRel, hash: hash2, size: res.body.byteLength });
+    } finally {
+      endRemoteApply();
+    }
+  }
   /** Create an empty file, marking it so its create event is dropped as an echo. */
   async guardedCreate(fullPath) {
     this.echo.markCreated(fullPath);
@@ -11880,6 +12095,7 @@ var SyncManager = class {
   }
   // -- Vault event handlers (routed from main.ts) --
   onFileCreate(file) {
+    var _a2;
     if (!this.isInLinkedFolder(file.path)) return;
     if (!this.isSyncableFile(file)) return;
     if (this.role !== "editor") return;
@@ -11887,6 +12103,10 @@ var SyncManager = class {
     const relPath = this.toRelativePath(file.path);
     if (!this.safeManifestRelPath(relPath, "local create")) return;
     trace("vault", "local-create", { shareId: this.histShareId, relPath, path: file.path });
+    if (isSyncableBinaryPath(relPath)) {
+      void this.publishBinaryFile(relPath, file.path, (_a2 = this.manifestMap) == null ? void 0 : _a2.get(relPath), "create").then(() => this.emitStatus());
+      return;
+    }
     if (this.manifestMap) {
       const prev = this.manifestMap.get(relPath);
       const fileId = (prev == null ? void 0 : prev.fileId) || newFileId();
@@ -11899,12 +12119,21 @@ var SyncManager = class {
     this.emitStatus();
   }
   async onFileModify(file) {
+    var _a2;
     if (!this.isInLinkedFolder(file.path)) return;
     if (!this.isSyncableFile(file)) return;
     if (this.role !== "editor") return;
     if (isApplyingRemote()) return;
     const relPath = this.toRelativePath(file.path);
     if (!this.safeManifestRelPath(relPath, "local modify")) return;
+    if (isSyncableBinaryPath(relPath)) {
+      const info = await this.readBinaryInfo(file);
+      if (!info) return;
+      if (this.echo.isEcho(file.path, info.hash)) return;
+      await this.publishBinaryFile(relPath, file.path, (_a2 = this.manifestMap) == null ? void 0 : _a2.get(relPath), "modify");
+      this.emitStatus();
+      return;
+    }
     const fp = this.fileProviders.get(relPath);
     if (fp) {
       const content = await this.app.vault.read(file);
@@ -11956,7 +12185,7 @@ var SyncManager = class {
   async onFileRename(file, oldPath) {
     if (this.role !== "editor") return;
     if (isApplyingRemote()) return;
-    const oldWasSyncable = this.isInLinkedFolder(oldPath) && isSyncableTextPath(oldPath);
+    const oldWasSyncable = this.isInLinkedFolder(oldPath) && isSyncablePath(oldPath);
     const newIsSyncable = this.isInLinkedFolder(file.path) && this.isSyncableFile(file);
     trace("vault", "local-rename", {
       shareId: this.histShareId,
@@ -11965,8 +12194,13 @@ var SyncManager = class {
       oldWasSyncable,
       newIsSyncable
     });
-    if (oldWasSyncable && newIsSyncable) {
+    if (oldWasSyncable && newIsSyncable && isSyncableTextPath(oldPath) && isSyncableTextPath(file.path)) {
       await this.transferRename(oldPath, file.path);
+    } else if (oldWasSyncable && newIsSyncable && isSyncableBinaryPath(oldPath) && isSyncableBinaryPath(file.path)) {
+      await this.transferBinaryRename(oldPath, file.path);
+    } else if (oldWasSyncable && newIsSyncable) {
+      await this.tombstoneByRelPath(this.toRelativePath(oldPath));
+      this.onFileCreate(file);
     } else if (oldWasSyncable && !newIsSyncable) {
       await this.tombstoneByRelPath(this.toRelativePath(oldPath));
     } else if (!oldWasSyncable && newIsSyncable) {
@@ -11986,8 +12220,8 @@ var SyncManager = class {
     const children = [];
     const walk = (f) => {
       for (const c of f.children) {
-        if (c instanceof import_obsidian3.TFile && this.isSyncableFile(c)) children.push(c);
-        else if (c instanceof import_obsidian3.TFolder) walk(c);
+        if (c instanceof import_obsidian4.TFile && this.isSyncableFile(c)) children.push(c);
+        else if (c instanceof import_obsidian4.TFolder) walk(c);
       }
     };
     walk(folder);
@@ -12089,6 +12323,49 @@ var SyncManager = class {
     trace("manifest", "rename-transfer-done", { shareId: this.histShareId, oldRel, newRel, fileId });
     this.emitStatus();
   }
+  /** Rename a binary attachment by moving its blob metadata to the new path. */
+  async transferBinaryRename(oldPath, newPath) {
+    var _a2;
+    const oldRel = this.toRelativePath(oldPath);
+    const newRel = this.toRelativePath(newPath);
+    if (!this.safeManifestRelPath(oldRel, "local binary rename old")) return;
+    if (!this.safeManifestRelPath(newRel, "local binary rename new")) return;
+    if (oldRel === newRel) return;
+    const oldEntry = ((_a2 = this.manifestMap) == null ? void 0 : _a2.get(oldRel)) || {};
+    if (!oldEntry.blobHash) {
+      await this.publishBinaryFile(newRel, newPath, void 0, "rename-create");
+      await this.tombstoneByRelPath(oldRel);
+      return;
+    }
+    const fileId = oldEntry.fileId || this.fileIds.get(oldRel) || newFileId();
+    this.fileIds.delete(oldRel);
+    this.fileIds.set(newRel, fileId);
+    if (this.manifestMap) {
+      this.manifestDoc.transact(() => {
+        this.manifestMap.set(newRel, liveManifestEntry(oldEntry, newRel, fileId, this.settings.displayName, {
+          kind: "binary",
+          blobHash: oldEntry.blobHash,
+          blobSize: oldEntry.blobSize,
+          blobUpdatedAt: oldEntry.blobUpdatedAt || oldEntry.lastModified || Date.now(),
+          renamedFrom: oldRel,
+          lastModified: Date.now()
+        }));
+        this.manifestMap.set(oldRel, {
+          ...oldEntry,
+          fileId,
+          path: oldRel,
+          exists: false,
+          deleted: true,
+          renamedTo: newRel,
+          lastModified: Date.now(),
+          deletedBy: this.settings.displayName,
+          deletedAt: Date.now()
+        });
+      });
+    }
+    trace("blob", "renamed", { shareId: this.histShareId, oldRel, newRel, fileId, hash: oldEntry.blobHash });
+    this.emitStatus();
+  }
   /** Broadcast which file (if any) this user has open, for presence avatars. */
   setPresence(activeFile) {
     var _a2, _b2;
@@ -12135,7 +12412,7 @@ var SyncManager = class {
    */
   async restoreDeletedFile(relPath) {
     if (this.role !== "editor") {
-      new import_obsidian3.Notice("This share is read-only on this device.");
+      new import_obsidian4.Notice("This share is read-only on this device.");
       return false;
     }
     if (!this.manifestMap) return false;
@@ -12181,7 +12458,7 @@ var SyncManager = class {
    */
   renderPresence() {
     if (!this.manifestProvider) return;
-    if (import_obsidian3.Platform.isMobile) return;
+    if (import_obsidian4.Platform.isMobile) return;
     try {
       this.renderPresenceDesktop();
     } catch (e) {
@@ -12314,13 +12591,13 @@ var SyncManager = class {
   }
   getLocalFiles() {
     const folder = this.app.vault.getAbstractFileByPath(this.share.localFolder);
-    if (!(folder instanceof import_obsidian3.TFolder)) return [];
+    if (!(folder instanceof import_obsidian4.TFolder)) return [];
     const files = [];
     const recurse = (f) => {
       for (const child of f.children) {
-        if (child instanceof import_obsidian3.TFile && this.isSyncableFile(child)) {
+        if (child instanceof import_obsidian4.TFile && this.isSyncableFile(child)) {
           files.push(child.path);
-        } else if (child instanceof import_obsidian3.TFolder) {
+        } else if (child instanceof import_obsidian4.TFolder) {
           recurse(child);
         }
       }
@@ -12336,7 +12613,7 @@ var SyncManager = class {
     for (const part of parts) {
       cur = cur ? `${cur}/${part}` : part;
       const existing = this.app.vault.getAbstractFileByPath(cur);
-      if (existing instanceof import_obsidian3.TFolder) continue;
+      if (existing instanceof import_obsidian4.TFolder) continue;
       if (existing) throw new Error(`Cannot create folder "${cur}"; a file exists there.`);
       await this.app.vault.createFolder(cur).catch((e) => {
         if (!this.app.vault.getAbstractFileByPath(cur)) throw e;
@@ -12344,12 +12621,12 @@ var SyncManager = class {
     }
   }
   isSyncableFile(file) {
-    return isSyncableTextPath(file.path);
+    return isSyncablePath(file.path);
   }
 };
 
 // src/collab/InstanceWatch.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 var HEARTBEAT_MS = 3e4;
 var FRESH_MS = 75e3;
 var InstanceWatch = class {
@@ -12416,7 +12693,7 @@ var InstanceWatch = class {
     if (others > 0 && !this.warned) {
       this.warned = true;
       log("loop", "another Obsidian instance detected on this vault");
-      new import_obsidian4.Notice(
+      new import_obsidian5.Notice(
         "Heads up: this vault looks open in another Obsidian instance. Collab edits still merge safely, but close one to avoid extra sync churn.",
         12e3
       );
@@ -12498,19 +12775,19 @@ var StatusBarWidget = class {
 };
 
 // src/ui/SettingsTab.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/ui/modals.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 function promptModal(app, opts) {
   return new Promise((resolve) => {
     var _a2;
-    const modal = new import_obsidian5.Modal(app);
+    const modal = new import_obsidian6.Modal(app);
     modal.titleEl.setText(opts.title);
     const values = {};
     for (const f of opts.fields) values[f.key] = (_a2 = f.value) != null ? _a2 : "";
     for (const f of opts.fields) {
-      new import_obsidian5.Setting(modal.contentEl).setName(f.label).addText((t) => {
+      new import_obsidian6.Setting(modal.contentEl).setName(f.label).addText((t) => {
         var _a3;
         t.setPlaceholder((_a3 = f.placeholder) != null ? _a3 : "").setValue(values[f.key]);
         t.onChange((v) => values[f.key] = v);
@@ -12518,7 +12795,7 @@ function promptModal(app, opts) {
       });
     }
     let submitted = false;
-    new import_obsidian5.Setting(modal.contentEl).addButton(
+    new import_obsidian6.Setting(modal.contentEl).addButton(
       (b) => {
         var _a3;
         return b.setButtonText((_a3 = opts.cta) != null ? _a3 : "OK").setCta().onClick(() => {
@@ -12536,7 +12813,7 @@ function promptModal(app, opts) {
 }
 
 // src/ui/SettingsTab.ts
-var CollabSettingsTab = class extends import_obsidian6.PluginSettingTab {
+var CollabSettingsTab = class extends import_obsidian7.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -12545,40 +12822,40 @@ var CollabSettingsTab = class extends import_obsidian6.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Real-Time Collaboration" });
-    new import_obsidian6.Setting(containerEl).setName("Server URL").setDesc("WebSocket server address for Yjs sync.").addText(
+    new import_obsidian7.Setting(containerEl).setName("Server URL").setDesc("WebSocket server address for Yjs sync.").addText(
       (text2) => text2.setPlaceholder("wss://obsidiansync-production.up.railway.app").setValue(this.plugin.settings.serverUrl).onChange(async (value) => {
         this.plugin.settings.serverUrl = value.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Server Password").setDesc("Global password for the legacy shared folder. Must match the server's AUTH_TOKEN.").addText((text2) => {
+    new import_obsidian7.Setting(containerEl).setName("Server Password").setDesc("Global password for the legacy shared folder. Must match the server's AUTH_TOKEN.").addText((text2) => {
       text2.inputEl.type = "password";
       text2.setPlaceholder("Enter password").setValue(this.plugin.settings.serverPassword).onChange(async (value) => {
         this.plugin.settings.serverPassword = value;
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian6.Setting(containerEl).setName("Share admin token").setDesc("Creates new shares through the server without storing SERVER_SECRET on this device. Must match SHARE_MINT_TOKEN.").addText((text2) => {
+    new import_obsidian7.Setting(containerEl).setName("Share admin token").setDesc("Creates new shares through the server without storing SERVER_SECRET on this device. Must match SHARE_MINT_TOKEN.").addText((text2) => {
       text2.inputEl.type = "password";
       text2.setPlaceholder("Enter share admin token").setValue(this.plugin.settings.shareMintToken).onChange(async (value) => {
         this.plugin.settings.shareMintToken = value;
         await this.plugin.saveSettings(false);
       });
     });
-    new import_obsidian6.Setting(containerEl).setName("Legacy server secret").setDesc("Deprecated fallback for older servers that cannot mint shares. Avoid storing SERVER_SECRET in client settings.").addText((text2) => {
+    new import_obsidian7.Setting(containerEl).setName("Legacy server secret").setDesc("Deprecated fallback for older servers that cannot mint shares. Avoid storing SERVER_SECRET in client settings.").addText((text2) => {
       text2.inputEl.type = "password";
       text2.setPlaceholder("Avoid unless using an old server").setValue(this.plugin.settings.serverSecret).onChange(async (value) => {
         this.plugin.settings.serverSecret = value;
         await this.plugin.saveSettings(false);
       });
     });
-    new import_obsidian6.Setting(containerEl).setName("Display Name").setDesc("Shown to collaborators (and its first letter becomes your avatar).").addText(
+    new import_obsidian7.Setting(containerEl).setName("Display Name").setDesc("Shown to collaborators (and its first letter becomes your avatar).").addText(
       (text2) => text2.setPlaceholder("Anonymous").setValue(this.plugin.settings.displayName).onChange(async (value) => {
         this.plugin.settings.displayName = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Cursor / Avatar Color").setDesc("Your color visible to others.").addText((text2) => {
+    new import_obsidian7.Setting(containerEl).setName("Cursor / Avatar Color").setDesc("Your color visible to others.").addText((text2) => {
       text2.inputEl.type = "color";
       text2.inputEl.style.width = "60px";
       text2.inputEl.style.padding = "2px";
@@ -12587,25 +12864,25 @@ var CollabSettingsTab = class extends import_obsidian6.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian6.Setting(containerEl).setName("ntfy Topic (mentions)").setDesc("Your ntfy.sh topic to receive @mention push notifications. Leave blank to disable.").addText(
+    new import_obsidian7.Setting(containerEl).setName("ntfy Topic (mentions)").setDesc("Your ntfy.sh topic to receive @mention push notifications. Leave blank to disable.").addText(
       (text2) => text2.setPlaceholder("e.g. elijah-cli-xxxx").setValue(this.plugin.settings.ntfyTopic).onChange(async (value) => {
         this.plugin.settings.ntfyTopic = value.trim();
         await this.plugin.saveSettings(false);
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Debug logging").setDesc("Verbose console logs for bug-testing (open the dev console).").addToggle(
+    new import_obsidian7.Setting(containerEl).setName("Debug logging").setDesc("Verbose console logs for bug-testing (open the dev console).").addToggle(
       (t) => t.setValue(this.plugin.settings.debugLogging).onChange(async (v) => {
         this.plugin.settings.debugLogging = v;
         await this.plugin.saveSettings(false);
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Diagnostic trace file").setDesc("Write redacted structured sync diagnostics to the vault for feedback-loop debugging.").addToggle(
+    new import_obsidian7.Setting(containerEl).setName("Diagnostic trace file").setDesc("Write redacted structured sync diagnostics to the vault for feedback-loop debugging.").addToggle(
       (t) => t.setValue(this.plugin.settings.diagnosticLogging).onChange(async (v) => {
         this.plugin.settings.diagnosticLogging = v;
         await this.plugin.saveSettings(false);
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Diagnostics").setDesc("Capture or export redacted sync events for debugging lost saves, loops, and presence glitches.").addButton(
+    new import_obsidian7.Setting(containerEl).setName("Diagnostics").setDesc("Capture or export redacted sync events for debugging lost saves, loops, and presence glitches.").addButton(
       (b) => b.setButtonText("Trace 2 min").onClick(() => {
         this.plugin.startDiagnosticTraceInteractive();
       })
@@ -12615,7 +12892,7 @@ var CollabSettingsTab = class extends import_obsidian6.PluginSettingTab {
       })
     );
     containerEl.createEl("h3", { text: "Shared Folders" });
-    new import_obsidian6.Setting(containerEl).setName("Add a shared folder").setDesc("Share one of your folders with someone, or join a folder someone shared with you.").addButton(
+    new import_obsidian7.Setting(containerEl).setName("Add a shared folder").setDesc("Share one of your folders with someone, or join a folder someone shared with you.").addButton(
       (b) => b.setButtonText("Share a folder\u2026").onClick(async () => {
         await this.plugin.shareFolderInteractive();
         this.display();
@@ -12636,7 +12913,7 @@ var CollabSettingsTab = class extends import_obsidian6.PluginSettingTab {
     for (const share of this.plugin.settings.shares) {
       const role = share.role || "editor";
       const tags = [share.legacy ? "legacy" : null, role !== "editor" ? role : null].filter(Boolean).join(", ");
-      const s = new import_obsidian6.Setting(containerEl).setName(share.label + (tags ? `  (${tags})` : "")).setDesc(share.localFolder);
+      const s = new import_obsidian7.Setting(containerEl).setName(share.label + (tags ? `  (${tags})` : "")).setDesc(share.localFolder);
       if (!share.legacy && (share.ownerKey || hasLegacyMint)) {
         s.addButton(
           (b) => b.setButtonText("Editor link").onClick(async () => {
@@ -12664,13 +12941,13 @@ var CollabSettingsTab = class extends import_obsidian6.PluginSettingTab {
             if (!res) return;
             const role2 = parseRole(res.role);
             if (!role2) {
-              new import_obsidian6.Notice("Role must be viewer, commenter, or editor.");
+              new import_obsidian7.Notice("Role must be viewer, commenter, or editor.");
               return;
             }
             const hoursRaw = res.expiresHours.trim();
             const hours = hoursRaw ? Number(hoursRaw) : 0;
             if (hoursRaw && (!Number.isFinite(hours) || hours <= 0)) {
-              new import_obsidian6.Notice("Expiry must be a positive number of hours.");
+              new import_obsidian7.Notice("Expiry must be a positive number of hours.");
               return;
             }
             const expiresAt = hours > 0 ? Date.now() + hours * 60 * 6e4 : void 0;
@@ -12700,7 +12977,7 @@ var CollabSettingsTab = class extends import_obsidian6.PluginSettingTab {
           invite.expiresAt ? `expires ${new Date(invite.expiresAt).toLocaleString()}` : "no expiry",
           invite.revokedAt ? `revoked ${new Date(invite.revokedAt).toLocaleString()}` : null
         ].filter(Boolean).join(" \xB7 ");
-        const row = new import_obsidian6.Setting(containerEl).setName(`Invite: ${label}`).setDesc(meta);
+        const row = new import_obsidian7.Setting(containerEl).setName(`Invite: ${label}`).setDesc(meta);
         if (!invite.revokedAt && invite.key) {
           row.addButton(
             (b) => b.setButtonText("Copy").onClick(async () => {
@@ -12737,9 +13014,9 @@ function parseRole(value) {
 async function copyToClipboard(text2, okMsg) {
   try {
     await navigator.clipboard.writeText(text2);
-    new import_obsidian6.Notice(okMsg);
+    new import_obsidian7.Notice(okMsg);
   } catch (e) {
-    new import_obsidian6.Notice(`Copy this link manually:
+    new import_obsidian7.Notice(`Copy this link manually:
 ${text2}`, 15e3);
   }
 }
@@ -13807,10 +14084,10 @@ function alphaColor(color, alphaHex) {
 }
 
 // src/ui/CommentsView.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 var COMMENTS_VIEW_TYPE = "collab-comments";
 var REACTIONS = ["\u{1F44D}", "\u2764\uFE0F", "\u{1F389}", "\u{1F604}", "\u{1F440}"];
-var CommentsView = class extends import_obsidian7.ItemView {
+var CommentsView = class extends import_obsidian8.ItemView {
   constructor(leaf) {
     super(leaf);
     this.ctx = null;
@@ -13912,12 +14189,12 @@ var CommentsView = class extends import_obsidian7.ItemView {
       }
     });
     const resolveBtn = actions.createEl("button", { cls: "collab-comment-btn" });
-    (0, import_obsidian7.setIcon)(resolveBtn, t.resolved ? "rotate-ccw" : "check");
+    (0, import_obsidian8.setIcon)(resolveBtn, t.resolved ? "rotate-ccw" : "check");
     resolveBtn.setAttr("aria-label", t.resolved ? "Reopen" : "Resolve");
     resolveBtn.onclick = () => this.ctx.store.setResolved(t.id, !t.resolved);
     if (t.authorUid === this.ctx.me.uid) {
       const del2 = actions.createEl("button", { cls: "collab-comment-btn" });
-      (0, import_obsidian7.setIcon)(del2, "trash-2");
+      (0, import_obsidian8.setIcon)(del2, "trash-2");
       del2.setAttr("aria-label", "Delete thread");
       del2.onclick = () => this.ctx.store.deleteThread(t.id);
     }
@@ -13947,23 +14224,6 @@ function timeAgo(now, then) {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
-}
-
-// src/utils/http.ts
-var import_obsidian8 = require("obsidian");
-async function getJson(url) {
-  const res = await (0, import_obsidian8.requestUrl)({ url, method: "GET", throw: false });
-  return { ok: res.status >= 200 && res.status < 300, status: res.status, body: res.json };
-}
-async function postJson(url, body, headers) {
-  const res = await (0, import_obsidian8.requestUrl)({
-    url,
-    method: "POST",
-    body: body === void 0 ? void 0 : JSON.stringify(body),
-    headers: body === void 0 ? headers : { "Content-Type": "application/json", ...headers || {} },
-    throw: false
-  });
-  return { ok: res.status >= 200 && res.status < 300, status: res.status, body: res.json };
 }
 
 // src/utils/identity.ts

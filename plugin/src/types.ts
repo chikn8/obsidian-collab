@@ -49,6 +49,8 @@ export interface ShareInvite {
  *    deletion replays deterministically and the file is recoverable.
  */
 export interface ManifestEntry {
+  /** Text entries use CRDT rooms; binary entries use content-addressed blobs. */
+  kind?: "text" | "binary";
   /** Stable identity (crypto.randomUUID); assigned on create, preserved across rename. */
   fileId?: string;
   /** Redundant copy of the map key — explicit so renames carry the path. */
@@ -66,6 +68,9 @@ export interface ManifestEntry {
   resurrectedBy?: string;
   lastEditedBy?: string;
   lastEditedAt?: number;
+  blobHash?: string;
+  blobSize?: number;
+  blobUpdatedAt?: number;
 }
 
 /** Current manifest schema version (stored on the manifest doc's `meta` map). */

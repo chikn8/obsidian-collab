@@ -12,7 +12,7 @@ console.log("server share state\n");
 
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "obsidian-collab-share-state-"));
 process.env.PERSIST_DIR = tmp;
-const { getInvite, getMinEpoch, putInvite, revokeInvite, setMinEpoch } = await import("../src/shareState.ts");
+const { bindInviteIdentity, getInvite, getMinEpoch, putInvite, revokeInvite, setMinEpoch } = await import("../src/shareState.ts");
 
 await putInvite("share-1", {
   id: "InviteABC123",
@@ -23,6 +23,12 @@ await putInvite("share-1", {
   expiresAt: 9999999999999,
 });
 check("invite can be read back", (await getInvite("share-1", "InviteABC123"))?.recipient === "Mira");
+const keyA = "A".repeat(100);
+const keyB = "B".repeat(100);
+check("invite identity binds on first use", await bindInviteIdentity("share-1", "InviteABC123", "uid-a", keyA));
+check("bound identity is persisted", (await getInvite("share-1", "InviteABC123"))?.identityPublicKey === keyA);
+check("same invite identity is accepted", await bindInviteIdentity("share-1", "InviteABC123", "uid-a", keyA));
+check("different invite identity is rejected", !(await bindInviteIdentity("share-1", "InviteABC123", "uid-b", keyB)));
 
 await setMinEpoch("share-1", 2);
 check("epoch bump preserves invite", (await getInvite("share-1", "InviteABC123"))?.role === "editor");

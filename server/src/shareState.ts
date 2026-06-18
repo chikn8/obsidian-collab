@@ -21,6 +21,9 @@ export interface ShareInviteEntry {
   recipient?: string;
   expiresAt?: number;
   revokedAt?: number;
+  identityPublicKey?: string;
+  identityUid?: string;
+  identityBoundAt?: number;
 }
 
 interface ShareEntry {
@@ -34,6 +37,16 @@ let loadError: string | null = null;
 let lastSaveOk = true;
 let lastSaveTs = 0;
 let lastSaveError: string | null = null;
+let stateLock: Promise<unknown> = Promise.resolve();
+
+const IDENTITY_B64URL_RE = /^[A-Za-z0-9_-]{16,4096}$/;
+const IDENTITY_UID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+function withStateLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = stateLock.then(fn, fn);
+  stateLock = run.then(() => undefined, () => undefined);
+  return run;
+}
 
 function parseState(raw: string): State {
   const parsed = JSON.parse(raw);
@@ -57,7 +70,12 @@ function parseState(raw: string): State {
           !Number.isFinite(invite.epoch) ||
           !Number.isFinite(invite.createdAt) ||
           (invite.expiresAt !== undefined && !Number.isFinite(invite.expiresAt)) ||
-          (invite.revokedAt !== undefined && !Number.isFinite(invite.revokedAt))
+          (invite.revokedAt !== undefined && !Number.isFinite(invite.revokedAt)) ||
+          (invite.identityPublicKey !== undefined &&
+            (typeof invite.identityPublicKey !== "string" || !IDENTITY_B64URL_RE.test(invite.identityPublicKey))) ||
+          (invite.identityUid !== undefined &&
+            (typeof invite.identityUid !== "string" || !IDENTITY_UID_RE.test(invite.identityUid))) ||
+          (invite.identityBoundAt !== undefined && !Number.isFinite(invite.identityBoundAt))
         ) {
           throw new Error(`invalid invite ${inviteId} for ${shareId}`);
         }
@@ -118,20 +136,24 @@ export async function getMinEpoch(shareId: string): Promise<number> {
 
 /** Raise the revocation watermark; idempotent (never lowers it). */
 export async function setMinEpoch(shareId: string, epoch: number): Promise<void> {
-  const s = await load();
-  const cur = s[shareId]?.minEpoch ?? 0;
-  if (epoch > cur) {
-    s[shareId] = { ...(s[shareId] || {}), minEpoch: epoch };
-    await save();
-    console.log(`[shareState] ${shareId} minEpoch -> ${epoch}`);
-  }
+  await withStateLock(async () => {
+    const s = await load();
+    const cur = s[shareId]?.minEpoch ?? 0;
+    if (epoch > cur) {
+      s[shareId] = { ...(s[shareId] || {}), minEpoch: epoch };
+      await save();
+      console.log(`[shareState] ${shareId} minEpoch -> ${epoch}`);
+    }
+  });
 }
 
 export async function putInvite(shareId: string, invite: ShareInviteEntry): Promise<void> {
-  const s = await load();
-  const entry = shareEntry(s, shareId);
-  entry.invites![invite.id] = invite;
-  await save();
+  await withStateLock(async () => {
+    const s = await load();
+    const entry = shareEntry(s, shareId);
+    entry.invites![invite.id] = invite;
+    await save();
+  });
 }
 
 export async function getInvite(shareId: string, inviteId: string): Promise<ShareInviteEntry | null> {
@@ -140,14 +162,43 @@ export async function getInvite(shareId: string, inviteId: string): Promise<Shar
 }
 
 export async function revokeInvite(shareId: string, inviteId: string, revokedAt = Date.now()): Promise<ShareInviteEntry | null> {
-  const s = await load();
-  const invite = s[shareId]?.invites?.[inviteId];
-  if (!invite) return null;
-  if (!invite.revokedAt) {
-    invite.revokedAt = revokedAt;
-    await save();
-  }
-  return invite;
+  return withStateLock(async () => {
+    const s = await load();
+    const invite = s[shareId]?.invites?.[inviteId];
+    if (!invite) return null;
+    if (!invite.revokedAt) {
+      invite.revokedAt = revokedAt;
+      await save();
+    }
+    return invite;
+  });
+}
+
+/**
+ * First valid signed install to use an invite claims it. Future uses must carry
+ * the same uid+public key; this keeps invite links revocable without accounts.
+ */
+export async function bindInviteIdentity(
+  shareId: string,
+  inviteId: string,
+  uid: string,
+  publicKey: string,
+  boundAt = Date.now()
+): Promise<boolean> {
+  return withStateLock(async () => {
+    if (!IDENTITY_UID_RE.test(uid) || !IDENTITY_B64URL_RE.test(publicKey)) return false;
+    const s = await load();
+    const invite = s[shareId]?.invites?.[inviteId];
+    if (!invite || invite.revokedAt) return false;
+    if (!invite.identityPublicKey) {
+      invite.identityPublicKey = publicKey;
+      invite.identityUid = uid;
+      invite.identityBoundAt = boundAt;
+      await save();
+      return true;
+    }
+    return invite.identityPublicKey === publicKey && invite.identityUid === uid;
+  });
 }
 
 export function getShareStateHealth() {

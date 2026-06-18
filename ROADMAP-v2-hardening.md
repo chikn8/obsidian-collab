@@ -32,9 +32,11 @@ move/rename/delete handling · `stampEdit` moved to a separate `edits` map (no d
 createFileProvider in-flight reservation · comment-anchor quote-verify + re-match (no mis-highlight).
 **Tier 2**: real-`FileProvider` integration test (fake vault/IDB/WS via esbuild alias) wired into CI ·
 real-server WebSocket e2e for convergence, viewer write rejection, restart durability, and revocation.
+**Tier 3 foundation**: signed per-install identities bind invite links on first use; invite reuse from a
+different signed install is rejected before joining the room.
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
-(ops, not code) · signed user identities · socket multiplexing / scale ceiling
+(ops, not code) · account-grade identity/key rotation · socket multiplexing / scale ceiling
 (Tier 3.1) · binary/attachment sync (Tier 4.1) · hunk-level version restore · human device-matrix test.
 
 ---
@@ -302,10 +304,12 @@ with a per-room dirty-flag **global sweep**.
 only a scoped editor key plus per-share `ownerKey`, and keeps `SERVER_SECRET` on the server. `/share/link`
 and `/share/revoke` require the owner key, so a leaked client config can mint/revoke only that share.
 `/share/invite` adds per-recipient invite ids + optional expiry; `/share/invite/revoke` revokes one invite
-and closes only its live sockets. The old client-side HMAC path remains as a legacy fallback for old servers.
-**Remaining.** Add key-rotation windows and signed user identities.
+and closes only its live sockets. Invite links are bound to the first signed per-install identity that uses
+them, and a different signed identity is rejected before joining. The old client-side HMAC path remains as
+a legacy fallback for old servers.
+**Remaining.** Add key-rotation windows and account-grade identity semantics.
 **Verify.** Server auth/share-state tests and real-server e2e cover role/owner/invite separation, expiry,
-revoked-owner rejection, and live invite revocation.
+revoked-owner rejection, live invite revocation, and signed invite identity binding.
 
 ### 3.3 — Memory-pressure room eviction + process tuning (L)
 **Fix.** LRU room eviction under a memory ceiling (persist + drop idle rooms); `--max-old-space-size`;

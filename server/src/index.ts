@@ -12,12 +12,14 @@ import {
   roleKey,
   inviteKey,
   verifyOwnerAccess,
+  verifyIdentitySignature,
+  isIdentityUid,
   ROLES,
   type Role,
 } from "./auth.js";
 import { startSnapshots, stopSnapshots, commitSnapshotsNow, getSnapshotsHealth } from "./snapshots.js";
 import { listVersions, getVersion, listShareFiles } from "./history.js";
-import { getInvite, getMinEpoch, putInvite, revokeInvite, setMinEpoch, getShareStateHealth } from "./shareState.js";
+import { bindInviteIdentity, getInvite, getMinEpoch, putInvite, revokeInvite, setMinEpoch, getShareStateHealth } from "./shareState.js";
 import { getPersistenceHealth } from "./persistence.js";
 import { startBackups, stopBackups, getBackupHealth } from "./backups.js";
 import { auditEvent } from "./audit.js";
@@ -101,6 +103,15 @@ function inviteExpiresAt(url: URL): number | undefined {
   return raw != null && raw !== "" ? Number(raw) : undefined;
 }
 
+function identityParams(url: URL): { identityUid?: string; identityPublicKey?: string; identitySignature?: string } {
+  const uid = (url.searchParams.get("uid") || "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 128);
+  return {
+    identityUid: isIdentityUid(uid) ? uid : undefined,
+    identityPublicKey: url.searchParams.get("identityKey") || undefined,
+    identitySignature: url.searchParams.get("identitySig") || undefined,
+  };
+}
+
 async function verifyNamespacedAccess(args: {
   shareId: string;
   token: string;
@@ -108,6 +119,9 @@ async function verifyNamespacedAccess(args: {
   epoch?: number;
   inviteId?: string;
   expiresAt?: number;
+  identityUid?: string;
+  identityPublicKey?: string;
+  identitySignature?: string;
 }): Promise<Role | null> {
   const min = await getMinEpoch(args.shareId);
   if (args.inviteId) {
@@ -127,6 +141,9 @@ async function verifyNamespacedAccess(args: {
     if (invite.role !== args.role || invite.epoch !== args.epoch) return null;
     if ((invite.expiresAt || 0) !== (args.expiresAt || 0)) return null;
     if (invite.expiresAt && Date.now() > invite.expiresAt) return null;
+    if (!args.identityUid || !args.identityPublicKey || !args.identitySignature) return null;
+    if (!(await verifyIdentitySignature(args.identityPublicKey, args.identityUid, args.identitySignature))) return null;
+    if (!(await bindInviteIdentity(args.shareId, args.inviteId, args.identityUid, args.identityPublicKey))) return null;
     return granted;
   }
   return verifyShareAccess(SERVER_SECRET, args.shareId, args.token, args.role, args.epoch, min);
@@ -324,11 +341,12 @@ const server = http.createServer(async (req, res) => {
       const epoch = url.searchParams.get("epoch") != null ? Number(url.searchParams.get("epoch")) : undefined;
       const inviteId = url.searchParams.get("invite") || undefined;
       const expiresAt = inviteExpiresAt(url);
+      const identity = identityParams(url);
       const granted =
         shareId === "legacy" && !DISABLE_LEGACY_ROOMS && authenticate(token, AUTH_TOKEN)
           ? "editor"
           : shareId
-            ? await verifyNamespacedAccess({ shareId, token, role, epoch, inviteId, expiresAt })
+            ? await verifyNamespacedAccess({ shareId, token, role, epoch, inviteId, expiresAt, ...identity })
             : null;
       if (!granted) return json(401, { error: "unauthorized" });
 
@@ -377,6 +395,7 @@ server.on("upgrade", async (request, socket, head) => {
   const epochParam = url.searchParams.get("epoch") != null ? Number(url.searchParams.get("epoch")) : undefined;
   const inviteParam = url.searchParams.get("invite") || undefined;
   const expParam = inviteExpiresAt(url);
+  const identity = identityParams(url);
 
   // Authenticate. Namespaced share rooms ("@<shareId>:...") validate against a
   // per-share capability token (role+epoch folded into the HMAC, with a legacy
@@ -392,6 +411,7 @@ server.on("upgrade", async (request, socket, head) => {
       epoch: epochParam,
       inviteId: inviteParam,
       expiresAt: expParam,
+      ...identity,
     });
     ok = role !== null;
     if (role) grantedRole = role;
@@ -400,7 +420,9 @@ server.on("upgrade", async (request, socket, head) => {
   }
 
   if (!ok) {
-    console.log(`[auth] rejected connection: invalid token for room "${room}"`);
+    const identityProvided = !!identity.identityUid && !!identity.identityPublicKey && !!identity.identitySignature;
+    const reason = shareId && inviteParam && !identityProvided ? "identity-missing" : "token-or-identity";
+    console.log(`[auth] rejected connection: ${reason} for room "${room}"`);
     void auditEvent("ws.auth.rejected", {
       room,
       shareId,
@@ -408,7 +430,9 @@ server.on("upgrade", async (request, socket, head) => {
       epoch: epochParam,
       inviteId: inviteParam,
       remote: request.socket.remoteAddress || "",
-      reason: "token",
+      uid: identity.identityUid,
+      identityProvided,
+      reason,
     });
     socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
     socket.destroy();

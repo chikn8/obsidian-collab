@@ -1,7 +1,10 @@
+import { webcrypto } from "crypto";
 import {
+  identityPayload,
   inviteKey,
   ownerKey,
   roleKey,
+  verifyIdentitySignature,
   verifyInviteAccess,
   verifyOwnerAccess,
   verifyShareAccess,
@@ -38,6 +41,26 @@ check("invite token is invite scoped",
   verifyInviteAccess(serverSecret, shareId, invite, "commenter", epoch, "other123", futureExpiry, 1) === null);
 check("expired invite rejects",
   verifyInviteAccess(serverSecret, shareId, inviteKey(serverSecret, shareId, "viewer", epoch, "abc123XYZ", Date.now() - 1), "viewer", epoch, "abc123XYZ", Date.now() - 1, 1) === null);
+
+{
+  const uid = "signed-user";
+  const pair = await webcrypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" },
+    true,
+    ["sign", "verify"]
+  );
+  const publicJwk = await webcrypto.subtle.exportKey("jwk", pair.publicKey);
+  const publicKey = Buffer.from(JSON.stringify(publicJwk), "utf-8").toString("base64url");
+  const signature = Buffer.from(await webcrypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" },
+    pair.privateKey,
+    identityPayload(uid, publicKey)
+  )).toString("base64url");
+
+  check("identity signature verifies", await verifyIdentitySignature(publicKey, uid, signature));
+  check("identity signature rejects another uid", !(await verifyIdentitySignature(publicKey, "other-user", signature)));
+  check("identity signature rejects malformed key", !(await verifyIdentitySignature("not-json", uid, signature)));
+}
 
 console.log("");
 if (failures > 0) { console.error(`FAILED — ${failures} assertion(s) failed`); process.exit(1); }

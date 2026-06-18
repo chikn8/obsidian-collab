@@ -1,5 +1,5 @@
 import { spawn } from "child_process";
-import { createHmac } from "crypto";
+import { createHmac, webcrypto } from "crypto";
 import fs from "fs/promises";
 import net from "net";
 import os from "os";
@@ -43,6 +43,26 @@ function adminToken(shareId, epoch) {
 
 function ownerKey(shareId, epoch) {
   return hmac(SHARE_OWNER_SECRET, `owner:${shareId}:${epoch}`);
+}
+
+function identityPayload(uid, publicKey) {
+  return new TextEncoder().encode(`obsidian-collab-identity-v1\n${uid}\n${publicKey}`);
+}
+
+async function makeIdentity(uid = `uid-${Math.random().toString(36).slice(2)}`) {
+  const pair = await webcrypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" },
+    true,
+    ["sign", "verify"]
+  );
+  const publicJwk = await webcrypto.subtle.exportKey("jwk", pair.publicKey);
+  const publicKey = Buffer.from(JSON.stringify(publicJwk), "utf-8").toString("base64url");
+  const signature = Buffer.from(await webcrypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" },
+    pair.privateKey,
+    identityPayload(uid, publicKey)
+  )).toString("base64url");
+  return { uid, publicKey, signature };
 }
 
 function roomName(shareId, relPath) {
@@ -224,6 +244,30 @@ class SyncClient {
   }
 }
 
+async function expectWsRejected(wsBase, room, params) {
+  return new Promise((resolve) => {
+    const url = new URL(`${wsBase}/${encodeURIComponent(room)}`);
+    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
+    const ws = new WebSocket(url);
+    let settled = false;
+    const done = (ok, reason) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { ws.terminate(); } catch {}
+      resolve({ ok, reason });
+    };
+    const timer = setTimeout(() => done(false, "timeout"), 4000);
+    ws.on("open", () => done(false, "opened"));
+    ws.on("unexpected-response", (_req, res) => done(res.statusCode === 401, `status=${res.statusCode}`));
+    ws.on("error", (e) => {
+      const message = String(e?.message || e);
+      done(message.includes("401"), message);
+    });
+    ws.on("close", (code) => done(code !== 1000, `close=${code}`));
+  });
+}
+
 function authParams(role, epoch, shareId) {
   return {
     token: roleKey(shareId, role, epoch),
@@ -236,14 +280,16 @@ function authParams(role, epoch, shareId) {
   };
 }
 
-function inviteAuthParams(invite) {
+function inviteAuthParams(invite, identity) {
   return {
     token: invite.key,
     role: invite.role,
     epoch: invite.epoch,
     invite: invite.inviteId,
     ...(invite.expiresAt ? { exp: invite.expiresAt } : {}),
-    uid: `uid-invite-${Math.random().toString(36).slice(2)}`,
+    uid: identity.uid,
+    identityKey: identity.publicKey,
+    identitySig: identity.signature,
     name: "invite user",
     device: "test",
     deviceId: `device-${Math.random().toString(36).slice(2)}`,
@@ -355,10 +401,14 @@ try {
     });
     const invite = await inviteRes.json();
     check("invite mint HTTP succeeds", inviteRes.status === 200 && !!invite.inviteId, `status=${inviteRes.status}`);
-    const invited = new SyncClient(server.wsBase, room, inviteAuthParams(invite));
+    const identity = await makeIdentity("invite-user-a");
+    const invited = new SyncClient(server.wsBase, room, inviteAuthParams(invite, identity));
     await invited.ready;
     invited.setText("invite can edit until revoked");
     await sleep(300);
+    const otherIdentity = await makeIdentity("invite-user-b");
+    const rejected = await expectWsRejected(server.wsBase, room, inviteAuthParams(invite, otherIdentity));
+    check("same invite rejects another signed identity", rejected.ok, rejected.reason);
     const revokeRes = await fetch(`${server.httpBase}/share/invite/revoke?share=${encodeURIComponent(shareId)}&invite=${encodeURIComponent(invite.inviteId)}&epoch=${epoch}`, {
       method: "POST",
       headers: { Authorization: `Bearer ${ownerKey(shareId, epoch)}` },

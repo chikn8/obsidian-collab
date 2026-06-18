@@ -83,8 +83,12 @@ export interface CollabPluginSettings {
   cursorColor: string;
   /** Stable per-install identity. Joins facepile<->cursor across the separate
    *  manifest/file Y.Doc awarenesses (which have different random clientIDs).
-   *  Client-set, hence forgeable — identity convenience, NOT a security boundary. */
+   *  Signed for invite-bound identity checks. */
   uid: string;
+  /** Persistent ECDSA identity keypair. Private key stays local. */
+  identityPublicKey: string;
+  identityPrivateKey: string;
+  identitySignature: string;
   /** Your ntfy topic for @mention pushes (e.g. elijah-cli-...). Empty = no pushes. */
   ntfyTopic: string;
   /** Verbose console logging for bug-testing. */
@@ -102,6 +106,9 @@ export const DEFAULT_SETTINGS: CollabPluginSettings = {
   displayName: "Anonymous",
   cursorColor: "#ff6b6b",
   uid: "",
+  identityPublicKey: "",
+  identityPrivateKey: "",
+  identitySignature: "",
   ntfyTopic: "",
   debugLogging: false,
   diagnosticLogging: false,

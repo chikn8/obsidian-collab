@@ -119,14 +119,17 @@ New shares are minted server-side through `/share/create`, authenticated by `SHA
 plus a scoped `ownerKey` for that share. Later role links are minted through `/share/link`, and revocation
 uses `/share/revoke`; both require the share's owner key and cannot derive keys for other shares.
 Per-recipient invites are minted through `/share/invite`; their HMAC includes role, epoch, invite id, and
-optional expiry. `/share/invite/revoke` disables one invite and disconnects only sockets using that invite.
+optional expiry. Invite joins and invite-authenticated history reads also carry a signed per-install
+identity (`uid`, P-256 public key, signature). The first valid install to use an invite binds that invite;
+later uses must present the same uid + public key. `/share/invite/revoke` disables one invite and
+disconnects only sockets using that invite.
 
 Connection identity is also stamped server-side for awareness and notifications. The client sends its
 uid/name/color/device as WebSocket params, and the relay overwrites every awareness `user` object plus
 notification sender fields with that connection identity. A connection can only update awareness client
-IDs it introduced, so it cannot remove or overwrite another live connection's presence. This is not a
-full account system; signed user identities remain separate from invite capabilities. Security-relevant
-share/link/invite/revoke/join/reject events are written to the server audit JSONL log.
+IDs it introduced, so it cannot remove or overwrite another live connection's presence. This is still not
+a full account system: there is no central login, cross-device key recovery, or key rotation window yet.
+Security-relevant share/link/invite/revoke/join/reject events are written to the server audit JSONL log.
 
 **Roles** (`viewer`/`commenter`/`editor`) are enforced *server-side*: in `rooms.ts`, a non-editor's sync
 writes (step2/update) are dropped — un-applied and un-persisted — so the read-only boundary is real, not
@@ -153,7 +156,8 @@ legacy `/admin/revoke` raises it and disconnects live revoked clients with close
   can't send, and the client-supplied ntfy `Click` is dropped (deep-link injection guard).
 - **`history.ts` / `index.ts`** — HTTP API: `/health`, `/metrics`, `/history`, `/version`, `/files`,
   `/admin/revoke`, `/share/invite`, `/share/invite/revoke`. Metrics require the metrics bearer token;
-  read endpoints require a valid share token.
+  read endpoints require a valid share token, and invite reads require the same signed install identity
+  binding as WebSocket joins.
 
 ## 8. Data-flow walkthroughs
 

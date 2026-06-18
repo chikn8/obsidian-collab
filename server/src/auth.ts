@@ -1,4 +1,4 @@
-import { timingSafeEqual, createHmac } from "crypto";
+import { timingSafeEqual, createHmac, webcrypto } from "crypto";
 
 /**
  * Validate a provided token against the expected server token.
@@ -128,4 +128,54 @@ export function verifyInviteAccess(
   if (!ROLES.includes(role)) return null;
   if (expiresAt !== undefined && (!Number.isFinite(expiresAt) || expiresAt <= now)) return null;
   return timingSafeEqualStr(token, inviteKey(secret, shareId, role, epoch, inviteId, expiresAt)) ? role : null;
+}
+
+const IDENTITY_B64URL_RE = /^[A-Za-z0-9_-]{16,4096}$/;
+const IDENTITY_SIGNATURE_RE = /^[A-Za-z0-9_-]{80,256}$/;
+const IDENTITY_UID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function isIdentityUid(uid: string): boolean {
+  return IDENTITY_UID_RE.test(uid);
+}
+
+export function identityPayload(uid: string, publicKey: string): Uint8Array {
+  return new TextEncoder().encode(`obsidian-collab-identity-v1\n${uid}\n${publicKey}`);
+}
+
+export async function verifyIdentitySignature(
+  publicKey: string,
+  uid: string,
+  signature: string
+): Promise<boolean> {
+  try {
+    if (!isIdentityUid(uid)) return false;
+    if (!IDENTITY_B64URL_RE.test(publicKey) || !IDENTITY_SIGNATURE_RE.test(signature)) return false;
+    const jwk = JSON.parse(Buffer.from(publicKey, "base64url").toString("utf-8"));
+    if (
+      !jwk ||
+      typeof jwk !== "object" ||
+      jwk.kty !== "EC" ||
+      jwk.crv !== "P-256" ||
+      typeof jwk.x !== "string" ||
+      typeof jwk.y !== "string" ||
+      jwk.d !== undefined
+    ) {
+      return false;
+    }
+    const key = await webcrypto.subtle.importKey(
+      "jwk",
+      jwk,
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["verify"]
+    );
+    return await webcrypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      key,
+      Buffer.from(signature, "base64url"),
+      identityPayload(uid, publicKey)
+    );
+  } catch {
+    return false;
+  }
 }

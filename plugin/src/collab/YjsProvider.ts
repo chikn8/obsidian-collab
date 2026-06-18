@@ -48,7 +48,7 @@ export function createProvider(
   roomName: string,
   ydoc: Y.Doc,
   token: string,
-  userInfo: { uid: string; name: string; color: string },
+  userInfo: { uid: string; name: string; color: string; identityPublicKey?: string; identitySignature?: string },
   callbacks: ProviderCallbacks,
   authParams: Record<string, string> = {}
 ): WebsocketProvider {
@@ -62,6 +62,9 @@ export function createProvider(
       color: userInfo.color,
       device,
       deviceId,
+      ...(userInfo.identityPublicKey && userInfo.identitySignature
+        ? { identityKey: userInfo.identityPublicKey, identitySig: userInfo.identitySignature }
+        : {}),
       ...authParams,
     },
     connect: true,

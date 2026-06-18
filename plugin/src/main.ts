@@ -14,6 +14,7 @@ import { CommentsView, COMMENTS_VIEW_TYPE } from "./ui/CommentsView";
 import { promptModal } from "./ui/modals";
 import { configureDiagnostics, exportDiagnosticBundle, log, err, setDiagnosticLogging, startDiagnosticTrace, trace } from "./utils/log";
 import { getJson, postJson } from "./utils/http";
+import { ensureIdentityKeys } from "./utils/identity";
 import {
   encodeShareCode,
   decodeShareCode,
@@ -479,9 +480,12 @@ export default class CollabPlugin extends Plugin {
     const base = httpBase(this.settings.serverUrl);
     const relPath = m.toRel(file.path);
     const histShareId = share.legacy ? "legacy" : share.id;
+    const identityQ = !share.legacy && share.inviteId && this.settings.identityPublicKey && this.settings.identitySignature
+      ? `&uid=${encodeURIComponent(this.settings.uid)}&identityKey=${encodeURIComponent(this.settings.identityPublicKey)}&identitySig=${encodeURIComponent(this.settings.identitySignature)}`
+      : "";
     const roleQ = share.legacy
       ? ""
-      : `&role=${share.role || "editor"}&epoch=${share.epoch ?? 1}${share.inviteId ? `&invite=${encodeURIComponent(share.inviteId)}` : ""}${share.expiresAt ? `&exp=${share.expiresAt}` : ""}`;
+      : `&role=${share.role || "editor"}&epoch=${share.epoch ?? 1}${share.inviteId ? `&invite=${encodeURIComponent(share.inviteId)}` : ""}${share.expiresAt ? `&exp=${share.expiresAt}` : ""}${identityQ}`;
     const token = async (): Promise<string | null> =>
       share.legacy ? (this.settings.serverPassword || null) : share.key;
 
@@ -931,6 +935,9 @@ export default class CollabPlugin extends Plugin {
         displayName: raw.displayName ?? DEFAULT_SETTINGS.displayName,
         cursorColor: raw.cursorColor ?? DEFAULT_SETTINGS.cursorColor,
         uid: raw.uid ?? "",
+        identityPublicKey: raw.identityPublicKey ?? "",
+        identityPrivateKey: raw.identityPrivateKey ?? "",
+        identitySignature: raw.identitySignature ?? "",
         ntfyTopic: raw.ntfyTopic ?? "",
         debugLogging: raw.debugLogging ?? DEFAULT_SETTINGS.debugLogging,
         diagnosticLogging: raw.diagnosticLogging ?? DEFAULT_SETTINGS.diagnosticLogging,
@@ -948,6 +955,15 @@ export default class CollabPlugin extends Plugin {
         (globalThis.crypto?.randomUUID?.() as string) || generateShareId(24);
       await this.persist();
     }
+    const identity = await ensureIdentityKeys({
+      publicKey: this.settings.identityPublicKey || raw.identityPublicKey,
+      privateKey: this.settings.identityPrivateKey || raw.identityPrivateKey,
+      signature: this.settings.identitySignature || raw.identitySignature,
+    }, this.settings.uid);
+    this.settings.identityPublicKey = identity.publicKey;
+    this.settings.identityPrivateKey = identity.privateKey;
+    this.settings.identitySignature = identity.signature;
+    await this.persist();
   }
 
   /** Persist without touching live sync. */

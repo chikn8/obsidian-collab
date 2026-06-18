@@ -9875,6 +9875,7 @@ function createProvider(serverUrl, roomName, ydoc, token, userInfo, callbacks, a
       color: userInfo.color,
       device,
       deviceId,
+      ...userInfo.identityPublicKey && userInfo.identitySignature ? { identityKey: userInfo.identityPublicKey, identitySig: userInfo.identitySignature } : {},
       ...authParams
     },
     connect: true,
@@ -10411,6 +10412,9 @@ var DEFAULT_SETTINGS = {
   displayName: "Anonymous",
   cursorColor: "#ff6b6b",
   uid: "",
+  identityPublicKey: "",
+  identityPrivateKey: "",
+  identitySignature: "",
   ntfyTopic: "",
   debugLogging: false,
   diagnosticLogging: false,
@@ -11554,7 +11558,13 @@ var SyncManager = class {
       manifestRoom(this.share),
       this.manifestDoc,
       shareToken(this.share, this.settings.serverPassword),
-      { uid: this.settings.uid, name: this.settings.displayName, color: this.userColor() },
+      {
+        uid: this.settings.uid,
+        name: this.settings.displayName,
+        color: this.userColor(),
+        identityPublicKey: this.settings.identityPublicKey,
+        identitySignature: this.settings.identitySignature
+      },
       {
         onStatus: (status) => {
           trace("ws", "manifest-status", {
@@ -13956,6 +13966,97 @@ async function postJson(url, body, headers) {
   return { ok: res.status >= 200 && res.status < 300, status: res.status, body: res.json };
 }
 
+// src/utils/identity.ts
+function base64urlFromBinary2(binary) {
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function binaryFromBase64url(input) {
+  const pad = "=".repeat((4 - input.length % 4) % 4);
+  return atob(input.replace(/-/g, "+").replace(/_/g, "/") + pad);
+}
+function utf8ToBase64url(text2) {
+  return base64urlFromBinary2(unescape(encodeURIComponent(text2)));
+}
+function base64urlToUtf8(input) {
+  return decodeURIComponent(escape(binaryFromBase64url(input)));
+}
+function bytesToBase64url(bytes) {
+  let binary = "";
+  for (const b of new Uint8Array(bytes)) binary += String.fromCharCode(b);
+  return base64urlFromBinary2(binary);
+}
+function toArrayBuffer(bytes) {
+  const out = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(out).set(bytes);
+  return out;
+}
+function base64urlToBytes(input) {
+  const binary = binaryFromBase64url(input);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return toArrayBuffer(out);
+}
+function identityPayload(uid, publicKey) {
+  return toArrayBuffer(new TextEncoder().encode(`obsidian-collab-identity-v1
+${uid}
+${publicKey}`));
+}
+async function verifyIdentity(uid, publicKey, signature) {
+  try {
+    const jwk = JSON.parse(base64urlToUtf8(publicKey));
+    const key = await crypto.subtle.importKey(
+      "jwk",
+      jwk,
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["verify"]
+    );
+    return await crypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      key,
+      base64urlToBytes(signature),
+      identityPayload(uid, publicKey)
+    );
+  } catch (e) {
+    return false;
+  }
+}
+async function signIdentity(uid, publicKey, privateKey) {
+  const jwk = JSON.parse(base64urlToUtf8(privateKey));
+  const key = await crypto.subtle.importKey(
+    "jwk",
+    jwk,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, identityPayload(uid, publicKey));
+  return bytesToBase64url(sig);
+}
+async function ensureIdentityKeys(existing, uid) {
+  if (existing.publicKey && existing.privateKey) {
+    if (existing.signature && await verifyIdentity(uid, existing.publicKey, existing.signature)) {
+      return { publicKey: existing.publicKey, privateKey: existing.privateKey, signature: existing.signature };
+    }
+    try {
+      const signature2 = await signIdentity(uid, existing.publicKey, existing.privateKey);
+      return { publicKey: existing.publicKey, privateKey: existing.privateKey, signature: signature2 };
+    } catch (e) {
+    }
+  }
+  const pair = await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" },
+    true,
+    ["sign", "verify"]
+  );
+  const publicJwk = await crypto.subtle.exportKey("jwk", pair.publicKey);
+  const privateJwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
+  const publicKey = utf8ToBase64url(JSON.stringify(publicJwk));
+  const privateKey = utf8ToBase64url(JSON.stringify(privateJwk));
+  const signature = await signIdentity(uid, publicKey, privateKey);
+  return { publicKey, privateKey, signature };
+}
+
 // src/ui/HistoryView.ts
 var import_obsidian9 = require("obsidian");
 
@@ -14663,7 +14764,8 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     const base = httpBase(this.settings.serverUrl);
     const relPath = m.toRel(file.path);
     const histShareId = share.legacy ? "legacy" : share.id;
-    const roleQ = share.legacy ? "" : `&role=${share.role || "editor"}&epoch=${(_a2 = share.epoch) != null ? _a2 : 1}${share.inviteId ? `&invite=${encodeURIComponent(share.inviteId)}` : ""}${share.expiresAt ? `&exp=${share.expiresAt}` : ""}`;
+    const identityQ = !share.legacy && share.inviteId && this.settings.identityPublicKey && this.settings.identitySignature ? `&uid=${encodeURIComponent(this.settings.uid)}&identityKey=${encodeURIComponent(this.settings.identityPublicKey)}&identitySig=${encodeURIComponent(this.settings.identitySignature)}` : "";
+    const roleQ = share.legacy ? "" : `&role=${share.role || "editor"}&epoch=${(_a2 = share.epoch) != null ? _a2 : 1}${share.inviteId ? `&invite=${encodeURIComponent(share.inviteId)}` : ""}${share.expiresAt ? `&exp=${share.expiresAt}` : ""}${identityQ}`;
     const token = async () => share.legacy ? this.settings.serverPassword || null : share.key;
     return {
       fileName: file.name,
@@ -15096,7 +15198,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
   }
   // ── Settings (with migration) ──────────────────────────────────
   async loadSettings() {
-    var _a2, _b2, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+    var _a2, _b2, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n;
     const raw = await this.loadData() || {};
     if (raw.shares === void 0 && (raw.linkedFolder !== void 0 || raw.password !== void 0)) {
       this.settings = {
@@ -15107,9 +15209,12 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
         displayName: (_d = raw.displayName) != null ? _d : DEFAULT_SETTINGS.displayName,
         cursorColor: (_e = raw.cursorColor) != null ? _e : DEFAULT_SETTINGS.cursorColor,
         uid: (_f = raw.uid) != null ? _f : "",
-        ntfyTopic: (_g = raw.ntfyTopic) != null ? _g : "",
-        debugLogging: (_h = raw.debugLogging) != null ? _h : DEFAULT_SETTINGS.debugLogging,
-        diagnosticLogging: (_i = raw.diagnosticLogging) != null ? _i : DEFAULT_SETTINGS.diagnosticLogging,
+        identityPublicKey: (_g = raw.identityPublicKey) != null ? _g : "",
+        identityPrivateKey: (_h = raw.identityPrivateKey) != null ? _h : "",
+        identitySignature: (_i = raw.identitySignature) != null ? _i : "",
+        ntfyTopic: (_j = raw.ntfyTopic) != null ? _j : "",
+        debugLogging: (_k = raw.debugLogging) != null ? _k : DEFAULT_SETTINGS.debugLogging,
+        diagnosticLogging: (_l = raw.diagnosticLogging) != null ? _l : DEFAULT_SETTINGS.diagnosticLogging,
         shares: raw.linkedFolder ? [{ id: LEGACY_SHARE_ID, key: "", label: "Synced Obsidian", localFolder: raw.linkedFolder, legacy: true }] : []
       };
       await this.persist();
@@ -15117,9 +15222,18 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       this.settings = Object.assign({}, DEFAULT_SETTINGS, raw);
     }
     if (!this.settings.uid) {
-      this.settings.uid = ((_k = (_j = globalThis.crypto) == null ? void 0 : _j.randomUUID) == null ? void 0 : _k.call(_j)) || generateShareId(24);
+      this.settings.uid = ((_n = (_m = globalThis.crypto) == null ? void 0 : _m.randomUUID) == null ? void 0 : _n.call(_m)) || generateShareId(24);
       await this.persist();
     }
+    const identity = await ensureIdentityKeys({
+      publicKey: this.settings.identityPublicKey || raw.identityPublicKey,
+      privateKey: this.settings.identityPrivateKey || raw.identityPrivateKey,
+      signature: this.settings.identitySignature || raw.identitySignature
+    }, this.settings.uid);
+    this.settings.identityPublicKey = identity.publicKey;
+    this.settings.identityPrivateKey = identity.privateKey;
+    this.settings.identitySignature = identity.signature;
+    await this.persist();
   }
   /** Persist without touching live sync. */
   async persist() {

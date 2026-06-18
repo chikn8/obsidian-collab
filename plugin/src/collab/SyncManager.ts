@@ -211,7 +211,13 @@ export class SyncManager {
       manifestRoom(this.share),
       this.manifestDoc,
       shareToken(this.share, this.settings.serverPassword),
-      { uid: this.settings.uid, name: this.settings.displayName, color: this.userColor() },
+      {
+        uid: this.settings.uid,
+        name: this.settings.displayName,
+        color: this.userColor(),
+        identityPublicKey: this.settings.identityPublicKey,
+        identitySignature: this.settings.identitySignature,
+      },
       {
         onStatus: (status) => {
           trace("ws", "manifest-status", {

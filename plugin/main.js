@@ -11292,6 +11292,73 @@ function clamp(n, min2, max2) {
   return Math.max(min2, Math.min(max2, n));
 }
 
+// src/collab/PresenceDom.ts
+function clearRenderedPresence(rendered) {
+  for (const els of rendered.values()) {
+    for (const el of els) el.remove();
+  }
+  rendered.clear();
+}
+function findFileTreeTitle(doc2, fullPath) {
+  return doc2.querySelector(
+    `.nav-file-title[data-path="${cssAttributeValue(fullPath)}"]`
+  );
+}
+function appendPresenceHost(target, className, users, surface) {
+  const doc2 = target.ownerDocument || document;
+  const host = doc2.createElement("span");
+  host.className = className;
+  renderPresenceAvatars(host, users, surface);
+  target.appendChild(host);
+  return host;
+}
+function renderPresenceAvatars(parent, users, surface) {
+  const doc2 = parent.ownerDocument || document;
+  users.forEach((user, i) => {
+    const av = doc2.createElement("span");
+    av.className = `collab-presence-avatar ${surface}` + (i > 0 ? " stacked" : "") + (user.isSelf ? " self" : "") + (user.hasCaret ? " live" : "") + (user.typing ? " typing" : "");
+    av.style.backgroundColor = user.color;
+    av.textContent = presenceInitial(user.name);
+    const label = presenceLabel(user);
+    av.setAttribute("aria-label", label);
+    av.title = label;
+    if (user.typing) av.appendChild(makeTypingDots(doc2));
+    parent.appendChild(av);
+  });
+}
+function makeTypingDots(doc2 = document) {
+  const pill = doc2.createElement("span");
+  pill.className = "collab-typing-pill";
+  for (let i = 0; i < 3; i++) {
+    const dot = doc2.createElement("span");
+    pill.appendChild(dot);
+  }
+  return pill;
+}
+function tabHeaderForLeaf(leaf) {
+  var _a2, _b2, _c;
+  const direct = (leaf == null ? void 0 : leaf.tabHeaderEl) || ((_a2 = leaf == null ? void 0 : leaf.tabHeader) == null ? void 0 : _a2.el) || ((_c = (_b2 = leaf == null ? void 0 : leaf.tabHeaderInnerTitleEl) == null ? void 0 : _b2.parentElement) == null ? void 0 : _c.parentElement);
+  if (isElementLike(direct)) return direct;
+  const parent = leaf == null ? void 0 : leaf.parent;
+  const children = Array.isArray(parent == null ? void 0 : parent.children) ? parent.children : Array.isArray(parent == null ? void 0 : parent.leaves) ? parent.leaves : [];
+  const idx = children.indexOf(leaf);
+  const container = parent == null ? void 0 : parent.containerEl;
+  if (idx < 0 || !isElementLike(container)) return null;
+  const headers = Array.from(container.querySelectorAll(".workspace-tab-header"));
+  const header = headers[idx];
+  return isElementLike(header) ? header : null;
+}
+function tabPresenceTarget(header) {
+  var _a2;
+  return ((_a2 = header.querySelector(".workspace-tab-header-inner-title")) == null ? void 0 : _a2.parentElement) || header.querySelector(".workspace-tab-header-inner") || header;
+}
+function cssAttributeValue(value) {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\a ");
+}
+function isElementLike(value) {
+  return !!value && typeof value === "object" && "querySelector" in value && "appendChild" in value;
+}
+
 // src/collab/SyncManager.ts
 function newFileId() {
   var _a2, _b2;
@@ -11985,13 +12052,20 @@ var SyncManager = class {
   }
   /** Broadcast which file (if any) this user has open, for presence avatars. */
   setPresence(activeFile) {
+    var _a2, _b2;
     if (!this.manifestProvider) return;
     let relPath = null;
     if (activeFile && this.isInLinkedFolder(activeFile.path)) {
       const candidate = this.toRelativePath(activeFile.path);
       relPath = this.safeManifestRelPath(candidate, "local presence");
     }
-    this.manifestProvider.awareness.setLocalStateField("presence", { activeFile: relPath });
+    trace("presence", "active-file", {
+      shareId: this.histShareId,
+      path: (_a2 = activeFile == null ? void 0 : activeFile.path) != null ? _a2 : null,
+      relPath
+    });
+    const cur = ((_b2 = this.manifestProvider.awareness.getLocalState()) == null ? void 0 : _b2.presence) || {};
+    this.manifestProvider.awareness.setLocalStateField("presence", { ...cur, activeFile: relPath });
   }
   /** The FileProvider owning a vault path (for the editor yCollab binding). */
   getFileProvider(fullPath) {
@@ -12082,8 +12156,16 @@ var SyncManager = class {
     );
     if (sig === this.lastPresenceSig) return;
     this.lastPresenceSig = sig;
-    this.renderFileTreePresence(fileUsers);
-    this.renderTabPresence(fileUsers);
+    const fileRendered = this.renderFileTreePresence(fileUsers);
+    const tabRendered = this.renderTabPresence(fileUsers);
+    trace("presence", "rendered", {
+      shareId: this.histShareId,
+      activeFiles: fileUsers.size,
+      fileBadges: fileRendered.rendered,
+      fileMissing: fileRendered.missing,
+      tabBadges: tabRendered.rendered,
+      tabMissing: tabRendered.missing
+    });
   }
   collectFilePresence() {
     const rels = /* @__PURE__ */ new Set();
@@ -12121,57 +12203,47 @@ var SyncManager = class {
     return out;
   }
   renderFileTreePresence(fileUsers) {
-    for (const els of this.renderedPresence.values()) for (const el of els) el.remove();
-    this.renderedPresence.clear();
+    clearRenderedPresence(this.renderedPresence);
+    let rendered = 0;
+    let missing = 0;
     for (const [fullPath, users] of fileUsers) {
-      const fileEl = document.querySelector(
-        `.nav-file-title[data-path="${CSS.escape(fullPath)}"]`
-      );
-      if (!fileEl) continue;
-      const host = document.createElement("span");
-      host.className = "collab-file-presence-host";
-      renderPresenceAvatars(host, users, "file");
-      fileEl.appendChild(host);
+      const fileEl = findFileTreeTitle(document, fullPath);
+      if (!fileEl) {
+        missing++;
+        trace("presence", "file-anchor-missing", { shareId: this.histShareId, path: fullPath, users: users.length });
+        continue;
+      }
+      const host = appendPresenceHost(fileEl, "collab-file-presence-host", users, "file");
       this.renderedPresence.set(fullPath, [host]);
+      rendered++;
     }
+    return { rendered, missing };
   }
   renderTabPresence(fileUsers) {
-    for (const els of this.renderedTabPresence.values()) for (const el of els) el.remove();
-    this.renderedTabPresence.clear();
+    clearRenderedPresence(this.renderedTabPresence);
+    let rendered = 0;
+    let missing = 0;
     this.app.workspace.iterateAllLeaves((leaf) => {
-      var _a2, _b2, _c;
+      var _a2, _b2;
       const path = (_b2 = (_a2 = leaf == null ? void 0 : leaf.view) == null ? void 0 : _a2.file) == null ? void 0 : _b2.path;
       if (!path) return;
       const users = fileUsers.get(path);
       if (!users || users.length === 0) return;
-      const header = this.tabHeaderForLeaf(leaf);
-      if (!header) return;
-      const target = ((_c = header.querySelector(".workspace-tab-header-inner-title")) == null ? void 0 : _c.parentElement) || header.querySelector(".workspace-tab-header-inner") || header;
-      const host = document.createElement("span");
-      host.className = "collab-tab-presence-host";
-      renderPresenceAvatars(host, users, "tab");
-      target.appendChild(host);
+      const header = tabHeaderForLeaf(leaf);
+      if (!header) {
+        missing++;
+        trace("presence", "tab-header-missing", { shareId: this.histShareId, path, users: users.length });
+        return;
+      }
+      const host = appendPresenceHost(tabPresenceTarget(header), "collab-tab-presence-host", users, "tab");
       this.renderedTabPresence.set(`${this.histShareId}:${path}:${this.renderedTabPresence.size}`, [host]);
+      rendered++;
     });
-  }
-  tabHeaderForLeaf(leaf) {
-    var _a2, _b2, _c;
-    const direct = (leaf == null ? void 0 : leaf.tabHeaderEl) || ((_a2 = leaf == null ? void 0 : leaf.tabHeader) == null ? void 0 : _a2.el) || ((_c = (_b2 = leaf == null ? void 0 : leaf.tabHeaderInnerTitleEl) == null ? void 0 : _b2.parentElement) == null ? void 0 : _c.parentElement);
-    if (isElementLike(direct)) return direct;
-    const parent = leaf == null ? void 0 : leaf.parent;
-    const children = Array.isArray(parent == null ? void 0 : parent.children) ? parent.children : Array.isArray(parent == null ? void 0 : parent.leaves) ? parent.leaves : [];
-    const idx = children.indexOf(leaf);
-    const container = parent == null ? void 0 : parent.containerEl;
-    if (idx < 0 || !isElementLike(container)) return null;
-    const headers = Array.from(container.querySelectorAll(".workspace-tab-header"));
-    const header = headers[idx];
-    return isElementLike(header) ? header : null;
+    return { rendered, missing };
   }
   clearPresenceUi() {
-    for (const els of this.renderedPresence.values()) for (const el of els) el.remove();
-    this.renderedPresence.clear();
-    for (const els of this.renderedTabPresence.values()) for (const el of els) el.remove();
-    this.renderedTabPresence.clear();
+    clearRenderedPresence(this.renderedPresence);
+    clearRenderedPresence(this.renderedTabPresence);
     this.lastPresenceSig = "";
   }
   /** Stop syncing this share */
@@ -12236,31 +12308,6 @@ var SyncManager = class {
     return file.extension.toLowerCase() === "md";
   }
 };
-function renderPresenceAvatars(parent, users, surface) {
-  users.forEach((user, i) => {
-    const av = document.createElement("span");
-    av.className = `collab-presence-avatar ${surface}` + (i > 0 ? " stacked" : "") + (user.isSelf ? " self" : "") + (user.hasCaret ? " live" : "") + (user.typing ? " typing" : "");
-    av.style.backgroundColor = user.color;
-    av.textContent = presenceInitial(user.name);
-    const label = presenceLabel(user);
-    av.setAttribute("aria-label", label);
-    av.title = label;
-    if (user.typing) av.appendChild(makeTypingDots());
-    parent.appendChild(av);
-  });
-}
-function makeTypingDots() {
-  const pill = document.createElement("span");
-  pill.className = "collab-typing-pill";
-  for (let i = 0; i < 3; i++) {
-    const dot = document.createElement("span");
-    pill.appendChild(dot);
-  }
-  return pill;
-}
-function isElementLike(value) {
-  return !!value && typeof value === "object" && "querySelector" in value && "appendChild" in value;
-}
 
 // src/collab/InstanceWatch.ts
 var import_obsidian4 = require("obsidian");
@@ -13402,7 +13449,7 @@ function makePanel(_view, onJump) {
       av.textContent = presenceInitial(u.name);
       av.title = presenceLabel(u) + (u.hasCaret && !u.isSelf ? " - click to jump" : "");
       av.setAttribute("aria-label", av.title);
-      if (u.typing) av.appendChild(makeTypingDots2());
+      if (u.typing) av.appendChild(makeTypingDots());
       if (u.hasCaret && !u.isSelf) av.onclick = () => onJump(u.presenceKey);
       else av.disabled = true;
       dom.appendChild(av);
@@ -13506,15 +13553,6 @@ function resolveAwarenessCursor(rel, doc2) {
       return null;
     }
   }
-}
-function makeTypingDots2() {
-  const pill = document.createElement("span");
-  pill.className = "collab-typing-pill";
-  for (let i = 0; i < 3; i++) {
-    const dot = document.createElement("span");
-    pill.appendChild(dot);
-  }
-  return pill;
 }
 
 // src/collab/SelfSelection.ts

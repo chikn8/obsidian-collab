@@ -9,6 +9,7 @@ import {
   presenceLabel,
   type PresenceDevice,
 } from "./PresenceModel";
+import { makeTypingDots } from "./PresenceDom";
 
 /**
  * Rich presence for the active editor: a top-of-editor avatar facepile of who
@@ -154,14 +155,4 @@ function resolveAwarenessCursor(rel: any, doc: Y.Doc): number | null {
       return null;
     }
   }
-}
-
-function makeTypingDots(): HTMLElement {
-  const pill = document.createElement("span");
-  pill.className = "collab-typing-pill";
-  for (let i = 0; i < 3; i++) {
-    const dot = document.createElement("span");
-    pill.appendChild(dot);
-  }
-  return pill;
 }

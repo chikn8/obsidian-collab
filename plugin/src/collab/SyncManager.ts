@@ -11,11 +11,16 @@ import { colorFor, MANIFEST_SCHEMA_VERSION } from "../types";
 import type { CollabPluginSettings, ConnectedUser, SyncStatus, Share, ManifestEntry } from "../types";
 import {
   collectPresenceDevices,
-  presenceInitial,
   presenceKeyFromState,
-  presenceLabel,
   type PresenceDevice,
 } from "./PresenceModel";
+import {
+  appendPresenceHost,
+  clearRenderedPresence,
+  findFileTreeTitle,
+  tabHeaderForLeaf,
+  tabPresenceTarget,
+} from "./PresenceDom";
 
 /** Stable file identity. crypto.randomUUID where available, else a random fallback. */
 function newFileId(): string {
@@ -804,7 +809,13 @@ export class SyncManager {
       const candidate = this.toRelativePath(activeFile.path);
       relPath = this.safeManifestRelPath(candidate, "local presence");
     }
-    this.manifestProvider.awareness.setLocalStateField("presence", { activeFile: relPath });
+    trace("presence", "active-file", {
+      shareId: this.histShareId,
+      path: activeFile?.path ?? null,
+      relPath,
+    });
+    const cur = this.manifestProvider.awareness.getLocalState()?.presence || {};
+    this.manifestProvider.awareness.setLocalStateField("presence", { ...cur, activeFile: relPath });
   }
 
   /** The FileProvider owning a vault path (for the editor yCollab binding). */
@@ -910,8 +921,16 @@ export class SyncManager {
     if (sig === this.lastPresenceSig) return;
     this.lastPresenceSig = sig;
 
-    this.renderFileTreePresence(fileUsers);
-    this.renderTabPresence(fileUsers);
+    const fileRendered = this.renderFileTreePresence(fileUsers);
+    const tabRendered = this.renderTabPresence(fileUsers);
+    trace("presence", "rendered", {
+      shareId: this.histShareId,
+      activeFiles: fileUsers.size,
+      fileBadges: fileRendered.rendered,
+      fileMissing: fileRendered.missing,
+      tabBadges: tabRendered.rendered,
+      tabMissing: tabRendered.missing,
+    });
   }
 
   private collectFilePresence(): Map<string, PresenceDevice[]> {
@@ -950,66 +969,52 @@ export class SyncManager {
     return out;
   }
 
-  private renderFileTreePresence(fileUsers: Map<string, PresenceDevice[]>): void {
-    for (const els of this.renderedPresence.values()) for (const el of els) el.remove();
-    this.renderedPresence.clear();
+  private renderFileTreePresence(fileUsers: Map<string, PresenceDevice[]>): { rendered: number; missing: number } {
+    clearRenderedPresence(this.renderedPresence);
+    let rendered = 0;
+    let missing = 0;
 
     for (const [fullPath, users] of fileUsers) {
-      const fileEl = document.querySelector(
-        `.nav-file-title[data-path="${CSS.escape(fullPath)}"]`
-      ) as HTMLElement | null;
-      if (!fileEl) continue;
+      const fileEl = findFileTreeTitle(document, fullPath);
+      if (!fileEl) {
+        missing++;
+        trace("presence", "file-anchor-missing", { shareId: this.histShareId, path: fullPath, users: users.length });
+        continue;
+      }
 
-      const host = document.createElement("span");
-      host.className = "collab-file-presence-host";
-      renderPresenceAvatars(host, users, "file");
-      fileEl.appendChild(host);
+      const host = appendPresenceHost(fileEl, "collab-file-presence-host", users, "file");
       this.renderedPresence.set(fullPath, [host]);
+      rendered++;
     }
+    return { rendered, missing };
   }
 
-  private renderTabPresence(fileUsers: Map<string, PresenceDevice[]>): void {
-    for (const els of this.renderedTabPresence.values()) for (const el of els) el.remove();
-    this.renderedTabPresence.clear();
+  private renderTabPresence(fileUsers: Map<string, PresenceDevice[]>): { rendered: number; missing: number } {
+    clearRenderedPresence(this.renderedTabPresence);
+    let rendered = 0;
+    let missing = 0;
 
     this.app.workspace.iterateAllLeaves((leaf: any) => {
       const path = leaf?.view?.file?.path as string | undefined;
       if (!path) return;
       const users = fileUsers.get(path);
       if (!users || users.length === 0) return;
-      const header = this.tabHeaderForLeaf(leaf);
-      if (!header) return;
-      const target =
-        (header.querySelector(".workspace-tab-header-inner-title") as HTMLElement | null)?.parentElement ||
-        (header.querySelector(".workspace-tab-header-inner") as HTMLElement | null) ||
-        header;
-      const host = document.createElement("span");
-      host.className = "collab-tab-presence-host";
-      renderPresenceAvatars(host, users, "tab");
-      target.appendChild(host);
+      const header = tabHeaderForLeaf(leaf);
+      if (!header) {
+        missing++;
+        trace("presence", "tab-header-missing", { shareId: this.histShareId, path, users: users.length });
+        return;
+      }
+      const host = appendPresenceHost(tabPresenceTarget(header), "collab-tab-presence-host", users, "tab");
       this.renderedTabPresence.set(`${this.histShareId}:${path}:${this.renderedTabPresence.size}`, [host]);
+      rendered++;
     });
-  }
-
-  private tabHeaderForLeaf(leaf: any): HTMLElement | null {
-    const direct = leaf?.tabHeaderEl || leaf?.tabHeader?.el || leaf?.tabHeaderInnerTitleEl?.parentElement?.parentElement;
-    if (isElementLike(direct)) return direct as HTMLElement;
-
-    const parent = leaf?.parent;
-    const children = Array.isArray(parent?.children) ? parent.children : Array.isArray(parent?.leaves) ? parent.leaves : [];
-    const idx = children.indexOf(leaf);
-    const container = parent?.containerEl;
-    if (idx < 0 || !isElementLike(container)) return null;
-    const headers = Array.from((container as HTMLElement).querySelectorAll(".workspace-tab-header"));
-    const header = headers[idx];
-    return isElementLike(header) ? header as HTMLElement : null;
+    return { rendered, missing };
   }
 
   private clearPresenceUi(): void {
-    for (const els of this.renderedPresence.values()) for (const el of els) el.remove();
-    this.renderedPresence.clear();
-    for (const els of this.renderedTabPresence.values()) for (const el of els) el.remove();
-    this.renderedTabPresence.clear();
+    clearRenderedPresence(this.renderedPresence);
+    clearRenderedPresence(this.renderedTabPresence);
     this.lastPresenceSig = "";
   }
 
@@ -1085,36 +1090,4 @@ export class SyncManager {
   private isSyncableFile(file: TFile): boolean {
     return file.extension.toLowerCase() === "md";
   }
-}
-
-function renderPresenceAvatars(parent: HTMLElement, users: PresenceDevice[], surface: "file" | "tab"): void {
-  users.forEach((user, i) => {
-    const av = document.createElement("span");
-    av.className = `collab-presence-avatar ${surface}` +
-      (i > 0 ? " stacked" : "") +
-      (user.isSelf ? " self" : "") +
-      (user.hasCaret ? " live" : "") +
-      (user.typing ? " typing" : "");
-    av.style.backgroundColor = user.color;
-    av.textContent = presenceInitial(user.name);
-    const label = presenceLabel(user);
-    av.setAttribute("aria-label", label);
-    av.title = label;
-    if (user.typing) av.appendChild(makeTypingDots());
-    parent.appendChild(av);
-  });
-}
-
-function makeTypingDots(): HTMLElement {
-  const pill = document.createElement("span");
-  pill.className = "collab-typing-pill";
-  for (let i = 0; i < 3; i++) {
-    const dot = document.createElement("span");
-    pill.appendChild(dot);
-  }
-  return pill;
-}
-
-function isElementLike(value: unknown): value is HTMLElement {
-  return !!value && typeof value === "object" && "querySelector" in value && "appendChild" in value;
 }

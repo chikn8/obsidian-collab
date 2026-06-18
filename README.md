@@ -208,9 +208,9 @@ Settings → Real-Time Collaboration:
 | `MEMORY_HEALTH_MAX_HEAP_USED_BYTES` | `0` | Optional `/health` heap-used ceiling; `0` disables |
 | `MEMORY_HEALTH_CGROUP_RATIO` | `0.92` | RSS health threshold ratio when a container memory limit is detectable |
 | `SNAPSHOT_GIT_REMOTE` / `SNAPSHOT_GIT_BRANCH` | — / `main` | Push note-history snapshots off-box |
-| `REQUIRE_SNAPSHOT_REMOTE` | `false` | Make `/health` fail until snapshot git push is configured |
+| `REQUIRE_SNAPSHOT_REMOTE` | `true` in production, otherwise `false` | Make `/health` fail until snapshot git push is configured |
 | `PERSIST_BACKUP_COMMAND` | — | Shell command for periodic full-corpus backup (gets `$PERSIST_DIR`) |
-| `REQUIRE_PERSIST_BACKUP` | `false` | Make `/health` fail until full-corpus backups are configured |
+| `REQUIRE_PERSIST_BACKUP` | `true` in production, otherwise `false` | Make `/health` fail until full-corpus backups are configured |
 | `PERSIST_BACKUP_INTERVAL_MS` | `86400000` | Backup cadence |
 | `OPS_NTFY_TOPIC` | — | ntfy topic for save/backup/corruption alerts |
 
@@ -302,8 +302,9 @@ community-directory naming rule against ids containing `obsidian`. New installs 
   save/snapshot failures, disconnects, revocations, rejected writes/paths, rate limits, backpressure
   closes, and client error telemetry. Call it with `Authorization: Bearer $METRICS_TOKEN` on public deployments.
 - **Backups:** set `SNAPSHOT_GIT_REMOTE` (push history) **and** `PERSIST_BACKUP_COMMAND` (full-corpus
-  archive), then set `REQUIRE_SNAPSHOT_REMOTE=true` and `REQUIRE_PERSIST_BACKUP=true`. Without these,
-  all data lives on one volume — see the warning in `server/RECOVERY.md`.
+  archive). In production, `/health` fails until both are configured unless you explicitly set
+  `REQUIRE_SNAPSHOT_REMOTE=false` / `REQUIRE_PERSIST_BACKUP=false`. Without off-box backups, all data lives
+  on one volume — see the warning in `server/RECOVERY.md`.
 - **Secret rotation:** set the new primary secret, put the old value in that secret's `*_PREVIOUS` env
   var, redeploy, then revoke/re-share affected shares so new codes use the new primary. Remove previous
   secrets after the grace window.

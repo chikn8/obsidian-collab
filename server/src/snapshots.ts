@@ -5,6 +5,7 @@ import path from "path";
 import * as Y from "yjs";
 import { alertOps } from "./notify.js";
 import { atomicWriteFile } from "./storage.js";
+import { envFlag, productionDefault } from "./env.js";
 
 const exec = promisify(execFile);
 
@@ -13,7 +14,7 @@ const SNAPSHOT_DIR = path.join(PERSIST_DIR, "snapshots");
 const SNAPSHOT_INTERVAL = 5 * 60_000; // 5 minutes
 const SNAPSHOT_GIT_REMOTE = process.env.SNAPSHOT_GIT_REMOTE || "";
 const SNAPSHOT_GIT_BRANCH = process.env.SNAPSHOT_GIT_BRANCH || "main";
-const REQUIRE_SNAPSHOT_REMOTE = process.env.REQUIRE_SNAPSHOT_REMOTE === "true";
+const REQUIRE_SNAPSHOT_REMOTE = envFlag("REQUIRE_SNAPSHOT_REMOTE", productionDefault());
 
 let snapshotTimer: ReturnType<typeof setInterval> | null = null;
 let lastSnapshotWriteOk = true;

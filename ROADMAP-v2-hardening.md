@@ -51,8 +51,8 @@ history · human device-matrix test.
 > **Update:** both gating items below are now **fixed in code** (path-traversal guard; backup support).
 > The residual gate is **operational**: confirm the Railway volume is persistent and the backup env vars
 > are actually set (`SNAPSHOT_GIT_REMOTE`, `PERSIST_BACKUP_COMMAND`, `OPS_NTFY_TOPIC`). The code now
-> supports `REQUIRE_SNAPSHOT_REMOTE=true` and `REQUIRE_PERSIST_BACKUP=true` so `/health` can fail closed
-> until those off-box backups are configured.
+> defaults `REQUIRE_SNAPSHOT_REMOTE` and `REQUIRE_PERSIST_BACKUP` to true in production, so `/health` fails
+> closed until those off-box backups are configured unless that protection is explicitly disabled.
 
 Two findings are exploitable against the **current live system** and should land before the
 collaborator set grows via shared links:

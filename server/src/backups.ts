@@ -2,11 +2,12 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { alertOps } from "./notify.js";
 import { PERSIST_DIR } from "./persistence.js";
+import { envFlag, productionDefault } from "./env.js";
 
 const execShell = promisify(exec);
 
 const BACKUP_COMMAND = process.env.PERSIST_BACKUP_COMMAND || "";
-const REQUIRE_PERSIST_BACKUP = process.env.REQUIRE_PERSIST_BACKUP === "true";
+const REQUIRE_PERSIST_BACKUP = envFlag("REQUIRE_PERSIST_BACKUP", productionDefault());
 const BACKUP_INTERVAL_MS = Number(process.env.PERSIST_BACKUP_INTERVAL_MS || 24 * 60 * 60_000);
 const BACKUP_JITTER_MS = Number(process.env.PERSIST_BACKUP_JITTER_MS || 5 * 60_000);
 const BACKUP_TIMEOUT_MS = Number(process.env.PERSIST_BACKUP_TIMEOUT_MS || 30 * 60_000);

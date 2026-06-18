@@ -20,11 +20,12 @@ const warnings = rows.filter((r) => r.level === "warn" || r.level === "error");
 const writeRows = rows.filter((r) => r.ns === "file" && String(r.event).startsWith("write-"));
 const echoRows = rows.filter((r) => r.ns === "echo" || r.ns === "loop");
 const presenceRows = rows.filter((r) => r.ns === "presence");
+const skippedRows = rows.filter((r) => String(r.event).endsWith("-skipped") || field(r, "cause"));
 const suspiciousPaths = repeatedWritePaths(writeRows);
 
 section("Summary");
 line("Rows", rows.length);
-line("Time range", `${rows[0]?.ts || "?"} -> ${rows[rows.length - 1]?.ts || "?"}`);
+line("Time range", `${rowStamp(rows[0])} -> ${rowStamp(rows[rows.length - 1])}`);
 line("Levels", formatCounts(byLevel));
 line("Warnings/errors", warnings.length);
 if (input.context) {
@@ -44,6 +45,18 @@ for (const item of suspiciousPaths.slice(0, 10)) {
 line("Echo/loop rows", echoRows.length);
 for (const [key, count] of top(countBy(echoRows, (r) => `${r.ns}.${r.event}`), 10)) line(key, count);
 
+section("Skipped/Drop Signals");
+line("Skipped rows", skippedRows.length);
+for (const [key, count] of top(countBy(skippedRows, (r) => `${r.ns}.${r.event}:${field(r, "cause") || "no-cause"}`), 12)) line(key, count);
+const providerMissing = skippedRows.filter((r) => field(r, "cause") === "provider-missing");
+if (providerMissing.length > 0) {
+  console.log("");
+  console.log("Recent provider-missing events:");
+  for (const row of providerMissing.slice(-8)) {
+    console.log(`- ${rowStamp(row)} ${field(row, "path") || field(row, "relPath") || ""}`);
+  }
+}
+
 section("Presence Signals");
 for (const [key, count] of top(countBy(presenceRows, (r) => r.event), 10)) line(key, count);
 const missingPresence = presenceRows.filter((r) => String(r.event).includes("missing"));
@@ -51,20 +64,20 @@ if (missingPresence.length > 0) {
   console.log("");
   console.log("Presence anchors missing:");
   for (const row of missingPresence.slice(-10)) {
-    console.log(`- ${row.ts} ${row.event} ${field(row, "path") || ""}`);
+    console.log(`- ${rowStamp(row)} ${row.event} ${field(row, "path") || ""}`);
   }
 }
 
 if (warnings.length > 0) {
   section("Latest Warnings/Errors");
   for (const row of warnings.slice(-12)) {
-    console.log(`- ${row.ts} [${row.level}] ${row.ns}.${row.event} ${compactFields(row.fields)}`);
+    console.log(`- ${rowStamp(row)} [${row.level}] ${row.ns}.${row.event} ${compactFields(row.fields)}`);
   }
 }
 
 section("Latest Events");
 for (const row of rows.slice(-20)) {
-  console.log(`- ${row.ts} [${row.level}] ${row.ns}.${row.event} ${compactFields(row.fields)}`);
+  console.log(`- ${rowStamp(row)} [${row.level}] ${row.ns}.${row.event} ${compactFields(row.fields)}`);
 }
 
 function readInput(path) {
@@ -126,7 +139,7 @@ function printContext(context) {
   line("Shares", `count=${settings.shareCount ?? "?"}, legacy=${settings.legacyShareCount ?? "?"}, roles=${JSON.stringify(settings.roles || {})}`);
   line("Settings", `ntfy=${bool(settings.ntfyConfigured)}, customColor=${bool(settings.customCursorColor)}`);
   line("Runtime", `managers=${runtime.managerCount ?? "?"}, bound=${runtime.boundPath || "none"}, ready=${bool(runtime.boundProviderReady)}, presence=${bool(runtime.boundHasPresence)}`);
-  line("Trace", `active=${bool(diagnostics.traceActive)}, rows=${diagnostics.rowCount ?? "?"}, lines=${diagnostics.traceLineCount ?? "?"}, path=${diagnostics.tracePath || "?"}`);
+  line("Trace", `active=${bool(diagnostics.traceActive)}, rows=${diagnostics.rowCount ?? "?"}/${diagnostics.maxRows ?? "?"}, lines=${diagnostics.traceLineCount ?? "?"}/${diagnostics.maxTraceLines ?? "?"}, droppedRows=${diagnostics.droppedRows ?? 0}, droppedLines=${diagnostics.droppedTraceLines ?? 0}, nextSeq=${diagnostics.nextSeq ?? "?"}, path=${diagnostics.tracePath || "?"}`);
 }
 
 function formatFlags(obj, keys) {
@@ -142,10 +155,17 @@ function field(row, key) {
   return row?.fields && Object.prototype.hasOwnProperty.call(row.fields, key) ? row.fields[key] : undefined;
 }
 
+function rowStamp(row) {
+  if (!row) return "?";
+  const seq = row.seq != null ? `#${row.seq} ` : "";
+  const dt = row.dt != null ? ` +${row.dt}ms` : "";
+  return `${seq}${row.ts || "?"}${dt}`;
+}
+
 function compactFields(fields) {
   if (!fields || typeof fields !== "object") return "";
   const keep = {};
-  for (const key of ["shareId", "path", "relPath", "room", "reason", "cause", "seq", "len", "oldLen", "newLen", "status", "error"]) {
+  for (const key of ["shareId", "path", "relPath", "room", "reason", "cause", "len", "oldLen", "newLen", "status", "error", "providers", "activeFiles", "fileMissing", "tabMissing"]) {
     if (Object.prototype.hasOwnProperty.call(fields, key)) keep[key] = fields[key];
   }
   const keys = Object.keys(keep);

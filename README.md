@@ -248,8 +248,9 @@ Manual relay check against an already running server:
 cd plugin && node test/ws-sync.test.mjs <wsBase> <token>
 ```
 
-Diagnostic bundles exported from the plugin are JSON and safe to hand to an AI/debugging session. For
-a first-pass local summary:
+Diagnostic bundles exported from the plugin are JSON and safe to hand to an AI/debugging session.
+The summary tool also accepts the live `trace-....jsonl` file and highlights skipped file events,
+echo drops, repeated writes, and missing presence anchors:
 
 ```bash
 node tools/diagnostics-summary.mjs "<vault-config>/plugins/obsidian-collab/diagnostics/diagnostic-bundle-....json"

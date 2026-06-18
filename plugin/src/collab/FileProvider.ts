@@ -108,15 +108,17 @@ export class FileProvider {
   private onPending?: () => void;
 
   /** Force a reconnect of this file's socket (used by "Reconnect all"). */
-  reconnect(): void {
+  reconnect(): boolean {
     const p = this.provider;
-    if (!p) return;
+    if (!p) return true;
     try {
       p.wsUnsuccessfulReconnects = 0;
       p.disconnect();
       p.connect();
+      return true;
     } catch (e) {
       trace("ws", "file-reconnect-failed", { path: this.filePath, room: this.roomName, error: e });
+      return false;
     }
   }
 

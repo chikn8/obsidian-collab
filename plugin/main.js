@@ -10885,13 +10885,15 @@ var FileProvider = class _FileProvider {
   /** Force a reconnect of this file's socket (used by "Reconnect all"). */
   reconnect() {
     const p = this.provider;
-    if (!p) return;
+    if (!p) return true;
     try {
       p.wsUnsuccessfulReconnects = 0;
       p.disconnect();
       p.connect();
+      return true;
     } catch (e) {
       trace("ws", "file-reconnect-failed", { path: this.filePath, room: this.roomName, error: e });
+      return false;
     }
   }
   /** Y.Text + awareness for the active-editor yCollab binding. */
@@ -12165,6 +12167,7 @@ var SyncManager = class {
   }
   /** Force-reconnect every socket for this share (manifest + files). */
   reconnect() {
+    let ok = true;
     const mp = this.manifestProvider;
     if (mp) {
       try {
@@ -12172,10 +12175,14 @@ var SyncManager = class {
         mp.disconnect();
         mp.connect();
       } catch (e) {
+        ok = false;
         trace("ws", "manifest-reconnect-failed", { shareId: this.histShareId, error: e });
       }
     }
-    for (const [, fp] of this.fileProviders) fp.reconnect();
+    for (const [, fp] of this.fileProviders) {
+      if (!fp.reconnect()) ok = false;
+    }
+    return ok;
   }
   /** Re-render presence UI after Obsidian changes tab/file-explorer layout. */
   refreshPresenceUi() {
@@ -15840,7 +15847,12 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     this.instanceWatch = null;
     this.syncManagers = /* @__PURE__ */ new Map();
     this.modifyDebounceMap = /* @__PURE__ */ new Map();
-    this.debouncedRestart = (0, import_obsidian11.debounce)(() => this.restartShares(), 800, false);
+    this.debouncedRestart = (0, import_obsidian11.debounce)(() => {
+      this.restartShares().catch((e) => {
+        err("share", "restart failed", e);
+        new import_obsidian11.Notice("Collab could not restart syncing. Check the server URL and share settings.");
+      });
+    }, 800, false);
     this.debouncedPersistReadMarkers = (0, import_obsidian11.debounce)(() => {
       void this.persist();
     }, 500, false);
@@ -15981,16 +15993,24 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       id: "force-resync",
       name: "Force re-sync all folders",
       callback: async () => {
-        await this.stopAllShares();
-        await this.startAllShares();
+        try {
+          await this.stopAllShares();
+          await this.startAllShares();
+        } catch (e) {
+          err("share", "force resync failed", e);
+          new import_obsidian11.Notice("Collab force re-sync failed. Check diagnostics for details.");
+        }
       }
     });
     this.addCommand({
       id: "reconnect",
       name: "Reconnect now (all folders)",
       callback: () => {
-        this.eachManager((m) => m.reconnect());
-        new import_obsidian11.Notice("Reconnecting\u2026");
+        let failed = 0;
+        for (const m of this.syncManagers.values()) {
+          if (!m.reconnect()) failed++;
+        }
+        new import_obsidian11.Notice(failed > 0 ? `Reconnect requested; ${failed} share(s) reported an immediate failure.` : "Reconnecting\u2026");
         log("reconnect", "manual reconnect of", this.syncManagers.size, "shares");
       }
     });
@@ -16073,8 +16093,15 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       }
     );
     this.syncManagers.set(share.id, m);
-    await m.start();
-    log("share", "started", share.legacy ? "legacy" : share.id, "->", share.localFolder);
+    try {
+      await m.start();
+      log("share", "started", share.legacy ? "legacy" : share.id, "->", share.localFolder);
+    } catch (e) {
+      this.syncManagers.delete(share.id);
+      this.statusBar.setShare(share.id, { label: share.label, status: "error", fileCount: 0, pending: 0 });
+      err("share", "start failed", share.legacy ? "legacy" : share.id, share.localFolder, e);
+      new import_obsidian11.Notice(`Collab could not start "${share.label || share.localFolder}". Check the server URL and share settings.`);
+    }
   }
   async stopShare(id2) {
     const m = this.syncManagers.get(id2);

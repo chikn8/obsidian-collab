@@ -40,7 +40,12 @@ export default class CollabPlugin extends Plugin {
   private instanceWatch: InstanceWatch | null = null;
   private syncManagers: Map<string, SyncManager> = new Map();
   private modifyDebounceMap: Map<string, ReturnType<typeof debounce>> = new Map();
-  private debouncedRestart = debounce(() => this.restartShares(), 800, false);
+  private debouncedRestart = debounce(() => {
+    this.restartShares().catch((e) => {
+      err("share", "restart failed", e);
+      new Notice("Collab could not restart syncing. Check the server URL and share settings.");
+    });
+  }, 800, false);
   private debouncedPersistReadMarkers = debounce(() => { void this.persist(); }, 500, false);
   private debouncedPresenceDomRefresh = debounce(() => this.eachManager((m) => m.refreshPresenceUi()), 250, false);
   private presenceDomObserver: MutationObserver | null = null;
@@ -213,16 +218,24 @@ export default class CollabPlugin extends Plugin {
       id: "force-resync",
       name: "Force re-sync all folders",
       callback: async () => {
-        await this.stopAllShares();
-        await this.startAllShares();
+        try {
+          await this.stopAllShares();
+          await this.startAllShares();
+        } catch (e) {
+          err("share", "force resync failed", e);
+          new Notice("Collab force re-sync failed. Check diagnostics for details.");
+        }
       },
     });
     this.addCommand({
       id: "reconnect",
       name: "Reconnect now (all folders)",
       callback: () => {
-        this.eachManager((m) => m.reconnect());
-        new Notice("Reconnecting…");
+        let failed = 0;
+        for (const m of this.syncManagers.values()) {
+          if (!m.reconnect()) failed++;
+        }
+        new Notice(failed > 0 ? `Reconnect requested; ${failed} share(s) reported an immediate failure.` : "Reconnecting…");
         log("reconnect", "manual reconnect of", this.syncManagers.size, "shares");
       },
     });
@@ -311,8 +324,15 @@ export default class CollabPlugin extends Plugin {
       (_users: ConnectedUser[]) => {}
     );
     this.syncManagers.set(share.id, m);
-    await m.start();
-    log("share", "started", share.legacy ? "legacy" : share.id, "->", share.localFolder);
+    try {
+      await m.start();
+      log("share", "started", share.legacy ? "legacy" : share.id, "->", share.localFolder);
+    } catch (e) {
+      this.syncManagers.delete(share.id);
+      this.statusBar.setShare(share.id, { label: share.label, status: "error", fileCount: 0, pending: 0 });
+      err("share", "start failed", share.legacy ? "legacy" : share.id, share.localFolder, e);
+      new Notice(`Collab could not start "${share.label || share.localFolder}". Check the server URL and share settings.`);
+    }
   }
 
   private async stopShare(id: string): Promise<void> {

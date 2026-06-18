@@ -162,7 +162,8 @@ export class SyncManager {
   }
 
   /** Force-reconnect every socket for this share (manifest + files). */
-  reconnect(): void {
+  reconnect(): boolean {
+    let ok = true;
     const mp = this.manifestProvider;
     if (mp) {
       try {
@@ -170,10 +171,14 @@ export class SyncManager {
         mp.disconnect();
         mp.connect();
       } catch (e) {
+        ok = false;
         trace("ws", "manifest-reconnect-failed", { shareId: this.histShareId, error: e });
       }
     }
-    for (const [, fp] of this.fileProviders) fp.reconnect();
+    for (const [, fp] of this.fileProviders) {
+      if (!fp.reconnect()) ok = false;
+    }
+    return ok;
   }
 
   /** Re-render presence UI after Obsidian changes tab/file-explorer layout. */

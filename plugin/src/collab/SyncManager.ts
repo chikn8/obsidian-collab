@@ -5,7 +5,7 @@ import { FileProvider } from "./FileProvider";
 import { EchoGuard, beginRemoteApply, endRemoteApply, isApplyingRemote } from "./EchoGuard";
 import { manifestRoom, fileRoom, shareToken, shareAuthParams } from "../utils/roomName";
 import { sendFrame, MSG_NOTIFY, MSG_TOPIC_REGISTER } from "../utils/frames";
-import { log } from "../utils/log";
+import { log, trace } from "../utils/log";
 import { isRecoverableTombstone, liveManifestEntry, safeRelPath, shouldPublishLocalOnStartup, shouldResurrect } from "../utils/manifestLogic";
 import { colorFor, MANIFEST_SCHEMA_VERSION } from "../types";
 import type { CollabPluginSettings, ConnectedUser, SyncStatus, Share, ManifestEntry } from "../types";
@@ -164,6 +164,12 @@ export class SyncManager {
   /** Start syncing the share's folder */
   async start(): Promise<void> {
     if (!this.share.localFolder || !this.settings.serverUrl) return;
+    trace("share", "start", {
+      shareId: this.share.legacy ? "legacy" : this.share.id,
+      localFolder: this.share.localFolder,
+      role: this.role,
+      legacy: !!this.share.legacy,
+    });
 
     this.syncStatus = "connecting";
     this.onStatusChange("connecting", 0, 0);
@@ -182,6 +188,11 @@ export class SyncManager {
       { uid: this.settings.uid, name: this.settings.displayName, color: this.userColor() },
       {
         onStatus: (status) => {
+          trace("ws", "manifest-status", {
+            shareId: this.share.legacy ? "legacy" : this.share.id,
+            room: manifestRoom(this.share),
+            status,
+          });
           if (status === "connected") {
             this.syncStatus = "connected";
             // Register our ntfy topic so collaborators can @mention us (even offline).
@@ -194,6 +205,11 @@ export class SyncManager {
           this.emitStatus();
         },
         onSynced: (synced) => {
+          trace("ws", "manifest-synced", {
+            shareId: this.share.legacy ? "legacy" : this.share.id,
+            room: manifestRoom(this.share),
+            synced,
+          });
           if (synced) {
             this.onManifestSynced();
           }
@@ -217,6 +233,11 @@ export class SyncManager {
   /** Called after initial manifest sync -- reconcile local folder with manifest */
   private async onManifestSynced(): Promise<void> {
     this.processingManifest = true;
+    trace("manifest", "startup-reconcile-start", {
+      shareId: this.histShareId,
+      role: this.role,
+      entries: this.manifestMap?.size ?? 0,
+    });
 
     // Schema v1 → v2 migration: backfill fileIds (idempotent; LWW-converges if
     // two clients migrate at once). Editors only — viewers can't write.
@@ -294,6 +315,10 @@ export class SyncManager {
 
     this.syncStatus = "connected";
     this.emitStatus();
+    trace("manifest", "startup-reconcile-done", {
+      shareId: this.histShareId,
+      providers: this.fileProviders.size,
+    });
   }
 
   /**
@@ -326,6 +351,15 @@ export class SyncManager {
       if (!relPath) continue;
       const entry = this.manifestMap!.get(key) as ManifestEntry | undefined;
       if (!entry) continue;
+      trace("manifest", "change", {
+        shareId: this.histShareId,
+        relPath,
+        action: change.action,
+        exists: entry.exists,
+        fileId: entry.fileId,
+        renamedTo: entry.renamedTo,
+        deletedAt: entry.deletedAt,
+      });
 
       const fullPath = this.toFullPath(relPath);
 
@@ -384,6 +418,13 @@ export class SyncManager {
       file instanceof TFile &&
       shouldResurrect({ localMtime: file.stat.mtime, deletedAt, renamedTo: entry.renamedTo })
     ) {
+      trace("manifest", "tombstone-resurrect", {
+        shareId: this.histShareId,
+        relPath: safeRel,
+        deletedAt,
+        localMtime: file.stat.mtime,
+        renamedTo: entry.renamedTo,
+      });
       const fileId = entry.fileId || this.fileIds.get(relPath) || newFileId();
       this.fileIds.set(safeRel, fileId);
       this.manifestMap!.set(safeRel, liveManifestEntry(entry, safeRel, fileId, this.settings.displayName, {
@@ -396,6 +437,13 @@ export class SyncManager {
     }
 
     if (file instanceof TFile) {
+      trace("manifest", "tombstone-apply", {
+        shareId: this.histShareId,
+        relPath: safeRel,
+        deletedAt,
+        renamedTo: entry.renamedTo,
+        hasProvider: !!provider,
+      });
       if (notifyIfOpen) {
         const activeFile = this.app.workspace.getActiveFile();
         if (activeFile && activeFile.path === fullPath && !entry.renamedTo) {
@@ -436,6 +484,12 @@ export class SyncManager {
     if (inflight) return inflight;
 
     const task = (async () => {
+      trace("file", "provider-create-start", {
+        shareId: this.histShareId,
+        relPath,
+        fullPath,
+        hasSeedState: !!opts?.seedState,
+      });
       // Read initial content
       let content = "";
       const file = this.app.vault.getAbstractFileByPath(fullPath);
@@ -460,6 +514,12 @@ export class SyncManager {
 
       await fp.start(content, { seedState: opts?.seedState ?? null });
       this.fileProviders.set(relPath, fp);
+      trace("file", "provider-create-done", {
+        shareId: this.histShareId,
+        relPath,
+        fullPath,
+        initialLen: content.length,
+      });
     })();
 
     this.creatingProviders.set(relPath, task);
@@ -508,6 +568,7 @@ export class SyncManager {
 
     const relPath = this.toRelativePath(file.path);
     if (!this.safeManifestRelPath(relPath, "local create")) return;
+    trace("vault", "local-create", { shareId: this.histShareId, relPath, path: file.path });
 
     if (this.manifestMap) {
       const prev = this.manifestMap.get(relPath) as ManifestEntry | undefined;
@@ -536,6 +597,7 @@ export class SyncManager {
       const content = await this.app.vault.read(file);
       // Our own write echo (deterministic, content-based — no timing window).
       if (this.echo.isEcho(file.path, content)) return;
+      trace("vault", "local-modify", { shareId: this.histShareId, relPath, path: file.path, len: content.length });
       fp.applyLocalChange(content);
     }
   }
@@ -548,6 +610,7 @@ export class SyncManager {
 
     const relPath = this.toRelativePath(file.path);
     if (!this.safeManifestRelPath(relPath, "local delete")) return;
+    trace("vault", "local-delete", { shareId: this.histShareId, relPath, path: file.path });
     const fp = this.fileProviders.get(relPath);
 
     // Never lose stuff: snapshot + trash the content BEFORE tearing the doc down.
@@ -590,6 +653,13 @@ export class SyncManager {
     if (isApplyingRemote()) return; // never re-enter while applying a remote change
     const oldWasSyncable = this.isInLinkedFolder(oldPath) && oldPath.toLowerCase().endsWith(".md");
     const newIsSyncable = this.isInLinkedFolder(file.path) && this.isSyncableFile(file);
+    trace("vault", "local-rename", {
+      shareId: this.histShareId,
+      oldPath,
+      newPath: file.path,
+      oldWasSyncable,
+      newIsSyncable,
+    });
 
     if (oldWasSyncable && newIsSyncable) {
       await this.transferRename(oldPath, file.path);
@@ -671,6 +741,7 @@ export class SyncManager {
     if (!this.safeManifestRelPath(oldRel, "local rename old")) return;
     if (!this.safeManifestRelPath(newRel, "local rename new")) return;
     if (oldRel === newRel) return;
+    trace("manifest", "rename-transfer-start", { shareId: this.histShareId, oldRel, newRel });
 
     const oldFp = this.fileProviders.get(oldRel);
     const oldEntry = (this.manifestMap?.get(oldRel) as ManifestEntry | undefined) || ({} as ManifestEntry);
@@ -707,6 +778,7 @@ export class SyncManager {
       });
     }
     log("delete", "renamed", oldRel, "→", newRel, "(content transferred)");
+    trace("manifest", "rename-transfer-done", { shareId: this.histShareId, oldRel, newRel, fileId });
     this.emitStatus();
   }
 

@@ -952,8 +952,8 @@ var offChange = (eventHandler) => usePolyfill || removeEventListener(
 // node_modules/lib0/trait/equality.js
 var EqualityTraitSymbol = Symbol("Equality");
 var equals = (a, b) => {
-  var _a;
-  return a === b || !!((_a = a == null ? void 0 : a[EqualityTraitSymbol]) == null ? void 0 : _a.call(a, b)) || false;
+  var _a2;
+  return a === b || !!((_a2 = a == null ? void 0 : a[EqualityTraitSymbol]) == null ? void 0 : _a2.call(a, b)) || false;
 };
 
 // node_modules/lib0/object.js
@@ -2007,8 +2007,8 @@ var PURPLE = create6();
 var ORANGE = create6();
 var UNCOLOR = create6();
 var computeNoColorLoggingArgs = (args2) => {
-  var _a;
-  if (args2.length === 1 && ((_a = args2[0]) == null ? void 0 : _a.constructor) === Function) {
+  var _a2;
+  if (args2.length === 1 && ((_a2 = args2[0]) == null ? void 0 : _a2.constructor) === Function) {
     args2 = /** @type {Array<string|Symbol|Object|number>} */
     /** @type {[function]} */
     args2[0]();
@@ -2053,8 +2053,8 @@ var _browserStyleMap = {
   [UNCOLOR]: create5("color", "black")
 };
 var computeBrowserLoggingArgs = (args2) => {
-  var _a;
-  if (args2.length === 1 && ((_a = args2[0]) == null ? void 0 : _a.constructor) === Function) {
+  var _a2;
+  if (args2.length === 1 && ((_a2 = args2[0]) == null ? void 0 : _a2.constructor) === Function) {
     args2 = /** @type {Array<string|Symbol|Object|number>} */
     /** @type {[function]} */
     args2[0]();
@@ -3477,8 +3477,8 @@ var relativePositionToJSON = (rpos) => {
   return json;
 };
 var createRelativePositionFromJSON = (json) => {
-  var _a;
-  return new RelativePosition(json.type == null ? null : createID(json.type.client, json.type.clock), (_a = json.tname) != null ? _a : null, json.item == null ? null : createID(json.item.client, json.item.clock), json.assoc == null ? 0 : json.assoc);
+  var _a2;
+  return new RelativePosition(json.type == null ? null : createID(json.type.client, json.type.clock), (_a2 = json.tname) != null ? _a2 : null, json.item == null ? null : createID(json.item.client, json.item.clock), json.assoc == null ? 0 : json.assoc);
 };
 var AbsolutePosition = class {
   /**
@@ -5014,8 +5014,8 @@ var AbstractType = class {
   }
 };
 var typeListSlice = (type, start, end) => {
-  var _a;
-  (_a = type.doc) != null ? _a : warnPrematureAccess();
+  var _a2;
+  (_a2 = type.doc) != null ? _a2 : warnPrematureAccess();
   if (start < 0) {
     start = type._length + start;
   }
@@ -5043,8 +5043,8 @@ var typeListSlice = (type, start, end) => {
   return cs;
 };
 var typeListToArray = (type) => {
-  var _a;
-  (_a = type.doc) != null ? _a : warnPrematureAccess();
+  var _a2;
+  (_a2 = type.doc) != null ? _a2 : warnPrematureAccess();
   const cs = [];
   let n = type._start;
   while (n !== null) {
@@ -5059,10 +5059,10 @@ var typeListToArray = (type) => {
   return cs;
 };
 var typeListForEach = (type, f) => {
-  var _a;
+  var _a2;
   let index = 0;
   let n = type._start;
-  (_a = type.doc) != null ? _a : warnPrematureAccess();
+  (_a2 = type.doc) != null ? _a2 : warnPrematureAccess();
   while (n !== null) {
     if (n.countable && !n.deleted) {
       const c = n.content.getContent();
@@ -5115,8 +5115,8 @@ var typeListCreateIterator = (type) => {
   };
 };
 var typeListGet = (type, index) => {
-  var _a;
-  (_a = type.doc) != null ? _a : warnPrematureAccess();
+  var _a2;
+  (_a2 = type.doc) != null ? _a2 : warnPrematureAccess();
   const marker = findMarker(type, index);
   let n = type._start;
   if (marker !== null) {
@@ -5326,15 +5326,15 @@ var typeMapSet = (transaction, parent, key, value) => {
   new Item(createID(ownClientId, getState(doc2.store, ownClientId)), left, left && left.lastId, null, null, parent, key, content).integrate(transaction, 0);
 };
 var typeMapGet = (parent, key) => {
-  var _a;
-  (_a = parent.doc) != null ? _a : warnPrematureAccess();
+  var _a2;
+  (_a2 = parent.doc) != null ? _a2 : warnPrematureAccess();
   const val = parent._map.get(key);
   return val !== void 0 && !val.deleted ? val.content.getContent()[val.length - 1] : void 0;
 };
 var typeMapGetAll = (parent) => {
-  var _a;
+  var _a2;
   const res = {};
-  (_a = parent.doc) != null ? _a : warnPrematureAccess();
+  (_a2 = parent.doc) != null ? _a2 : warnPrematureAccess();
   parent._map.forEach((value, key) => {
     if (!value.deleted) {
       res[key] = value.content.getContent()[value.length - 1];
@@ -5343,8 +5343,8 @@ var typeMapGetAll = (parent) => {
   return res;
 };
 var typeMapHas = (parent, key) => {
-  var _a;
-  (_a = parent.doc) != null ? _a : warnPrematureAccess();
+  var _a2;
+  (_a2 = parent.doc) != null ? _a2 : warnPrematureAccess();
   const val = parent._map.get(key);
   return val !== void 0 && !val.deleted;
 };
@@ -5362,8 +5362,8 @@ var typeMapGetAllSnapshot = (parent, snapshot) => {
   return res;
 };
 var createMapIterator = (type) => {
-  var _a;
-  (_a = type.doc) != null ? _a : warnPrematureAccess();
+  var _a2;
+  (_a2 = type.doc) != null ? _a2 : warnPrematureAccess();
   return iteratorFilter(
     type._map.entries(),
     /** @param {any} entry */
@@ -5432,8 +5432,8 @@ var YArray = class _YArray extends AbstractType {
     return arr;
   }
   get length() {
-    var _a;
-    (_a = this.doc) != null ? _a : warnPrematureAccess();
+    var _a2;
+    (_a2 = this.doc) != null ? _a2 : warnPrematureAccess();
     return this._length;
   }
   /**
@@ -5675,8 +5675,8 @@ var YMap = class _YMap extends AbstractType {
    * @return {Object<string,any>}
    */
   toJSON() {
-    var _a;
-    (_a = this.doc) != null ? _a : warnPrematureAccess();
+    var _a2;
+    (_a2 = this.doc) != null ? _a2 : warnPrematureAccess();
     const map3 = {};
     this._map.forEach((item, key) => {
       if (!item.deleted) {
@@ -5739,8 +5739,8 @@ var YMap = class _YMap extends AbstractType {
    * @param {function(MapType,string,YMap<MapType>):void} f A function to execute on every element of this YArray.
    */
   forEach(f) {
-    var _a;
-    (_a = this.doc) != null ? _a : warnPrematureAccess();
+    var _a2;
+    (_a2 = this.doc) != null ? _a2 : warnPrematureAccess();
     this._map.forEach((item, key) => {
       if (!item.deleted) {
         f(item.content.getContent()[item.length - 1], key, this);
@@ -5952,15 +5952,15 @@ var updateCurrentAttributes = (currentAttributes, format) => {
   }
 };
 var minimizeAttributeChanges = (currPos, attributes) => {
-  var _a;
+  var _a2;
   while (true) {
     if (currPos.right === null) {
       break;
     } else if (currPos.right.deleted || currPos.right.content.constructor === ContentFormat && equalAttrs(
-      (_a = attributes[
+      (_a2 = attributes[
         /** @type {ContentFormat} */
         currPos.right.content.key
-      ]) != null ? _a : null,
+      ]) != null ? _a2 : null,
       /** @type {ContentFormat} */
       currPos.right.content.value
     )) ;
@@ -5971,13 +5971,13 @@ var minimizeAttributeChanges = (currPos, attributes) => {
   }
 };
 var insertAttributes = (transaction, parent, currPos, attributes) => {
-  var _a;
+  var _a2;
   const doc2 = transaction.doc;
   const ownClientId = doc2.clientID;
   const negatedAttributes = /* @__PURE__ */ new Map();
   for (const key in attributes) {
     const val = attributes[key];
-    const currentVal = (_a = currPos.currentAttributes.get(key)) != null ? _a : null;
+    const currentVal = (_a2 = currPos.currentAttributes.get(key)) != null ? _a2 : null;
     if (!equalAttrs(currentVal, val)) {
       negatedAttributes.set(key, currentVal);
       const { left, right } = currPos;
@@ -6064,7 +6064,7 @@ var formatText = (transaction, parent, currPos, length2, attributes) => {
   insertNegatedAttributes(transaction, parent, currPos, negatedAttributes);
 };
 var cleanupFormattingGap = (transaction, start, curr, startAttributes, currAttributes) => {
-  var _a, _b;
+  var _a2, _b2;
   let end = start;
   const endFormats = create();
   while (end && (!end.countable || end.deleted)) {
@@ -6091,11 +6091,11 @@ var cleanupFormattingGap = (transaction, start, curr, startAttributes, currAttri
             /** @type {ContentFormat} */
             content
           );
-          const startAttrValue = (_a = startAttributes.get(key)) != null ? _a : null;
+          const startAttrValue = (_a2 = startAttributes.get(key)) != null ? _a2 : null;
           if (endFormats.get(key) !== content || startAttrValue === value) {
             start.delete(transaction);
             cleanups++;
-            if (!reachedCurr && ((_b = currAttributes.get(key)) != null ? _b : null) === value && startAttrValue !== value) {
+            if (!reachedCurr && ((_b2 = currAttributes.get(key)) != null ? _b2 : null) === value && startAttrValue !== value) {
               if (startAttrValue === null) {
                 currAttributes.delete(key);
               } else {
@@ -6309,7 +6309,7 @@ var YTextEvent = class extends YEvent {
       );
       const delta = [];
       transact(y, (transaction) => {
-        var _a, _b, _c;
+        var _a2, _b2, _c;
         const currentAttributes = /* @__PURE__ */ new Map();
         const oldAttributes = /* @__PURE__ */ new Map();
         let item = this.target._start;
@@ -6412,12 +6412,12 @@ var YTextEvent = class extends YEvent {
               );
               if (this.adds(item)) {
                 if (!this.deletes(item)) {
-                  const curVal = (_a = currentAttributes.get(key)) != null ? _a : null;
+                  const curVal = (_a2 = currentAttributes.get(key)) != null ? _a2 : null;
                   if (!equalAttrs(curVal, value)) {
                     if (action === "retain") {
                       addOp();
                     }
-                    if (equalAttrs(value, (_b = oldAttributes.get(key)) != null ? _b : null)) {
+                    if (equalAttrs(value, (_b2 = oldAttributes.get(key)) != null ? _b2 : null)) {
                       delete attributes[key];
                     } else {
                       attributes[key] = value;
@@ -6502,8 +6502,8 @@ var YText = class _YText extends AbstractType {
    * @type {number}
    */
   get length() {
-    var _a;
-    (_a = this.doc) != null ? _a : warnPrematureAccess();
+    var _a2;
+    (_a2 = this.doc) != null ? _a2 : warnPrematureAccess();
     return this._length;
   }
   /**
@@ -6554,8 +6554,8 @@ var YText = class _YText extends AbstractType {
    * @public
    */
   toString() {
-    var _a;
-    (_a = this.doc) != null ? _a : warnPrematureAccess();
+    var _a2;
+    (_a2 = this.doc) != null ? _a2 : warnPrematureAccess();
     let str = "";
     let n = this._start;
     while (n !== null) {
@@ -6619,8 +6619,8 @@ var YText = class _YText extends AbstractType {
    * @public
    */
   toDelta(snapshot, prevSnapshot, computeYChange) {
-    var _a;
-    (_a = this.doc) != null ? _a : warnPrematureAccess();
+    var _a2;
+    (_a2 = this.doc) != null ? _a2 : warnPrematureAccess();
     const ops = [];
     const currentAttributes = /* @__PURE__ */ new Map();
     const doc2 = (
@@ -6898,13 +6898,13 @@ var YXmlTreeWalker = class {
    * @param {function(AbstractType<any>):boolean} [f]
    */
   constructor(root, f = () => true) {
-    var _a;
+    var _a2;
     this._filter = f;
     this._root = root;
     this._currentNode = /** @type {Item} */
     root._start;
     this._firstCall = true;
-    (_a = root.doc) != null ? _a : warnPrematureAccess();
+    (_a2 = root.doc) != null ? _a2 : warnPrematureAccess();
   }
   [Symbol.iterator]() {
     return this;
@@ -7003,8 +7003,8 @@ var YXmlFragment = class _YXmlFragment extends AbstractType {
     return el;
   }
   get length() {
-    var _a;
-    (_a = this.doc) != null ? _a : warnPrematureAccess();
+    var _a2;
+    (_a2 = this.doc) != null ? _a2 : warnPrematureAccess();
     return this._prelimContent === null ? this._length : this._prelimContent.length;
   }
   /**
@@ -9846,17 +9846,17 @@ function detectDevice() {
 var DEVICE_ID_KEY = "obsidian-collab-device-id";
 var cachedDeviceId = null;
 function installDeviceId() {
-  var _a, _b, _c, _d;
+  var _a2, _b2, _c, _d;
   if (cachedDeviceId) return cachedDeviceId;
   try {
-    const existing = (_a = globalThis.localStorage) == null ? void 0 : _a.getItem(DEVICE_ID_KEY);
+    const existing = (_a2 = globalThis.localStorage) == null ? void 0 : _a2.getItem(DEVICE_ID_KEY);
     if (existing) {
       cachedDeviceId = existing;
       return existing;
     }
   } catch (e) {
   }
-  const id2 = ((_c = (_b = globalThis.crypto) == null ? void 0 : _b.randomUUID) == null ? void 0 : _c.call(_b)) || `device-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const id2 = ((_c = (_b2 = globalThis.crypto) == null ? void 0 : _b2.randomUUID) == null ? void 0 : _c.call(_b2)) || `device-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   try {
     (_d = globalThis.localStorage) == null ? void 0 : _d.setItem(DEVICE_ID_KEY, id2);
   } catch (e) {
@@ -10111,15 +10111,152 @@ var IndexeddbPersistence = class extends Observable {
 };
 
 // src/utils/log.ts
+var MAX_ROWS = 2500;
+var MAX_TRACE_LINES = 6e3;
+var MAX_STRING = 500;
+var SECRET_KEY_RE = /(secret|password|token|key|code|auth|credential)/i;
 var DEBUG = false;
-function setDebug(on) {
-  DEBUG = on;
+var DIAGNOSTIC_FILE = false;
+var appRef = null;
+var uidHint = "";
+var traceUntil = 0;
+var flushTimer = null;
+var flushChain = Promise.resolve();
+var lastWritePath = "";
+var _a, _b;
+var sessionId = ((_b = (_a = globalThis.crypto) == null ? void 0 : _a.randomUUID) == null ? void 0 : _b.call(_a)) || `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+var rows = [];
+var traceLines = [];
+function configureDiagnostics(config) {
+  if (config.app) appRef = config.app;
+  if (config.uid !== void 0) uidHint = config.uid;
+  if (config.debugLogging !== void 0) DEBUG = config.debugLogging;
+  if (config.diagnosticLogging !== void 0) DIAGNOSTIC_FILE = config.diagnosticLogging;
+}
+function setDiagnosticLogging(on) {
+  DIAGNOSTIC_FILE = on;
+  record("info", "diag", on ? "file-enabled" : "file-disabled");
+}
+function startDiagnosticTrace(ms = 2 * 6e4) {
+  traceUntil = Math.max(traceUntil, Date.now() + ms);
+  record("info", "diag", "trace-started", { durationMs: ms, path: tracePath() });
+  return tracePath();
+}
+async function exportDiagnosticBundle() {
+  const app = appRef;
+  if (!app) throw new Error("diagnostics not configured");
+  const path = `${diagnosticDir()}/diagnostic-bundle-${stamp()}.json`;
+  const body = JSON.stringify({
+    exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    sessionId,
+    uid: uidHint ? redactUid(uidHint) : "",
+    rows
+  }, null, 2);
+  await app.vault.adapter.mkdir(diagnosticDir()).catch(() => {
+  });
+  await app.vault.adapter.write(path, body);
+  return path;
+}
+function trace(ns, event, fields = {}) {
+  record("debug", ns, event, fields);
 }
 function log(ns, ...args2) {
+  record("debug", ns, "log", { args: args2 });
   if (DEBUG) console.log(`%c[collab:${ns}]`, "color:#54a0ff;font-weight:600", ...args2);
 }
 function err(ns, ...args2) {
+  record("error", ns, "error", { args: args2 });
   console.error(`[collab:${ns}]`, ...args2);
+}
+function record(level, ns, event, fields = {}) {
+  const row = {
+    ts: (/* @__PURE__ */ new Date()).toISOString(),
+    t: Date.now(),
+    sessionId,
+    level,
+    ns,
+    event,
+    fields: sanitizeRecord(fields)
+  };
+  rows.push(row);
+  while (rows.length > MAX_ROWS) rows.shift();
+  if (DIAGNOSTIC_FILE || Date.now() < traceUntil || level === "warn" || level === "error") {
+    traceLines.push(JSON.stringify(row));
+    while (traceLines.length > MAX_TRACE_LINES) traceLines.shift();
+    scheduleFlush();
+  }
+}
+function scheduleFlush() {
+  if (!appRef) return;
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    flushChain = flushChain.then(flushTraceFile, flushTraceFile);
+  }, 600);
+}
+async function flushTraceFile() {
+  const app = appRef;
+  if (!app || traceLines.length === 0) return;
+  const path = tracePath();
+  lastWritePath = path;
+  try {
+    await app.vault.adapter.mkdir(diagnosticDir()).catch(() => {
+    });
+    await app.vault.adapter.write(path, traceLines.join("\n") + "\n");
+  } catch (e) {
+    if (DEBUG) console.warn("[collab:diag] failed to write diagnostic trace", e);
+  }
+}
+function sanitizeRecord(fields) {
+  const out = {};
+  for (const [key, value] of Object.entries(fields)) {
+    out[key] = SECRET_KEY_RE.test(key) ? "[redacted]" : clean(value, key, 0);
+  }
+  return out;
+}
+function clean(value, key, depth) {
+  if (SECRET_KEY_RE.test(key)) return "[redacted]";
+  if (value == null || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") return cleanString(value, key);
+  if (value instanceof Error) return { name: value.name, message: value.message, stack: trim(value.stack || "") };
+  if (value instanceof Uint8Array) return { byteLength: value.byteLength };
+  if (Array.isArray(value)) {
+    if (depth > 2) return `[array:${value.length}]`;
+    return value.slice(0, 20).map((v, i) => clean(v, `${key}.${i}`, depth + 1));
+  }
+  if (typeof value === "object") {
+    if (depth > 2) return "[object]";
+    const out = {};
+    for (const [k, v] of Object.entries(value).slice(0, 40)) {
+      out[k] = clean(v, k, depth + 1);
+    }
+    return out;
+  }
+  return String(value);
+}
+function cleanString(value, key) {
+  if (SECRET_KEY_RE.test(key)) return "[redacted]";
+  if (key.toLowerCase().includes("uid")) return redactUid(value);
+  return trim(value);
+}
+function trim(value) {
+  if (value.length <= MAX_STRING) return value;
+  return `${value.slice(0, MAX_STRING)}\u2026(${value.length} chars)`;
+}
+function redactUid(uid) {
+  if (uid.length <= 8) return uid;
+  return `${uid.slice(0, 4)}\u2026${uid.slice(-4)}`;
+}
+function diagnosticDir() {
+  var _a2;
+  const configDir = ((_a2 = appRef == null ? void 0 : appRef.vault) == null ? void 0 : _a2.configDir) || ".obsidian";
+  return `${configDir}/plugins/obsidian-collab/diagnostics`;
+}
+function tracePath() {
+  return lastWritePath || `${diagnosticDir()}/trace-${sessionId.slice(0, 8)}.jsonl`;
+}
+function stamp() {
+  return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
 }
 
 // src/collab/EchoGuard.ts
@@ -10136,9 +10273,11 @@ function fingerprint(s) {
 var _remoteApplyDepth = 0;
 function beginRemoteApply() {
   _remoteApplyDepth++;
+  trace("loop", "remote-apply-begin", { depth: _remoteApplyDepth });
 }
 function endRemoteApply() {
   _remoteApplyDepth = Math.max(0, _remoteApplyDepth - 1);
+  trace("loop", "remote-apply-end", { depth: _remoteApplyDepth });
 }
 function isApplyingRemote() {
   return _remoteApplyDepth > 0;
@@ -10151,14 +10290,18 @@ var EchoGuard = class {
   }
   /** Record that the plugin is about to write `content` to `path`. */
   mark(path, content) {
-    this.push(path, fingerprint(content));
+    const fp = fingerprint(content);
+    trace("loop", "mark-write", { path, fp, len: content.length });
+    this.push(path, fp);
   }
   /** Record that the plugin is about to create `path` (empty file). */
   markCreated(path) {
+    trace("loop", "mark-create", { path });
     this.push(path, CREATED);
   }
   /** Record that the plugin is about to delete `path`. */
   markDeleted(path) {
+    trace("loop", "mark-delete", { path });
     this.push(path, TOMBSTONE);
   }
   /**
@@ -10167,18 +10310,26 @@ var EchoGuard = class {
    * duplicate FS events for the same write are all absorbed; TTL reaps).
    */
   isEcho(path, content) {
-    return this.matches(path, fingerprint(content), false);
+    const fp = fingerprint(content);
+    const hit = this.matches(path, fp, false);
+    trace("loop", hit ? "echo-match" : "echo-miss", { path, fp, len: content.length, kind: "modify" });
+    return hit;
   }
   /** True when an incoming create for `path` is a plugin-initiated create. Consumes. */
   isCreatedEcho(path) {
-    return this.matches(path, CREATED, true);
+    const hit = this.matches(path, CREATED, true);
+    trace("loop", hit ? "echo-match" : "echo-miss", { path, kind: "create" });
+    return hit;
   }
   /** True when an incoming delete for `path` matches a plugin-initiated delete. Consumes. */
   isDeletedEcho(path) {
-    return this.matches(path, TOMBSTONE, true);
+    const hit = this.matches(path, TOMBSTONE, true);
+    trace("loop", hit ? "echo-match" : "echo-miss", { path, kind: "delete" });
+    return hit;
   }
   /** Drop all marks for a path (e.g. when a file is permanently removed). */
   clear(path) {
+    trace("loop", "clear", { path });
     this.marks.delete(path);
   }
   push(path, fp) {
@@ -10244,6 +10395,7 @@ var DEFAULT_SETTINGS = {
   uid: "",
   ntfyTopic: "",
   debugLogging: false,
+  diagnosticLogging: false,
   shares: []
 };
 var LEGACY_SHARE_ID = "__legacy__";
@@ -10284,14 +10436,17 @@ var FileProvider = class _FileProvider {
     /** When the active editor is bound via yCollab, it owns this doc — the
      *  headless disk round-trip is suppressed to avoid double-apply/flicker. */
     this.editorBound = false;
-    var _a;
+    this.editorFlushTimer = null;
+    this.writeQueue = Promise.resolve();
+    this.writeSeq = 0;
+    var _a2;
     this.app = params2.app;
     this.settings = params2.settings;
     this.filePath = params2.filePath;
     this.roomName = params2.roomName;
     this.shareId = params2.shareId;
     this.token = params2.token;
-    this.authParams = (_a = params2.authParams) != null ? _a : {};
+    this.authParams = (_a2 = params2.authParams) != null ? _a2 : {};
     this.echo = params2.echo;
     this.onStatusChange = params2.onStatusChange;
     this.onUsersChange = params2.onUsersChange;
@@ -10318,8 +10473,8 @@ var FileProvider = class _FileProvider {
     return this.ytext;
   }
   getAwareness() {
-    var _a, _b;
-    return (_b = (_a = this.provider) == null ? void 0 : _a.awareness) != null ? _b : null;
+    var _a2, _b2;
+    return (_b2 = (_a2 = this.provider) == null ? void 0 : _a2.awareness) != null ? _b2 : null;
   }
   getProvider() {
     return this.provider;
@@ -10330,16 +10485,38 @@ var FileProvider = class _FileProvider {
   isReady() {
     return this.isInitialized && !this.destroyed;
   }
-  /** Toggle editor-owned mode. On unbind, flush ytext → disk once. */
-  setEditorBound(bound) {
+  /** Toggle editor-owned mode. On unbind, flush ytext → disk once and wait for it. */
+  async setEditorBound(bound) {
+    var _a2, _b2;
+    const previous = this.editorBound;
     this.editorBound = bound;
-    if (!bound) this.flushToDisk();
+    trace("bind", "editor-bound", {
+      path: this.filePath,
+      room: this.roomName,
+      previous,
+      bound,
+      ready: this.isInitialized,
+      len: (_b2 = (_a2 = this.ytext) == null ? void 0 : _a2.length) != null ? _b2 : null
+    });
+    if (!bound) await this.flushToDisk("editor-unbound");
   }
   /** Force-write current ytext to disk (used when the editor unbinds). */
-  async flushToDisk() {
-    await this.writeToFile(true);
+  async flushToDisk(reason = "manual") {
+    if (this.editorFlushTimer) {
+      clearTimeout(this.editorFlushTimer);
+      this.editorFlushTimer = null;
+    }
+    await this.writeToFile(true, reason);
   }
   async start(initialContent, opts) {
+    var _a2;
+    trace("file", "start", {
+      path: this.filePath,
+      room: this.roomName,
+      shareId: this.shareId,
+      initialLen: (_a2 = initialContent == null ? void 0 : initialContent.length) != null ? _a2 : 0,
+      hasSeedState: !!(opts == null ? void 0 : opts.seedState)
+    });
     this.ydoc = new Doc();
     this.ytext = this.ydoc.getText("codemirror");
     this.idbProvider = new IndexeddbPersistence(
@@ -10347,6 +10524,7 @@ var FileProvider = class _FileProvider {
       this.ydoc
     );
     await this.idbProvider.whenSynced;
+    trace("file", "idb-synced", { path: this.filePath, room: this.roomName, idbLen: this.ytext.length });
     if (opts == null ? void 0 : opts.seedState) {
       if (this.ytext.length === 0) {
         try {
@@ -10370,6 +10548,12 @@ var FileProvider = class _FileProvider {
       );
       await this.saveSnapshot(diskContent).catch((e) => log("offline", "pre-reconcile snapshot failed", e));
       this.applyDiff(idbContent, diskContent);
+      trace("file", "offline-reconciled", {
+        path: this.filePath,
+        room: this.roomName,
+        baseLen: idbContent.length,
+        diskLen: diskContent.length
+      });
     }
     this.provider = createProvider(
       this.settings.serverUrl,
@@ -10384,14 +10568,23 @@ var FileProvider = class _FileProvider {
       {
         onStatus: (status) => {
           this.connected = status === "connected";
+          trace("ws", "file-status", { path: this.filePath, room: this.roomName, status });
           this.onStatusChange(status);
         },
         // (authParams passed below)
         onSynced: (synced) => {
-          var _a;
+          var _a3;
+          trace("ws", "file-synced", {
+            path: this.filePath,
+            room: this.roomName,
+            synced,
+            initialized: this.isInitialized,
+            pending: this.pending,
+            yLen: this.ytext.length
+          });
           if (synced && this.pending > 0) {
             this.pending = 0;
-            (_a = this.onPending) == null ? void 0 : _a.call(this);
+            (_a3 = this.onPending) == null ? void 0 : _a3.call(this);
           }
           if (synced && !this.isInitialized && !this.destroyed) {
             setTimeout(() => {
@@ -10414,7 +10607,7 @@ var FileProvider = class _FileProvider {
                 );
               }
               if (this.ytext.length > 0) {
-                this.writeToFile();
+                this.writeToFile(false, "initial-sync");
               }
               this.startObserver();
             }, 500);
@@ -10427,45 +10620,118 @@ var FileProvider = class _FileProvider {
       this.updateUsers();
     });
   }
-  /** Watch ytext for REMOTE changes → write to local file */
+  /** Watch ytext changes. Remote changes write to disk; editor-owned local
+   *  transactions schedule a responsive disk projection so switching tabs can't
+   *  lose the latest CRDT state. */
   startObserver() {
     if (this.observer || this.destroyed) return;
     this.observer = (_event, transaction) => {
-      var _a, _b;
+      var _a2, _b2;
       if (this.destroyed) return;
       if (transaction.local) {
-        (_a = this.onLocalEdit) == null ? void 0 : _a.call(this);
+        trace("yjs", "local-transaction", {
+          path: this.filePath,
+          room: this.roomName,
+          origin: originName(transaction.origin),
+          editorBound: this.editorBound,
+          connected: this.connected,
+          len: this.ytext.length
+        });
+        (_a2 = this.onLocalEdit) == null ? void 0 : _a2.call(this);
         if (!this.connected && transaction.origin !== "seed") {
           this.pending++;
-          (_b = this.onPending) == null ? void 0 : _b.call(this);
+          (_b2 = this.onPending) == null ? void 0 : _b2.call(this);
+        }
+        if (this.editorBound && transaction.origin !== "seed") {
+          this.scheduleEditorFlush("editor-local-transaction");
         }
         return;
       }
       if (this.writing) return;
-      if (this.editorBound) return;
-      this.writeToFile();
+      if (this.editorBound) {
+        trace("yjs", "remote-transaction-rendered-by-editor", {
+          path: this.filePath,
+          room: this.roomName,
+          len: this.ytext.length
+        });
+        this.scheduleEditorFlush("editor-remote-transaction");
+        return;
+      }
+      this.writeToFile(false, "remote-transaction");
     };
     this.ytext.observe(this.observer);
   }
+  scheduleEditorFlush(reason) {
+    if (this.destroyed) return;
+    if (this.editorFlushTimer) clearTimeout(this.editorFlushTimer);
+    this.editorFlushTimer = setTimeout(() => {
+      this.editorFlushTimer = null;
+      void this.flushToDisk(reason);
+    }, 250);
+    trace("file", "editor-flush-scheduled", {
+      path: this.filePath,
+      room: this.roomName,
+      reason,
+      len: this.ytext.length
+    });
+  }
   /** Write ytext content to vault file (if different) */
-  async writeToFile(force = false) {
-    if (this.destroyed || this.writing) return;
-    if (this.editorBound && !force) return;
+  async writeToFile(force = false, reason = "sync") {
+    var _a2, _b2;
+    const seq = ++this.writeSeq;
+    trace("file", "write-queued", {
+      path: this.filePath,
+      room: this.roomName,
+      seq,
+      force,
+      reason,
+      editorBound: this.editorBound,
+      len: (_b2 = (_a2 = this.ytext) == null ? void 0 : _a2.length) != null ? _b2 : null
+    });
+    const run = () => this.writeToFileNow(force, reason, seq);
+    this.writeQueue = this.writeQueue.then(run, run);
+    await this.writeQueue;
+  }
+  async writeToFileNow(force, reason, seq) {
+    if (this.destroyed) {
+      trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq, reason, cause: "destroyed" });
+      return;
+    }
+    if (this.editorBound && !force) {
+      trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq, reason, cause: "editor-bound" });
+      return;
+    }
     this.writing = true;
     try {
       const content = this.ytext.toString();
       const file = this.app.vault.getAbstractFileByPath(this.filePath);
-      if (!(file instanceof import_obsidian2.TFile)) return;
+      if (!(file instanceof import_obsidian2.TFile)) {
+        trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq, reason, cause: "missing-file" });
+        return;
+      }
       const current = await this.app.vault.read(file);
-      if (current === content) return;
+      if (current === content) {
+        trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq, reason, cause: "unchanged", len: content.length });
+        return;
+      }
       this.echo.mark(this.filePath, content);
       beginRemoteApply();
       try {
+        trace("file", "write-start", {
+          path: this.filePath,
+          room: this.roomName,
+          seq,
+          reason,
+          oldLen: current.length,
+          newLen: content.length
+        });
         await this.app.vault.modify(file, content);
+        trace("file", "write-ok", { path: this.filePath, room: this.roomName, seq, reason, len: content.length });
       } finally {
         endRemoteApply();
       }
     } catch (e) {
+      trace("file", "write-error", { path: this.filePath, room: this.roomName, seq, reason, error: e });
       console.error("FileProvider: writeToFile failed", this.filePath, e);
     } finally {
       this.writing = false;
@@ -10479,9 +10745,19 @@ var FileProvider = class _FileProvider {
     if (old === newContent) return;
     if (this.echo.isEcho(this.filePath, newContent)) {
       log("loop", "stale echo ignored in applyLocalChange", this.filePath);
+      trace("loop", "stale-echo-ignored", { path: this.filePath, room: this.roomName, len: newContent.length });
       return;
     }
     const { start, delCount, insert } = diffRange(old, newContent);
+    trace("file", "local-disk-diff", {
+      path: this.filePath,
+      room: this.roomName,
+      oldLen: old.length,
+      newLen: newContent.length,
+      start,
+      delCount,
+      insertLen: insert.length
+    });
     this.ydoc.transact(() => {
       if (delCount > 0) this.ytext.delete(start, delCount);
       if (insert.length > 0) this.ytext.insert(start, insert);
@@ -10503,7 +10779,7 @@ var FileProvider = class _FileProvider {
     if (old === newText) return;
     await this.saveSnapshot(old).catch((e) => console.error("[FileProvider] pre-restore snapshot failed", e));
     this.applyDiff(old, newText);
-    await this.writeToFile(true);
+    await this.writeToFile(true, "restore");
   }
   updateUsers() {
     if (!this.provider) return;
@@ -10528,8 +10804,8 @@ var FileProvider = class _FileProvider {
   }
   /** Current Y.Text content (for transferring/preserving across destroy). */
   getText() {
-    var _a, _b;
-    return (_b = (_a = this.ytext) == null ? void 0 : _a.toString()) != null ? _b : "";
+    var _a2, _b2;
+    return (_b2 = (_a2 = this.ytext) == null ? void 0 : _a2.toString()) != null ? _b2 : "";
   }
   /** Full Y.Doc state for cloning into another room (rename content-transfer). */
   encodeState() {
@@ -10591,6 +10867,10 @@ var FileProvider = class _FileProvider {
   /** Normal teardown — preserves IndexedDB for next session */
   destroy() {
     this.destroyed = true;
+    if (this.editorFlushTimer) {
+      clearTimeout(this.editorFlushTimer);
+      this.editorFlushTimer = null;
+    }
     if (this.observer) {
       this.ytext.unobserve(this.observer);
       this.observer = null;
@@ -10611,6 +10891,10 @@ var FileProvider = class _FileProvider {
   /** Teardown AND wipe IndexedDB data (call when file is permanently deleted) */
   async destroyAndClearData() {
     this.destroyed = true;
+    if (this.editorFlushTimer) {
+      clearTimeout(this.editorFlushTimer);
+      this.editorFlushTimer = null;
+    }
     if (this.observer) {
       this.ytext.unobserve(this.observer);
       this.observer = null;
@@ -10674,6 +10958,13 @@ var FileProvider = class _FileProvider {
     await sweep(TRASH_DIR, trashAgeDays, true);
   }
 };
+function originName(origin) {
+  var _a2;
+  if (origin == null) return "null";
+  if (typeof origin === "string") return origin;
+  if (typeof origin === "object") return ((_a2 = origin.constructor) == null ? void 0 : _a2.name) || "object";
+  return typeof origin;
+}
 
 // src/utils/roomName.ts
 function roomPrefix(share) {
@@ -10840,8 +11131,8 @@ function liveManifestEntry(previous, relPath, fileId, displayName, extra = {}) {
 
 // src/collab/SyncManager.ts
 function newFileId() {
-  var _a, _b;
-  return ((_b = (_a = globalThis.crypto) == null ? void 0 : _a.randomUUID) == null ? void 0 : _b.call(_a)) || `f-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  var _a2, _b2;
+  return ((_b2 = (_a2 = globalThis.crypto) == null ? void 0 : _a2.randomUUID) == null ? void 0 : _b2.call(_a2)) || `f-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 var SyncManager = class {
   constructor(app, settings, share, onStatusChange, onUsersChange) {
@@ -10908,13 +11199,13 @@ var SyncManager = class {
   }
   /** Manifest awareness — drives facepile / follow / typing (P1B). */
   getManifestAwareness() {
-    var _a, _b;
-    return (_b = (_a = this.manifestProvider) == null ? void 0 : _a.awareness) != null ? _b : null;
+    var _a2, _b2;
+    return (_b2 = (_a2 = this.manifestProvider) == null ? void 0 : _a2.awareness) != null ? _b2 : null;
   }
   /** Collaborators currently in this share (for @mention autocomplete). */
   roster() {
-    var _a;
-    const aw = (_a = this.manifestProvider) == null ? void 0 : _a.awareness;
+    var _a2;
+    const aw = (_a2 = this.manifestProvider) == null ? void 0 : _a2.awareness;
     if (!aw) return [];
     const out = [];
     const seen = /* @__PURE__ */ new Set();
@@ -10981,6 +11272,12 @@ var SyncManager = class {
   /** Start syncing the share's folder */
   async start() {
     if (!this.share.localFolder || !this.settings.serverUrl) return;
+    trace("share", "start", {
+      shareId: this.share.legacy ? "legacy" : this.share.id,
+      localFolder: this.share.localFolder,
+      role: this.role,
+      legacy: !!this.share.legacy
+    });
     this.syncStatus = "connecting";
     this.onStatusChange("connecting", 0, 0);
     this.manifestDoc = new Doc();
@@ -10995,6 +11292,11 @@ var SyncManager = class {
       { uid: this.settings.uid, name: this.settings.displayName, color: this.userColor() },
       {
         onStatus: (status) => {
+          trace("ws", "manifest-status", {
+            shareId: this.share.legacy ? "legacy" : this.share.id,
+            room: manifestRoom(this.share),
+            status
+          });
           if (status === "connected") {
             this.syncStatus = "connected";
             if (this.settings.ntfyTopic && this.settings.uid) {
@@ -11006,6 +11308,11 @@ var SyncManager = class {
           this.emitStatus();
         },
         onSynced: (synced) => {
+          trace("ws", "manifest-synced", {
+            shareId: this.share.legacy ? "legacy" : this.share.id,
+            room: manifestRoom(this.share),
+            synced
+          });
           if (synced) {
             this.onManifestSynced();
           }
@@ -11023,7 +11330,13 @@ var SyncManager = class {
   }
   /** Called after initial manifest sync -- reconcile local folder with manifest */
   async onManifestSynced() {
+    var _a2, _b2;
     this.processingManifest = true;
+    trace("manifest", "startup-reconcile-start", {
+      shareId: this.histShareId,
+      role: this.role,
+      entries: (_b2 = (_a2 = this.manifestMap) == null ? void 0 : _a2.size) != null ? _b2 : 0
+    });
     if (this.role === "editor") this.migrateManifest();
     this.manifestMap.forEach((entry, relPath) => {
       if (!this.safeManifestRelPath(relPath, "startup fileId cache")) return;
@@ -11080,6 +11393,10 @@ var SyncManager = class {
     }
     this.syncStatus = "connected";
     this.emitStatus();
+    trace("manifest", "startup-reconcile-done", {
+      shareId: this.histShareId,
+      providers: this.fileProviders.size
+    });
   }
   /**
    * Idempotent schema v1→v2 migration: give every entry lacking one a stable
@@ -11110,6 +11427,15 @@ var SyncManager = class {
       if (!relPath) continue;
       const entry = this.manifestMap.get(key);
       if (!entry) continue;
+      trace("manifest", "change", {
+        shareId: this.histShareId,
+        relPath,
+        action: change.action,
+        exists: entry.exists,
+        fileId: entry.fileId,
+        renamedTo: entry.renamedTo,
+        deletedAt: entry.deletedAt
+      });
       const fullPath = this.toFullPath(relPath);
       if (entry.exists && change.action !== "delete") {
         const knownId = this.fileIds.get(relPath);
@@ -11152,6 +11478,13 @@ var SyncManager = class {
     const file = this.app.vault.getAbstractFileByPath(fullPath);
     const deletedAt = entry.deletedAt || entry.lastModified || 0;
     if (this.role === "editor" && file instanceof import_obsidian3.TFile && shouldResurrect({ localMtime: file.stat.mtime, deletedAt, renamedTo: entry.renamedTo })) {
+      trace("manifest", "tombstone-resurrect", {
+        shareId: this.histShareId,
+        relPath: safeRel,
+        deletedAt,
+        localMtime: file.stat.mtime,
+        renamedTo: entry.renamedTo
+      });
       const fileId = entry.fileId || this.fileIds.get(relPath) || newFileId();
       this.fileIds.set(safeRel, fileId);
       this.manifestMap.set(safeRel, liveManifestEntry(entry, safeRel, fileId, this.settings.displayName, {
@@ -11163,6 +11496,13 @@ var SyncManager = class {
       return true;
     }
     if (file instanceof import_obsidian3.TFile) {
+      trace("manifest", "tombstone-apply", {
+        shareId: this.histShareId,
+        relPath: safeRel,
+        deletedAt,
+        renamedTo: entry.renamedTo,
+        hasProvider: !!provider
+      });
       if (notifyIfOpen) {
         const activeFile = this.app.workspace.getActiveFile();
         if (activeFile && activeFile.path === fullPath && !entry.renamedTo) {
@@ -11195,7 +11535,13 @@ var SyncManager = class {
     const inflight = this.creatingProviders.get(relPath);
     if (inflight) return inflight;
     const task = (async () => {
-      var _a;
+      var _a2;
+      trace("file", "provider-create-start", {
+        shareId: this.histShareId,
+        relPath,
+        fullPath,
+        hasSeedState: !!(opts == null ? void 0 : opts.seedState)
+      });
       let content = "";
       const file = this.app.vault.getAbstractFileByPath(fullPath);
       if (file instanceof import_obsidian3.TFile) {
@@ -11217,8 +11563,14 @@ var SyncManager = class {
         onLocalEdit: () => this.stampEdit(relPath),
         onPending: () => this.debouncedStatus()
       });
-      await fp.start(content, { seedState: (_a = opts == null ? void 0 : opts.seedState) != null ? _a : null });
+      await fp.start(content, { seedState: (_a2 = opts == null ? void 0 : opts.seedState) != null ? _a2 : null });
       this.fileProviders.set(relPath, fp);
+      trace("file", "provider-create-done", {
+        shareId: this.histShareId,
+        relPath,
+        fullPath,
+        initialLen: content.length
+      });
     })();
     this.creatingProviders.set(relPath, task);
     try {
@@ -11259,6 +11611,7 @@ var SyncManager = class {
     if (isApplyingRemote() || this.echo.isCreatedEcho(file.path)) return;
     const relPath = this.toRelativePath(file.path);
     if (!this.safeManifestRelPath(relPath, "local create")) return;
+    trace("vault", "local-create", { shareId: this.histShareId, relPath, path: file.path });
     if (this.manifestMap) {
       const prev = this.manifestMap.get(relPath);
       const fileId = (prev == null ? void 0 : prev.fileId) || newFileId();
@@ -11281,6 +11634,7 @@ var SyncManager = class {
     if (fp) {
       const content = await this.app.vault.read(file);
       if (this.echo.isEcho(file.path, content)) return;
+      trace("vault", "local-modify", { shareId: this.histShareId, relPath, path: file.path, len: content.length });
       fp.applyLocalChange(content);
     }
   }
@@ -11291,6 +11645,7 @@ var SyncManager = class {
     if (isApplyingRemote() || this.echo.isDeletedEcho(file.path)) return;
     const relPath = this.toRelativePath(file.path);
     if (!this.safeManifestRelPath(relPath, "local delete")) return;
+    trace("vault", "local-delete", { shareId: this.histShareId, relPath, path: file.path });
     const fp = this.fileProviders.get(relPath);
     if (fp) {
       await fp.flushSnapshot();
@@ -11328,6 +11683,13 @@ var SyncManager = class {
     if (isApplyingRemote()) return;
     const oldWasSyncable = this.isInLinkedFolder(oldPath) && oldPath.toLowerCase().endsWith(".md");
     const newIsSyncable = this.isInLinkedFolder(file.path) && this.isSyncableFile(file);
+    trace("vault", "local-rename", {
+      shareId: this.histShareId,
+      oldPath,
+      newPath: file.path,
+      oldWasSyncable,
+      newIsSyncable
+    });
     if (oldWasSyncable && newIsSyncable) {
       await this.transferRename(oldPath, file.path);
     } else if (oldWasSyncable && !newIsSyncable) {
@@ -11408,14 +11770,15 @@ var SyncManager = class {
   }
   /** Content-transfer a rename: clone old room state into the new room, same fileId. */
   async transferRename(oldPath, newPath) {
-    var _a;
+    var _a2;
     const oldRel = this.toRelativePath(oldPath);
     const newRel = this.toRelativePath(newPath);
     if (!this.safeManifestRelPath(oldRel, "local rename old")) return;
     if (!this.safeManifestRelPath(newRel, "local rename new")) return;
     if (oldRel === newRel) return;
+    trace("manifest", "rename-transfer-start", { shareId: this.histShareId, oldRel, newRel });
     const oldFp = this.fileProviders.get(oldRel);
-    const oldEntry = ((_a = this.manifestMap) == null ? void 0 : _a.get(oldRel)) || {};
+    const oldEntry = ((_a2 = this.manifestMap) == null ? void 0 : _a2.get(oldRel)) || {};
     const fileId = oldEntry.fileId || this.fileIds.get(oldRel) || newFileId();
     const state = oldFp ? oldFp.encodeState() : null;
     if (oldFp) await oldFp.flushSnapshot();
@@ -11448,6 +11811,7 @@ var SyncManager = class {
       });
     }
     log("delete", "renamed", oldRel, "\u2192", newRel, "(content transferred)");
+    trace("manifest", "rename-transfer-done", { shareId: this.histShareId, oldRel, newRel, fileId });
     this.emitStatus();
   }
   /** Broadcast which file (if any) this user has open, for presence avatars. */
@@ -11462,9 +11826,9 @@ var SyncManager = class {
   }
   /** The FileProvider owning a vault path (for the editor yCollab binding). */
   getFileProvider(fullPath) {
-    var _a;
+    var _a2;
     if (!this.isInLinkedFolder(fullPath)) return null;
-    return (_a = this.fileProviders.get(this.toRelativePath(fullPath))) != null ? _a : null;
+    return (_a2 = this.fileProviders.get(this.toRelativePath(fullPath))) != null ? _a2 : null;
   }
   // ── Deleted-file recovery (Phase B) ────────────────────────────────────────
   /** Tombstoned (deleted) files in this share's manifest — the "Deleted files" list. */
@@ -11569,12 +11933,12 @@ var SyncManager = class {
       const ordered = [...users].sort((a, b) => a.isSelf === b.isSelf ? 0 : a.isSelf ? -1 : 1);
       const rendered = [];
       ordered.forEach((user, i) => {
-        var _a, _b;
+        var _a2, _b2;
         const av = document.createElement("span");
         av.className = "collab-presence-avatar" + (user.isSelf ? " self" : "");
         if (i > 0) av.classList.add("stacked");
         av.style.backgroundColor = user.color;
-        av.textContent = (((_b = (_a = user.name) == null ? void 0 : _a.trim()) == null ? void 0 : _b[0]) || "?").toUpperCase();
+        av.textContent = (((_b2 = (_a2 = user.name) == null ? void 0 : _a2.trim()) == null ? void 0 : _b2[0]) || "?").toUpperCase();
         const label = user.isSelf ? `${user.name} (you) \u2014 connected` : user.device ? `${user.name} (${user.device})` : user.name;
         av.setAttribute("aria-label", label);
         av.title = label;
@@ -11629,9 +11993,9 @@ var SyncManager = class {
     return files;
   }
   async ensureFolder(path) {
-    const clean = path.replace(/\/+$/, "");
-    if (!clean) return;
-    const parts = clean.split("/").filter(Boolean);
+    const clean2 = path.replace(/\/+$/, "");
+    if (!clean2) return;
+    const parts = clean2.split("/").filter(Boolean);
     let cur = "";
     for (const part of parts) {
       cur = cur ? `${cur}/${part}` : part;
@@ -11657,9 +12021,9 @@ var InstanceWatch = class {
   constructor(app, registerInterval) {
     this.timer = null;
     this.warned = false;
-    var _a, _b;
+    var _a2, _b2;
     this.app = app;
-    this.id = ((_b = (_a = globalThis.crypto) == null ? void 0 : _a.randomUUID) == null ? void 0 : _b.call(_a)) || `i-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    this.id = ((_b2 = (_a2 = globalThis.crypto) == null ? void 0 : _a2.randomUUID) == null ? void 0 : _b2.call(_a2)) || `i-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     this.registerInterval = registerInterval;
   }
   async start() {
@@ -11850,6 +12214,23 @@ var CollabSettingsTab = class extends import_obsidian5.PluginSettingTab {
       (t) => t.setValue(this.plugin.settings.debugLogging).onChange(async (v) => {
         this.plugin.settings.debugLogging = v;
         await this.plugin.saveSettings(false);
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("Diagnostic trace file").setDesc("Write redacted structured sync diagnostics to the vault for feedback-loop debugging.").addToggle(
+      (t) => t.setValue(this.plugin.settings.diagnosticLogging).onChange(async (v) => {
+        this.plugin.settings.diagnosticLogging = v;
+        await this.plugin.saveSettings(false);
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("Diagnostics").setDesc("Capture or export redacted sync events for debugging lost saves, loops, and presence glitches.").addButton(
+      (b) => b.setButtonText("Trace 2 min").onClick(() => {
+        var _a2, _b2;
+        (_b2 = (_a2 = this.app.commands) == null ? void 0 : _a2.executeCommandById) == null ? void 0 : _b2.call(_a2, "obsidian-collab:start-diagnostic-trace");
+      })
+    ).addButton(
+      (b) => b.setButtonText("Export bundle").onClick(() => {
+        var _a2, _b2;
+        (_b2 = (_a2 = this.app.commands) == null ? void 0 : _a2.executeCommandById) == null ? void 0 : _b2.call(_a2, "obsidian-collab:export-diagnostic-bundle");
       })
     );
     containerEl.createEl("h3", { text: "Shared Folders" });
@@ -12459,8 +12840,8 @@ var yCollab = (ytext, awareness, { undoManager = new UndoManager(ytext) } = {}) 
 var collabCompartment = new import_state.Compartment();
 var collabEditorExtension = collabCompartment.of([]);
 function getEditorView(markdownView) {
-  var _a;
-  const cm = (_a = markdownView == null ? void 0 : markdownView.editor) == null ? void 0 : _a.cm;
+  var _a2;
+  const cm = (_a2 = markdownView == null ? void 0 : markdownView.editor) == null ? void 0 : _a2.cm;
   return cm instanceof import_view.EditorView ? cm : cm != null ? cm : null;
 }
 function bindEditor(view, ytext, awareness, extra = []) {
@@ -12478,8 +12859,8 @@ function readOnlyExtension() {
 // src/collab/CommentStore.ts
 var _seq = 0;
 function genId() {
-  var _a, _b;
-  const rnd = ((_b = (_a = globalThis.crypto) == null ? void 0 : _a.randomUUID) == null ? void 0 : _b.call(_a)) || `r${++_seq}`;
+  var _a2, _b2;
+  const rnd = ((_b2 = (_a2 = globalThis.crypto) == null ? void 0 : _a2.randomUUID) == null ? void 0 : _b2.call(_a2)) || `r${++_seq}`;
   return rnd.replace(/-/g, "").slice(0, 16);
 }
 var CommentStore = class {
@@ -12598,19 +12979,19 @@ var CommentStore = class {
       out.push(this.view(id2, thread));
     });
     return out.sort((a, b) => {
-      var _a, _b, _c, _d, _e, _f, _g;
-      if (!!((_a = a.anchor) == null ? void 0 : _a.lost) !== !!((_b = b.anchor) == null ? void 0 : _b.lost)) return ((_c = a.anchor) == null ? void 0 : _c.lost) ? 1 : -1;
+      var _a2, _b2, _c, _d, _e, _f, _g;
+      if (!!((_a2 = a.anchor) == null ? void 0 : _a2.lost) !== !!((_b2 = b.anchor) == null ? void 0 : _b2.lost)) return ((_c = a.anchor) == null ? void 0 : _c.lost) ? 1 : -1;
       return ((_e = (_d = a.anchor) == null ? void 0 : _d.from) != null ? _e : 0) - ((_g = (_f = b.anchor) == null ? void 0 : _f.from) != null ? _g : 0);
     });
   }
   view(id2, thread) {
-    var _a;
+    var _a2;
     const replies = thread.get("replies") || new YArray();
     const replyViews = [];
     for (let i = 0; i < replies.length; i++) {
       const r = replies.get(i);
       const reactions = {};
-      (_a = r.get("reactions")) == null ? void 0 : _a.forEach((v, k) => reactions[k] = v);
+      (_a2 = r.get("reactions")) == null ? void 0 : _a2.forEach((v, k) => reactions[k] = v);
       replyViews.push({
         id: r.get("id"),
         byUid: r.get("byUid"),
@@ -12692,8 +13073,8 @@ var CommentSession = class {
     this.recompute();
   }
   detach() {
-    var _a;
-    (_a = this.unobserve) == null ? void 0 : _a.call(this);
+    var _a2;
+    (_a2 = this.unobserve) == null ? void 0 : _a2.call(this);
     this.unobserve = null;
     this.view = null;
     this.ranges = [];
@@ -12757,7 +13138,7 @@ function makePanel(_view, onJump) {
   const dom = document.createElement("div");
   dom.className = "collab-facepile";
   const render = (roster) => {
-    var _a, _b;
+    var _a2, _b2;
     dom.replaceChildren();
     if (roster.length === 0) {
       dom.addClass("empty");
@@ -12768,7 +13149,7 @@ function makePanel(_view, onJump) {
       const av = document.createElement("button");
       av.className = "collab-facepile-avatar" + (u.hasCaret ? " live" : "") + (u.typing ? " typing" : "") + (u.isSelf ? " self" : "");
       av.style.backgroundColor = u.color;
-      av.textContent = (((_b = (_a = u.name) == null ? void 0 : _a.trim()) == null ? void 0 : _b[0]) || "?").toUpperCase();
+      av.textContent = (((_b2 = (_a2 = u.name) == null ? void 0 : _a2.trim()) == null ? void 0 : _b2[0]) || "?").toUpperCase();
       const status = u.typing ? "typing\u2026" : u.hasCaret ? "editing" : "viewing";
       av.title = u.isSelf ? `${u.name} (you) \u2014 connected` : `${u.name}${u.device ? ` (${u.device})` : ""} \u2014 ${status}` + (u.hasCaret ? " \xB7 click to jump" : "");
       av.setAttribute("aria-label", av.title);
@@ -12830,15 +13211,15 @@ var PresenceController = class {
   }
   /** Broadcast our own typing state on the manifest awareness. */
   setTyping(typing) {
-    var _a;
-    const cur = ((_a = this.manifestAwareness.getLocalState()) == null ? void 0 : _a.presence) || {};
+    var _a2;
+    const cur = ((_a2 = this.manifestAwareness.getLocalState()) == null ? void 0 : _a2.presence) || {};
     this.manifestAwareness.setLocalStateField("presence", { ...cur, typing, activeFile: this.relPath });
   }
   refresh() {
     const caretKeys = /* @__PURE__ */ new Set();
     this.fileAwareness.getStates().forEach((s, clientId) => {
-      var _a;
-      if (((_a = s == null ? void 0 : s.user) == null ? void 0 : _a.uid) && (s == null ? void 0 : s.cursor)) caretKeys.add(presenceKey(s, clientId));
+      var _a2;
+      if (((_a2 = s == null ? void 0 : s.user) == null ? void 0 : _a2.uid) && (s == null ? void 0 : s.cursor)) caretKeys.add(presenceKey(s, clientId));
     });
     const roster = [];
     const seen = /* @__PURE__ */ new Set();
@@ -12867,22 +13248,22 @@ var PresenceController = class {
   }
   /** Jump to a collaborator's caret on this file (focused peers only). */
   jumpTo(targetKey) {
-    var _a;
+    var _a2;
     let target = null;
     this.fileAwareness.getStates().forEach((s, clientId) => {
       if (presenceKey(s, clientId) === targetKey && (s == null ? void 0 : s.cursor)) target = s.cursor;
     });
     if (!target) return;
-    const idx = resolveAwarenessCursor((_a = target.head) != null ? _a : target.anchor, this.doc);
+    const idx = resolveAwarenessCursor((_a2 = target.head) != null ? _a2 : target.anchor, this.doc);
     if (idx == null) return;
     const pos = Math.min(idx, this.view.state.doc.length);
     this.view.dispatch({ effects: import_view3.EditorView.scrollIntoView(pos, { y: "center" }) });
   }
 };
 function presenceKey(state, clientId) {
-  var _a, _b;
-  const uid = ((_a = state == null ? void 0 : state.user) == null ? void 0 : _a.uid) || "unknown";
-  return `${uid}:${((_b = state == null ? void 0 : state.user) == null ? void 0 : _b.deviceId) || clientId}`;
+  var _a2, _b2;
+  const uid = ((_a2 = state == null ? void 0 : state.user) == null ? void 0 : _a2.uid) || "unknown";
+  return `${uid}:${((_b2 = state == null ? void 0 : state.user) == null ? void 0 : _b2.deviceId) || clientId}`;
 }
 function resolveAwarenessCursor(rel, doc2) {
   if (rel == null) return null;
@@ -12924,14 +13305,14 @@ var CommentsView = class extends import_obsidian6.ItemView {
     this.render();
   }
   async onClose() {
-    var _a;
-    (_a = this.unobserve) == null ? void 0 : _a.call(this);
+    var _a2;
+    (_a2 = this.unobserve) == null ? void 0 : _a2.call(this);
     this.unobserve = null;
   }
   /** Plugin calls this on active-file change / bind. */
   setContext(ctx) {
-    var _a;
-    (_a = this.unobserve) == null ? void 0 : _a.call(this);
+    var _a2;
+    (_a2 = this.unobserve) == null ? void 0 : _a2.call(this);
     this.unobserve = null;
     this.ctx = ctx;
     if (ctx) this.unobserve = ctx.store.observe(() => this.render());
@@ -12967,14 +13348,14 @@ var CommentsView = class extends import_obsidian6.ItemView {
     for (const t of visible) this.renderThread(list, t);
   }
   renderThread(parent, t) {
-    var _a, _b;
+    var _a2, _b2;
     const card = parent.createDiv({ cls: "collab-comment-card" + (t.resolved ? " resolved" : "") });
     const quote = card.createDiv({ cls: "collab-comment-quote" });
-    if ((_a = t.anchor) == null ? void 0 : _a.lost) quote.addClass("lost");
-    quote.setText(((_b = t.anchor) == null ? void 0 : _b.lost) ? `\u201C${t.quote}\u201D (context lost)` : `\u201C${t.quote}\u201D`);
+    if ((_a2 = t.anchor) == null ? void 0 : _a2.lost) quote.addClass("lost");
+    quote.setText(((_b2 = t.anchor) == null ? void 0 : _b2.lost) ? `\u201C${t.quote}\u201D (context lost)` : `\u201C${t.quote}\u201D`);
     quote.onclick = () => {
-      var _a2, _b2, _c;
-      if (!((_a2 = t.anchor) == null ? void 0 : _a2.lost)) (_c = (_b2 = this.ctx) == null ? void 0 : _b2.session) == null ? void 0 : _c.reveal(t.id);
+      var _a3, _b3, _c;
+      if (!((_a3 = t.anchor) == null ? void 0 : _a3.lost)) (_c = (_b3 = this.ctx) == null ? void 0 : _b3.session) == null ? void 0 : _c.reveal(t.id);
     };
     for (const r of t.replies) {
       const row = card.createDiv({ cls: "collab-comment-reply" });
@@ -13047,15 +13428,15 @@ function timeAgo(now, then) {
 var import_obsidian7 = require("obsidian");
 function promptModal(app, opts) {
   return new Promise((resolve) => {
-    var _a;
+    var _a2;
     const modal = new import_obsidian7.Modal(app);
     modal.titleEl.setText(opts.title);
     const values = {};
-    for (const f of opts.fields) values[f.key] = (_a = f.value) != null ? _a : "";
+    for (const f of opts.fields) values[f.key] = (_a2 = f.value) != null ? _a2 : "";
     for (const f of opts.fields) {
       new import_obsidian7.Setting(modal.contentEl).setName(f.label).addText((t) => {
-        var _a2;
-        t.setPlaceholder((_a2 = f.placeholder) != null ? _a2 : "").setValue(values[f.key]);
+        var _a3;
+        t.setPlaceholder((_a3 = f.placeholder) != null ? _a3 : "").setValue(values[f.key]);
         t.onChange((v) => values[f.key] = v);
         t.inputEl.style.width = "100%";
       });
@@ -13063,8 +13444,8 @@ function promptModal(app, opts) {
     let submitted = false;
     new import_obsidian7.Setting(modal.contentEl).addButton(
       (b) => {
-        var _a2;
-        return b.setButtonText((_a2 = opts.cta) != null ? _a2 : "OK").setCta().onClick(() => {
+        var _a3;
+        return b.setButtonText((_a3 = opts.cta) != null ? _a3 : "OK").setCta().onClick(() => {
           submitted = true;
           modal.close();
           resolve(values);
@@ -13227,10 +13608,15 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
     this.boundPresence = null;
   }
   async onload() {
-    var _a;
+    var _a2;
     await this.loadSettings();
-    setDebug(this.settings.debugLogging);
-    log("load", "starting; uid=", (_a = this.settings.uid) == null ? void 0 : _a.slice(0, 8), "shares=", this.settings.shares.length);
+    configureDiagnostics({
+      app: this.app,
+      uid: this.settings.uid,
+      debugLogging: this.settings.debugLogging,
+      diagnosticLogging: this.settings.diagnosticLogging
+    });
+    log("load", "starting; uid=", (_a2 = this.settings.uid) == null ? void 0 : _a2.slice(0, 8), "shares=", this.settings.shares.length);
     this.statusBar = new StatusBarWidget(this.addStatusBarItem());
     this.addSettingTab(new CollabSettingsTab(this.app, this));
     this.registerView(COMMENTS_VIEW_TYPE, (leaf) => new CommentsView(leaf));
@@ -13245,15 +13631,18 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
     this.instanceWatch.start().catch(() => {
     });
     await this.startAllShares();
-    this.handleActiveLeafChange();
+    void this.handleActiveLeafChange();
     this.registerEvent(
       this.app.vault.on("create", (file) => {
+        trace("vault", "create", { path: file.path, kind: file instanceof import_obsidian9.TFile ? "file" : file instanceof import_obsidian9.TFolder ? "folder" : "other" });
         if (file instanceof import_obsidian9.TFile) this.eachManager((m) => m.onFileCreate(file));
       })
     );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
+        var _a3, _b2;
         if (!(file instanceof import_obsidian9.TFile)) return;
+        trace("vault", "modify", { path: file.path, size: (_a3 = file.stat) == null ? void 0 : _a3.size, mtime: (_b2 = file.stat) == null ? void 0 : _b2.mtime });
         let fn = this.modifyDebounceMap.get(file.path);
         if (!fn) {
           fn = (0, import_obsidian9.debounce)((f) => this.eachManager((m) => m.onFileModify(f)), 50, true);
@@ -13264,6 +13653,7 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
+        trace("vault", "delete", { path: file.path, kind: file instanceof import_obsidian9.TFile ? "file" : file instanceof import_obsidian9.TFolder ? "folder" : "other" });
         if (file instanceof import_obsidian9.TFile) this.eachManager((m) => m.onFileDelete(file));
         else if (file instanceof import_obsidian9.TFolder) this.eachManager((m) => m.onFolderDelete(file.path));
         this.modifyDebounceMap.delete(file.path);
@@ -13271,13 +13661,14 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
+        trace("vault", "rename", { oldPath, newPath: file.path, kind: file instanceof import_obsidian9.TFile ? "file" : file instanceof import_obsidian9.TFolder ? "folder" : "other" });
         if (file instanceof import_obsidian9.TFile) this.eachManager((m) => m.onFileRename(file, oldPath));
         else if (file instanceof import_obsidian9.TFolder) this.eachManager((m) => m.onFolderRename(file, oldPath));
         this.modifyDebounceMap.delete(oldPath);
       })
     );
     this.registerEvent(
-      this.app.workspace.on("active-leaf-change", () => this.handleActiveLeafChange())
+      this.app.workspace.on("active-leaf-change", () => void this.handleActiveLeafChange())
     );
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
@@ -13332,6 +13723,27 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
         log("reconnect", "manual reconnect of", this.syncManagers.size, "shares");
       }
     });
+    this.addCommand({
+      id: "start-diagnostic-trace",
+      name: "Start collab diagnostic trace (2 minutes)",
+      callback: () => {
+        const path = startDiagnosticTrace(2 * 6e4);
+        new import_obsidian9.Notice(`Collab diagnostic trace started: ${path}`, 8e3);
+      }
+    });
+    this.addCommand({
+      id: "export-diagnostic-bundle",
+      name: "Export collab diagnostic bundle",
+      callback: async () => {
+        try {
+          const path = await exportDiagnosticBundle();
+          new import_obsidian9.Notice(`Collab diagnostic bundle written: ${path}`, 1e4);
+        } catch (e) {
+          err("diag", e);
+          new import_obsidian9.Notice("Could not export collab diagnostic bundle.");
+        }
+      }
+    });
     console.log("Obsidian Collab plugin loaded (multi-share mode)");
   }
   // ── Share lifecycle ────────────────────────────────────────────
@@ -13378,30 +13790,33 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
     }
   }
   // ── Active editor binding (perf: yCollab) ──────────────────────
-  handleActiveLeafChange() {
-    var _a, _b;
+  async handleActiveLeafChange() {
+    var _a2, _b2;
     const view = this.app.workspace.getActiveViewOfType(import_obsidian9.MarkdownView);
-    const activeFile = (_a = view == null ? void 0 : view.file) != null ? _a : null;
+    const activeFile = (_a2 = view == null ? void 0 : view.file) != null ? _a2 : null;
     this.eachManager((m) => m.setPresence(activeFile));
-    this.bindActiveEditor(activeFile, 0);
-    (_b = this.getHistoryView()) == null ? void 0 : _b.setContext(this.buildHistoryContext());
+    await this.bindActiveEditor(activeFile, 0);
+    (_b2 = this.getHistoryView()) == null ? void 0 : _b2.setContext(this.buildHistoryContext());
   }
-  bindActiveEditor(activeFile, attempt) {
-    var _a, _b, _c, _d, _e, _f, _g;
-    if (attempt > 0 && ((_b = (_a = this.app.workspace.getActiveFile()) == null ? void 0 : _a.path) != null ? _b : null) !== ((_c = activeFile == null ? void 0 : activeFile.path) != null ? _c : null)) {
+  async bindActiveEditor(activeFile, attempt) {
+    var _a2, _b2, _c, _d, _e, _f, _g;
+    if (attempt > 0 && ((_b2 = (_a2 = this.app.workspace.getActiveFile()) == null ? void 0 : _a2.path) != null ? _b2 : null) !== ((_c = activeFile == null ? void 0 : activeFile.path) != null ? _c : null)) {
       return;
     }
     const view = this.app.workspace.getActiveViewOfType(import_obsidian9.MarkdownView);
     const ev = view ? getEditorView(view) : null;
     const path = (_d = activeFile == null ? void 0 : activeFile.path) != null ? _d : null;
+    trace("bind", "active-leaf", { path, attempt, hasEditorView: !!ev });
     if (this.boundView && (this.boundPath !== path || this.boundView !== ev)) {
+      trace("bind", "unbind-start", { oldPath: this.boundPath, nextPath: path, sameView: this.boundView === ev });
       (_e = this.boundSession) == null ? void 0 : _e.detach();
       (_f = this.boundPresence) == null ? void 0 : _f.stop();
       try {
         unbindEditor(this.boundView);
       } catch (e) {
       }
-      (_g = this.boundProvider) == null ? void 0 : _g.setEditorBound(false);
+      await ((_g = this.boundProvider) == null ? void 0 : _g.setEditorBound(false));
+      trace("bind", "unbind-done", { oldPath: this.boundPath, nextPath: path });
       this.boundView = null;
       this.boundProvider = null;
       this.boundPath = null;
@@ -13424,7 +13839,8 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
       return;
     }
     if (!provider.isReady()) {
-      if (attempt < 20) setTimeout(() => this.bindActiveEditor(activeFile, attempt + 1), 300);
+      trace("bind", "provider-not-ready", { path, attempt });
+      if (attempt < 20) setTimeout(() => void this.bindActiveEditor(activeFile, attempt + 1), 300);
       return;
     }
     const ytext = provider.getYText();
@@ -13440,7 +13856,7 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
     const extras = [session.extension()];
     if (presence) extras.push(presence.extension());
     if (role !== "editor") extras.push(readOnlyExtension());
-    provider.setEditorBound(true);
+    await provider.setEditorBound(true);
     bindEditor(ev, ytext, awareness, extras);
     session.attach(ev);
     presence == null ? void 0 : presence.start();
@@ -13451,13 +13867,14 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
     this.boundSession = session;
     this.boundPresence = presence;
     this.refreshCommentsContext();
+    trace("bind", "bound", { path, role, hasPresence: !!presence, comments: store.openCount() });
     log("bind", "bound editor", path, "comments=", store.openCount());
   }
   // ── Comments wiring ─────────────────────────────────────────────
   getCommentsView() {
-    var _a, _b;
+    var _a2, _b2;
     const leaves = this.app.workspace.getLeavesOfType(COMMENTS_VIEW_TYPE);
-    return (_b = (_a = leaves[0]) == null ? void 0 : _a.view) != null ? _b : null;
+    return (_b2 = (_a2 = leaves[0]) == null ? void 0 : _a2.view) != null ? _b2 : null;
   }
   async openCommentsPanel() {
     let leaf = this.app.workspace.getLeavesOfType(COMMENTS_VIEW_TYPE)[0];
@@ -13486,8 +13903,8 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
     }
   }
   openThread(threadId) {
-    var _a;
-    (_a = this.boundSession) == null ? void 0 : _a.reveal(threadId);
+    var _a2;
+    (_a2 = this.boundSession) == null ? void 0 : _a2.reveal(threadId);
     this.openCommentsPanel();
   }
   managerOwning(path) {
@@ -13512,21 +13929,21 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
   }
   // ── Version history wiring ──────────────────────────────────────
   getHistoryView() {
-    var _a, _b;
-    return (_b = (_a = this.app.workspace.getLeavesOfType(HISTORY_VIEW_TYPE)[0]) == null ? void 0 : _a.view) != null ? _b : null;
+    var _a2, _b2;
+    return (_b2 = (_a2 = this.app.workspace.getLeavesOfType(HISTORY_VIEW_TYPE)[0]) == null ? void 0 : _a2.view) != null ? _b2 : null;
   }
   async openHistoryPanel() {
-    var _a;
+    var _a2;
     let leaf = this.app.workspace.getLeavesOfType(HISTORY_VIEW_TYPE)[0];
     if (!leaf) {
       leaf = this.app.workspace.getRightLeaf(false);
       await leaf.setViewState({ type: HISTORY_VIEW_TYPE, active: true });
     }
     this.app.workspace.revealLeaf(leaf);
-    (_a = this.getHistoryView()) == null ? void 0 : _a.setContext(this.buildHistoryContext());
+    (_a2 = this.getHistoryView()) == null ? void 0 : _a2.setContext(this.buildHistoryContext());
   }
   buildHistoryContext() {
-    var _a;
+    var _a2;
     const file = this.app.workspace.getActiveFile();
     if (!file) return null;
     const m = this.managerOwning(file.path);
@@ -13536,7 +13953,7 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
     const base = httpBase(this.settings.serverUrl);
     const relPath = m.toRel(file.path);
     const histShareId = share.legacy ? "legacy" : share.id;
-    const roleQ = share.legacy ? "" : `&role=${share.role || "editor"}&epoch=${(_a = share.epoch) != null ? _a : 1}`;
+    const roleQ = share.legacy ? "" : `&role=${share.role || "editor"}&epoch=${(_a2 = share.epoch) != null ? _a2 : 1}`;
     const token = async () => share.legacy ? this.settings.serverPassword || null : share.key;
     return {
       fileName: file.name,
@@ -13553,13 +13970,13 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
         }
       },
       load: async (hash) => {
-        var _a2;
+        var _a3;
         const t = await token();
         if (!t) return null;
         try {
           const r = await fetch(`${base}/version?share=${encodeURIComponent(histShareId)}&path=${encodeURIComponent(relPath)}&hash=${encodeURIComponent(hash)}&token=${encodeURIComponent(t)}${roleQ}`);
           if (!r.ok) return null;
-          return (_a2 = (await r.json()).content) != null ? _a2 : null;
+          return (_a3 = (await r.json()).content) != null ? _a3 : null;
         } catch (e) {
           err("history", e);
           return null;
@@ -13575,8 +13992,8 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
         else new import_obsidian9.Notice("Open the note before restoring.");
       },
       currentText: () => {
-        var _a2, _b;
-        return ((_b = (_a2 = m.getFileProvider(file.path)) == null ? void 0 : _a2.getYText()) == null ? void 0 : _b.toString()) || "";
+        var _a3, _b2;
+        return ((_b2 = (_a3 = m.getFileProvider(file.path)) == null ? void 0 : _a3.getYText()) == null ? void 0 : _b2.toString()) || "";
       },
       deletedFiles: () => m.listDeletedFiles(),
       restoreDeleted: (relPath2) => m.restoreDeletedFile(relPath2)
@@ -13628,20 +14045,20 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
   // ── Share creation / joining ───────────────────────────────────
   /** Generate a role-scoped share code (requires the server secret to mint keys). */
   async generateShareCode(share, role) {
-    var _a;
+    var _a2;
     if (share.legacy || !this.settings.serverSecret) return null;
-    const epoch = (_a = share.epoch) != null ? _a : 1;
+    const epoch = (_a2 = share.epoch) != null ? _a2 : 1;
     const key = role === (share.role || "editor") ? share.key : await deriveRoleKey(this.settings.serverSecret, share.id, role, epoch);
     return encodeShareCode(this.settings.serverUrl, share.id, key, role, epoch);
   }
   /** Revoke ALL outstanding codes for a share by bumping its epoch. */
   async revokeShareAccess(share) {
-    var _a;
+    var _a2;
     if (share.legacy || !this.settings.serverSecret) {
       new import_obsidian9.Notice("Can't revoke this share (needs the server secret).");
       return false;
     }
-    const newEpoch = ((_a = share.epoch) != null ? _a : 1) + 1;
+    const newEpoch = ((_a2 = share.epoch) != null ? _a2 : 1) + 1;
     const token = await deriveAdminToken(this.settings.serverSecret, share.id, newEpoch);
     try {
       const res = await fetch(`${httpBase(this.settings.serverUrl)}/admin/revoke?share=${encodeURIComponent(share.id)}&epoch=${newEpoch}&token=${encodeURIComponent(token)}`, { method: "POST" });
@@ -13769,9 +14186,9 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
     await this.persist();
   }
   async ensureFolder(path) {
-    const clean = path.replace(/\/+$/, "");
-    if (!clean) return;
-    const parts = clean.split("/").filter(Boolean);
+    const clean2 = path.replace(/\/+$/, "");
+    if (!clean2) return;
+    const parts = clean2.split("/").filter(Boolean);
     let cur = "";
     for (const part of parts) {
       cur = cur ? `${cur}/${part}` : part;
@@ -13784,15 +14201,15 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
     }
   }
   async onunload() {
-    var _a, _b, _c, _d;
-    (_a = this.boundSession) == null ? void 0 : _a.detach();
-    (_b = this.boundPresence) == null ? void 0 : _b.stop();
+    var _a2, _b2, _c, _d;
+    (_a2 = this.boundSession) == null ? void 0 : _a2.detach();
+    (_b2 = this.boundPresence) == null ? void 0 : _b2.stop();
     if (this.boundView) {
       try {
         unbindEditor(this.boundView);
       } catch (e) {
       }
-      (_c = this.boundProvider) == null ? void 0 : _c.setEditorBound(false);
+      await ((_c = this.boundProvider) == null ? void 0 : _c.setEditorBound(false));
     }
     await ((_d = this.instanceWatch) == null ? void 0 : _d.stop());
     await this.stopAllShares();
@@ -13800,18 +14217,19 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
   }
   // ── Settings (with migration) ──────────────────────────────────
   async loadSettings() {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
+    var _a2, _b2, _c, _d, _e, _f, _g, _h, _i, _j;
     const raw = await this.loadData() || {};
     if (raw.shares === void 0 && (raw.linkedFolder !== void 0 || raw.password !== void 0)) {
       this.settings = {
-        serverUrl: (_a = raw.serverUrl) != null ? _a : DEFAULT_SETTINGS.serverUrl,
-        serverPassword: (_b = raw.password) != null ? _b : "",
+        serverUrl: (_a2 = raw.serverUrl) != null ? _a2 : DEFAULT_SETTINGS.serverUrl,
+        serverPassword: (_b2 = raw.password) != null ? _b2 : "",
         serverSecret: "",
         displayName: (_c = raw.displayName) != null ? _c : DEFAULT_SETTINGS.displayName,
         cursorColor: (_d = raw.cursorColor) != null ? _d : DEFAULT_SETTINGS.cursorColor,
         uid: (_e = raw.uid) != null ? _e : "",
         ntfyTopic: (_f = raw.ntfyTopic) != null ? _f : "",
         debugLogging: (_g = raw.debugLogging) != null ? _g : DEFAULT_SETTINGS.debugLogging,
+        diagnosticLogging: (_h = raw.diagnosticLogging) != null ? _h : DEFAULT_SETTINGS.diagnosticLogging,
         shares: raw.linkedFolder ? [{ id: LEGACY_SHARE_ID, key: "", label: "Synced Obsidian", localFolder: raw.linkedFolder, legacy: true }] : []
       };
       await this.persist();
@@ -13819,7 +14237,7 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
       this.settings = Object.assign({}, DEFAULT_SETTINGS, raw);
     }
     if (!this.settings.uid) {
-      this.settings.uid = ((_i = (_h = globalThis.crypto) == null ? void 0 : _h.randomUUID) == null ? void 0 : _i.call(_h)) || generateShareId(24);
+      this.settings.uid = ((_j = (_i = globalThis.crypto) == null ? void 0 : _i.randomUUID) == null ? void 0 : _j.call(_i)) || generateShareId(24);
       await this.persist();
     }
   }
@@ -13829,7 +14247,13 @@ var CollabPlugin = class extends import_obsidian9.Plugin {
   }
   /** Called by the settings UI. `restart` debounces a full re-sync for connection changes. */
   async saveSettings(restart = true) {
-    setDebug(this.settings.debugLogging);
+    configureDiagnostics({
+      app: this.app,
+      uid: this.settings.uid,
+      debugLogging: this.settings.debugLogging,
+      diagnosticLogging: this.settings.diagnosticLogging
+    });
+    setDiagnosticLogging(this.settings.diagnosticLogging);
     await this.persist();
     if (restart) this.debouncedRestart();
   }

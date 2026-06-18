@@ -109,6 +109,30 @@ export class CollabSettingsTab extends PluginSettingTab {
         })
       );
 
+    new Setting(containerEl)
+      .setName("Diagnostic trace file")
+      .setDesc("Write redacted structured sync diagnostics to the vault for feedback-loop debugging.")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.diagnosticLogging).onChange(async (v) => {
+          this.plugin.settings.diagnosticLogging = v;
+          await this.plugin.saveSettings(false);
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Diagnostics")
+      .setDesc("Capture or export redacted sync events for debugging lost saves, loops, and presence glitches.")
+      .addButton((b) =>
+        b.setButtonText("Trace 2 min").onClick(() => {
+          (this.app as any).commands?.executeCommandById?.("obsidian-collab:start-diagnostic-trace");
+        })
+      )
+      .addButton((b) =>
+        b.setButtonText("Export bundle").onClick(() => {
+          (this.app as any).commands?.executeCommandById?.("obsidian-collab:export-diagnostic-bundle");
+        })
+      );
+
     // ── Shares ───────────────────────────────────────────────────
     containerEl.createEl("h3", { text: "Shared Folders" });
 

@@ -4,7 +4,7 @@ import { IndexeddbPersistence } from "y-indexeddb";
 import { createProvider } from "./YjsProvider";
 import { EchoGuard, beginRemoteApply, endRemoteApply } from "./EchoGuard";
 import { diffRange } from "../utils/textDiff";
-import { log } from "../utils/log";
+import { log, trace } from "../utils/log";
 import { colorFor } from "../types";
 import type { CollabPluginSettings, ConnectionStatus, ConnectedUser } from "../types";
 
@@ -54,6 +54,9 @@ export class FileProvider {
   /** When the active editor is bound via yCollab, it owns this doc — the
    *  headless disk round-trip is suppressed to avoid double-apply/flicker. */
   private editorBound = false;
+  private editorFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private writeQueue: Promise<void> = Promise.resolve();
+  private writeSeq = 0;
   private token: string;
   private authParams: Record<string, string>;
 
@@ -107,18 +110,38 @@ export class FileProvider {
   getDoc(): Y.Doc { return this.ydoc; }
   isReady(): boolean { return this.isInitialized && !this.destroyed; }
 
-  /** Toggle editor-owned mode. On unbind, flush ytext → disk once. */
-  setEditorBound(bound: boolean): void {
+  /** Toggle editor-owned mode. On unbind, flush ytext → disk once and wait for it. */
+  async setEditorBound(bound: boolean): Promise<void> {
+    const previous = this.editorBound;
     this.editorBound = bound;
-    if (!bound) this.flushToDisk();
+    trace("bind", "editor-bound", {
+      path: this.filePath,
+      room: this.roomName,
+      previous,
+      bound,
+      ready: this.isInitialized,
+      len: this.ytext?.length ?? null,
+    });
+    if (!bound) await this.flushToDisk("editor-unbound");
   }
 
   /** Force-write current ytext to disk (used when the editor unbinds). */
-  async flushToDisk(): Promise<void> {
-    await this.writeToFile(true);
+  async flushToDisk(reason = "manual"): Promise<void> {
+    if (this.editorFlushTimer) {
+      clearTimeout(this.editorFlushTimer);
+      this.editorFlushTimer = null;
+    }
+    await this.writeToFile(true, reason);
   }
 
   async start(initialContent?: string, opts?: { seedState?: Uint8Array | null }): Promise<void> {
+    trace("file", "start", {
+      path: this.filePath,
+      room: this.roomName,
+      shareId: this.shareId,
+      initialLen: initialContent?.length ?? 0,
+      hasSeedState: !!opts?.seedState,
+    });
     this.ydoc = new Y.Doc();
     this.ytext = this.ydoc.getText("codemirror");
 
@@ -130,6 +153,7 @@ export class FileProvider {
       this.ydoc
     );
     await this.idbProvider.whenSynced;
+    trace("file", "idb-synced", { path: this.filePath, room: this.roomName, idbLen: this.ytext.length });
 
     // ── Rename content-transfer: clone the prior file's full Y.Doc state
     // (text + comments + anchors) into this fresh room. Authoritative — skip
@@ -172,6 +196,12 @@ export class FileProvider {
         `(base ${idbContent.length} → disk ${diskContent.length} chars)`);
       await this.saveSnapshot(diskContent).catch((e) => log("offline", "pre-reconcile snapshot failed", e));
       this.applyDiff(idbContent, diskContent);
+      trace("file", "offline-reconciled", {
+        path: this.filePath,
+        room: this.roomName,
+        baseLen: idbContent.length,
+        diskLen: diskContent.length,
+      });
     }
 
     // ── Connect WebSocket ───────────────────────────────────────
@@ -188,10 +218,19 @@ export class FileProvider {
       {
         onStatus: (status) => {
           this.connected = status === "connected";
+          trace("ws", "file-status", { path: this.filePath, room: this.roomName, status });
           this.onStatusChange(status);
         },
         // (authParams passed below)
         onSynced: (synced) => {
+          trace("ws", "file-synced", {
+            path: this.filePath,
+            room: this.roomName,
+            synced,
+            initialized: this.isInitialized,
+            pending: this.pending,
+            yLen: this.ytext.length,
+          });
           if (synced && this.pending > 0) {
             // Reconnected and caught up — the queued offline edits are now sent.
             this.pending = 0;
@@ -231,7 +270,7 @@ export class FileProvider {
 
               // CRDT merge done → write merged result to disk
               if (this.ytext.length > 0) {
-                this.writeToFile();
+                this.writeToFile(false, "initial-sync");
               }
 
               // Start observing remote changes
@@ -248,7 +287,9 @@ export class FileProvider {
     });
   }
 
-  /** Watch ytext for REMOTE changes → write to local file */
+  /** Watch ytext changes. Remote changes write to disk; editor-owned local
+   *  transactions schedule a responsive disk projection so switching tabs can't
+   *  lose the latest CRDT state. */
   private startObserver(): void {
     if (this.observer || this.destroyed) return;
 
@@ -257,46 +298,118 @@ export class FileProvider {
       // Local edits (typing in the bound editor, or applyLocalChange) → stamp
       // last-edited-by on the manifest (debounced upstream), then we're done.
       if (transaction.local) {
+        trace("yjs", "local-transaction", {
+          path: this.filePath,
+          room: this.roomName,
+          origin: originName(transaction.origin),
+          editorBound: this.editorBound,
+          connected: this.connected,
+          len: this.ytext.length,
+        });
         this.onLocalEdit?.();
         // Edited while the socket is down → it'll sync on reconnect. Surface it.
         if (!this.connected && transaction.origin !== "seed") {
           this.pending++;
           this.onPending?.();
         }
+        if (this.editorBound && transaction.origin !== "seed") {
+          this.scheduleEditorFlush("editor-local-transaction");
+        }
         return;
       }
       if (this.writing) return;
       // While the editor owns this doc (yCollab), it renders remote changes
       // itself and Obsidian persists them — skip the headless disk write.
-      if (this.editorBound) return;
-      this.writeToFile();
+      if (this.editorBound) {
+        trace("yjs", "remote-transaction-rendered-by-editor", {
+          path: this.filePath,
+          room: this.roomName,
+          len: this.ytext.length,
+        });
+        this.scheduleEditorFlush("editor-remote-transaction");
+        return;
+      }
+      this.writeToFile(false, "remote-transaction");
     };
     this.ytext.observe(this.observer);
   }
 
+  private scheduleEditorFlush(reason: string): void {
+    if (this.destroyed) return;
+    if (this.editorFlushTimer) clearTimeout(this.editorFlushTimer);
+    this.editorFlushTimer = setTimeout(() => {
+      this.editorFlushTimer = null;
+      void this.flushToDisk(reason);
+    }, 250);
+    trace("file", "editor-flush-scheduled", {
+      path: this.filePath,
+      room: this.roomName,
+      reason,
+      len: this.ytext.length,
+    });
+  }
+
   /** Write ytext content to vault file (if different) */
-  private async writeToFile(force = false): Promise<void> {
-    if (this.destroyed || this.writing) return;
-    if (this.editorBound && !force) return;
+  private async writeToFile(force = false, reason = "sync"): Promise<void> {
+    const seq = ++this.writeSeq;
+    trace("file", "write-queued", {
+      path: this.filePath,
+      room: this.roomName,
+      seq,
+      force,
+      reason,
+      editorBound: this.editorBound,
+      len: this.ytext?.length ?? null,
+    });
+    const run = () => this.writeToFileNow(force, reason, seq);
+    this.writeQueue = this.writeQueue.then(run, run);
+    await this.writeQueue;
+  }
+
+  private async writeToFileNow(force: boolean, reason: string, seq: number): Promise<void> {
+    if (this.destroyed) {
+      trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq, reason, cause: "destroyed" });
+      return;
+    }
+    if (this.editorBound && !force) {
+      trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq, reason, cause: "editor-bound" });
+      return;
+    }
     this.writing = true;
     try {
       const content = this.ytext.toString();
       const file = this.app.vault.getAbstractFileByPath(this.filePath);
-      if (!(file instanceof TFile)) return;
+      if (!(file instanceof TFile)) {
+        trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq, reason, cause: "missing-file" });
+        return;
+      }
 
       const current = await this.app.vault.read(file);
-      if (current === content) return;
+      if (current === content) {
+        trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq, reason, cause: "unchanged", len: content.length });
+        return;
+      }
 
       // Fingerprint exactly what we're about to write so the vault "modify"
       // echo is recognised and dropped deterministically (no timing window).
       this.echo.mark(this.filePath, content);
       beginRemoteApply();
       try {
+        trace("file", "write-start", {
+          path: this.filePath,
+          room: this.roomName,
+          seq,
+          reason,
+          oldLen: current.length,
+          newLen: content.length,
+        });
         await this.app.vault.modify(file, content);
+        trace("file", "write-ok", { path: this.filePath, room: this.roomName, seq, reason, len: content.length });
       } finally {
         endRemoteApply();
       }
     } catch (e) {
+      trace("file", "write-error", { path: this.filePath, room: this.roomName, seq, reason, error: e });
       console.error("FileProvider: writeToFile failed", this.filePath, e);
     } finally {
       this.writing = false;
@@ -316,10 +429,20 @@ export class FileProvider {
     // newContent). Applying it would revert the merge — drop the late echo.
     if (this.echo.isEcho(this.filePath, newContent)) {
       log("loop", "stale echo ignored in applyLocalChange", this.filePath);
+      trace("loop", "stale-echo-ignored", { path: this.filePath, room: this.roomName, len: newContent.length });
       return;
     }
 
     const { start, delCount, insert } = diffRange(old, newContent);
+    trace("file", "local-disk-diff", {
+      path: this.filePath,
+      room: this.roomName,
+      oldLen: old.length,
+      newLen: newContent.length,
+      start,
+      delCount,
+      insertLen: insert.length,
+    });
     this.ydoc.transact(() => {
       if (delCount > 0) this.ytext.delete(start, delCount);
       if (insert.length > 0) this.ytext.insert(start, insert);
@@ -343,7 +466,7 @@ export class FileProvider {
     if (old === newText) return;
     await this.saveSnapshot(old).catch((e) => console.error("[FileProvider] pre-restore snapshot failed", e));
     this.applyDiff(old, newText);
-    await this.writeToFile(true);
+    await this.writeToFile(true, "restore");
   }
 
   private updateUsers(): void {
@@ -438,6 +561,10 @@ export class FileProvider {
   /** Normal teardown — preserves IndexedDB for next session */
   destroy(): void {
     this.destroyed = true;
+    if (this.editorFlushTimer) {
+      clearTimeout(this.editorFlushTimer);
+      this.editorFlushTimer = null;
+    }
     if (this.observer) {
       this.ytext.unobserve(this.observer);
       this.observer = null;
@@ -459,6 +586,10 @@ export class FileProvider {
   /** Teardown AND wipe IndexedDB data (call when file is permanently deleted) */
   async destroyAndClearData(): Promise<void> {
     this.destroyed = true;
+    if (this.editorFlushTimer) {
+      clearTimeout(this.editorFlushTimer);
+      this.editorFlushTimer = null;
+    }
     if (this.observer) {
       this.ytext.unobserve(this.observer);
       this.observer = null;
@@ -521,4 +652,11 @@ export class FileProvider {
     await sweep(BACKUP_DIR, maxAgeDays, false);
     await sweep(TRASH_DIR, trashAgeDays, true); // trash is nested per-share
   }
+}
+
+function originName(origin: unknown): string {
+  if (origin == null) return "null";
+  if (typeof origin === "string") return origin;
+  if (typeof origin === "object") return (origin as any).constructor?.name || "object";
+  return typeof origin;
 }

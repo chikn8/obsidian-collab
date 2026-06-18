@@ -20,7 +20,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const SETTINGS = (uid) => ({
   serverUrl: "ws://fake", serverPassword: "", serverSecret: "",
-  displayName: uid, cursorColor: "", uid, ntfyTopic: "", debugLogging: false, shares: [],
+  displayName: uid, cursorColor: "", uid, ntfyTopic: "", debugLogging: false, diagnosticLogging: false, shares: [],
 });
 
 /** A "client": a fake App + an EchoGuard + a FileProvider for one file, with the
@@ -136,6 +136,29 @@ console.log("Offline edit reconciles on reconnect");
   check("B's offline edit survived", A.disk().includes("B-offline"), `A="${A.disk()}"`);
   check("A's concurrent edit survived", A.disk().includes("A-top"), `A="${A.disk()}"`);
   A.fp.destroy(); B.fp.destroy();
+}
+
+// ── 4b. Editor-owned yCollab transactions still project to disk ──────────────
+console.log("Editor-bound transactions flush to disk");
+{
+  __resetIdb(); __resetHubs();
+  const room = "@test:file:note5";
+  const A = await makeClient("A", room, "note.md", "base");
+  await sleep(900);
+
+  await A.fp.setEditorBound(true);
+  A.fp.getDoc().transact(() => {
+    A.fp.getYText().insert(A.fp.getYText().length, "\nwhile-bound");
+  }, "test-editor");
+  await sleep(450);
+  check("bound editor transaction projected to disk", A.disk().includes("while-bound"), `disk="${A.disk()}"`);
+
+  A.fp.getDoc().transact(() => {
+    A.fp.getYText().insert(A.fp.getYText().length, "\non-switch");
+  }, "test-editor");
+  await A.fp.setEditorBound(false);
+  check("unbind awaited the final flush", A.disk().includes("on-switch"), `disk="${A.disk()}"`);
+  A.fp.destroy();
 }
 
 console.log("");

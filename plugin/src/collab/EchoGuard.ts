@@ -1,4 +1,4 @@
-import { log } from "../utils/log";
+import { log, trace } from "../utils/log";
 
 /**
  * Deterministic feedback-loop guard.
@@ -53,9 +53,11 @@ export function fingerprint(s: string): string {
 let _remoteApplyDepth = 0;
 export function beginRemoteApply(): void {
   _remoteApplyDepth++;
+  trace("loop", "remote-apply-begin", { depth: _remoteApplyDepth });
 }
 export function endRemoteApply(): void {
   _remoteApplyDepth = Math.max(0, _remoteApplyDepth - 1);
+  trace("loop", "remote-apply-end", { depth: _remoteApplyDepth });
 }
 export function isApplyingRemote(): boolean {
   return _remoteApplyDepth > 0;
@@ -78,16 +80,20 @@ export class EchoGuard {
 
   /** Record that the plugin is about to write `content` to `path`. */
   mark(path: string, content: string): void {
-    this.push(path, fingerprint(content));
+    const fp = fingerprint(content);
+    trace("loop", "mark-write", { path, fp, len: content.length });
+    this.push(path, fp);
   }
 
   /** Record that the plugin is about to create `path` (empty file). */
   markCreated(path: string): void {
+    trace("loop", "mark-create", { path });
     this.push(path, CREATED);
   }
 
   /** Record that the plugin is about to delete `path`. */
   markDeleted(path: string): void {
+    trace("loop", "mark-delete", { path });
     this.push(path, TOMBSTONE);
   }
 
@@ -97,21 +103,29 @@ export class EchoGuard {
    * duplicate FS events for the same write are all absorbed; TTL reaps).
    */
   isEcho(path: string, content: string): boolean {
-    return this.matches(path, fingerprint(content), false);
+    const fp = fingerprint(content);
+    const hit = this.matches(path, fp, false);
+    trace("loop", hit ? "echo-match" : "echo-miss", { path, fp, len: content.length, kind: "modify" });
+    return hit;
   }
 
   /** True when an incoming create for `path` is a plugin-initiated create. Consumes. */
   isCreatedEcho(path: string): boolean {
-    return this.matches(path, CREATED, true);
+    const hit = this.matches(path, CREATED, true);
+    trace("loop", hit ? "echo-match" : "echo-miss", { path, kind: "create" });
+    return hit;
   }
 
   /** True when an incoming delete for `path` matches a plugin-initiated delete. Consumes. */
   isDeletedEcho(path: string): boolean {
-    return this.matches(path, TOMBSTONE, true);
+    const hit = this.matches(path, TOMBSTONE, true);
+    trace("loop", hit ? "echo-match" : "echo-miss", { path, kind: "delete" });
+    return hit;
   }
 
   /** Drop all marks for a path (e.g. when a file is permanently removed). */
   clear(path: string): void {
+    trace("loop", "clear", { path });
     this.marks.delete(path);
   }
 

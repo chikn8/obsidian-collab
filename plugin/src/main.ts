@@ -11,7 +11,7 @@ import { CommentSession } from "./collab/CommentLayer";
 import { PresenceController } from "./collab/Presence";
 import { CommentsView, COMMENTS_VIEW_TYPE } from "./ui/CommentsView";
 import { promptModal } from "./ui/modals";
-import { log, err, setDebug } from "./utils/log";
+import { configureDiagnostics, exportDiagnosticBundle, log, err, setDiagnosticLogging, startDiagnosticTrace, trace } from "./utils/log";
 import {
   encodeShareCode,
   decodeShareCode,
@@ -42,7 +42,12 @@ export default class CollabPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadSettings();
-    setDebug(this.settings.debugLogging);
+    configureDiagnostics({
+      app: this.app,
+      uid: this.settings.uid,
+      debugLogging: this.settings.debugLogging,
+      diagnosticLogging: this.settings.diagnosticLogging,
+    });
     log("load", "starting; uid=", this.settings.uid?.slice(0, 8), "shares=", this.settings.shares.length);
 
     this.statusBar = new StatusBarWidget(this.addStatusBarItem());
@@ -70,17 +75,19 @@ export default class CollabPlugin extends Plugin {
     await this.startAllShares();
     // Bind the already-open editor (if any). Providers connect async, so the
     // retry loop in bindActiveEditor waits for the owning provider to be ready.
-    this.handleActiveLeafChange();
+    void this.handleActiveLeafChange();
 
     // Vault events — routed to every manager (each ignores paths outside its folder)
     this.registerEvent(
       this.app.vault.on("create", (file) => {
+        trace("vault", "create", { path: (file as any).path, kind: file instanceof TFile ? "file" : file instanceof TFolder ? "folder" : "other" });
         if (file instanceof TFile) this.eachManager((m) => m.onFileCreate(file));
       })
     );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
         if (!(file instanceof TFile)) return;
+        trace("vault", "modify", { path: file.path, size: file.stat?.size, mtime: file.stat?.mtime });
         let fn = this.modifyDebounceMap.get(file.path);
         if (!fn) {
           fn = debounce((f: TFile) => this.eachManager((m) => m.onFileModify(f)), 50, true);
@@ -91,6 +98,7 @@ export default class CollabPlugin extends Plugin {
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
+        trace("vault", "delete", { path: (file as any).path, kind: file instanceof TFile ? "file" : file instanceof TFolder ? "folder" : "other" });
         if (file instanceof TFile) this.eachManager((m) => m.onFileDelete(file));
         // Obsidian may fire only ONE folder-delete event (no per-child events on
         // some platforms) — tombstone everything under the folder as a backstop.
@@ -100,6 +108,7 @@ export default class CollabPlugin extends Plugin {
     );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
+        trace("vault", "rename", { oldPath, newPath: (file as any).path, kind: file instanceof TFile ? "file" : file instanceof TFolder ? "folder" : "other" });
         if (file instanceof TFile) this.eachManager((m) => m.onFileRename(file, oldPath));
         // A folder move fires ONE event for the folder (no per-child renames), so
         // re-derive each descendant file's rename to preserve content + lineage.
@@ -108,7 +117,7 @@ export default class CollabPlugin extends Plugin {
       })
     );
     this.registerEvent(
-      this.app.workspace.on("active-leaf-change", () => this.handleActiveLeafChange())
+      this.app.workspace.on("active-leaf-change", () => void this.handleActiveLeafChange())
     );
 
     // File/folder context-menu
@@ -174,6 +183,27 @@ export default class CollabPlugin extends Plugin {
         log("reconnect", "manual reconnect of", this.syncManagers.size, "shares");
       },
     });
+    this.addCommand({
+      id: "start-diagnostic-trace",
+      name: "Start collab diagnostic trace (2 minutes)",
+      callback: () => {
+        const path = startDiagnosticTrace(2 * 60_000);
+        new Notice(`Collab diagnostic trace started: ${path}`, 8000);
+      },
+    });
+    this.addCommand({
+      id: "export-diagnostic-bundle",
+      name: "Export collab diagnostic bundle",
+      callback: async () => {
+        try {
+          const path = await exportDiagnosticBundle();
+          new Notice(`Collab diagnostic bundle written: ${path}`, 10000);
+        } catch (e) {
+          err("diag", e);
+          new Notice("Could not export collab diagnostic bundle.");
+        }
+      },
+    });
 
     console.log("Obsidian Collab plugin loaded (multi-share mode)");
   }
@@ -232,7 +262,7 @@ export default class CollabPlugin extends Plugin {
 
   // ── Active editor binding (perf: yCollab) ──────────────────────
 
-  private handleActiveLeafChange(): void {
+  private async handleActiveLeafChange(): Promise<void> {
     // Presence + editor binding follow the actively-FOCUSED markdown view, not
     // getActiveFile() — the latter lingers on the last note when you focus a
     // non-note pane (terminal, graph) or close the tab, leaving a stale presence
@@ -240,12 +270,12 @@ export default class CollabPlugin extends Plugin {
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     const activeFile = view?.file ?? null;
     this.eachManager((m) => m.setPresence(activeFile));
-    this.bindActiveEditor(activeFile, 0);
+    await this.bindActiveEditor(activeFile, 0);
     // Keep an open history panel in sync with the active file.
     this.getHistoryView()?.setContext(this.buildHistoryContext());
   }
 
-  private bindActiveEditor(activeFile: TFile | null, attempt: number): void {
+  private async bindActiveEditor(activeFile: TFile | null, attempt: number): Promise<void> {
     // Ignore stale retries fired after the user already switched files.
     if (attempt > 0 && (this.app.workspace.getActiveFile()?.path ?? null) !== (activeFile?.path ?? null)) {
       return;
@@ -253,13 +283,16 @@ export default class CollabPlugin extends Plugin {
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     const ev = view ? getEditorView(view) : null;
     const path = activeFile?.path ?? null;
+    trace("bind", "active-leaf", { path, attempt, hasEditorView: !!ev });
 
     // Unbind the previous editor if we've moved away from it
     if (this.boundView && (this.boundPath !== path || this.boundView !== ev)) {
+      trace("bind", "unbind-start", { oldPath: this.boundPath, nextPath: path, sameView: this.boundView === ev });
       this.boundSession?.detach();
       this.boundPresence?.stop();
       try { unbindEditor(this.boundView); } catch { /* view may be gone */ }
-      this.boundProvider?.setEditorBound(false);
+      await this.boundProvider?.setEditorBound(false);
+      trace("bind", "unbind-done", { oldPath: this.boundPath, nextPath: path });
       this.boundView = null;
       this.boundProvider = null;
       this.boundPath = null;
@@ -280,9 +313,10 @@ export default class CollabPlugin extends Plugin {
     if (!provider) { this.refreshCommentsContext(); return; } // not a synced file
 
     if (!provider.isReady()) {
+      trace("bind", "provider-not-ready", { path, attempt });
       // Provider still connecting/seeding — retry (headless still works meanwhile).
       // ~6s budget covers a cold WebSocket connect + initial sync.
-      if (attempt < 20) setTimeout(() => this.bindActiveEditor(activeFile, attempt + 1), 300);
+      if (attempt < 20) setTimeout(() => void this.bindActiveEditor(activeFile, attempt + 1), 300);
       return;
     }
 
@@ -307,7 +341,7 @@ export default class CollabPlugin extends Plugin {
     if (presence) extras.push(presence.extension());
     if (role !== "editor") extras.push(readOnlyExtension());
 
-    provider.setEditorBound(true);
+    await provider.setEditorBound(true);
     bindEditor(ev, ytext, awareness, extras);
     session.attach(ev);
     presence?.start();
@@ -319,6 +353,7 @@ export default class CollabPlugin extends Plugin {
     this.boundSession = session;
     this.boundPresence = presence;
     this.refreshCommentsContext();
+    trace("bind", "bound", { path, role, hasPresence: !!presence, comments: store.openCount() });
     log("bind", "bound editor", path, "comments=", store.openCount());
   }
 
@@ -655,7 +690,7 @@ export default class CollabPlugin extends Plugin {
     this.boundPresence?.stop();
     if (this.boundView) {
       try { unbindEditor(this.boundView); } catch { /* ignore */ }
-      this.boundProvider?.setEditorBound(false);
+      await this.boundProvider?.setEditorBound(false);
     }
     await this.instanceWatch?.stop();
     await this.stopAllShares();
@@ -677,6 +712,7 @@ export default class CollabPlugin extends Plugin {
         uid: raw.uid ?? "",
         ntfyTopic: raw.ntfyTopic ?? "",
         debugLogging: raw.debugLogging ?? DEFAULT_SETTINGS.debugLogging,
+        diagnosticLogging: raw.diagnosticLogging ?? DEFAULT_SETTINGS.diagnosticLogging,
         shares: raw.linkedFolder
           ? [{ id: LEGACY_SHARE_ID, key: "", label: "Synced Obsidian", localFolder: raw.linkedFolder, legacy: true }]
           : [],
@@ -700,7 +736,13 @@ export default class CollabPlugin extends Plugin {
 
   /** Called by the settings UI. `restart` debounces a full re-sync for connection changes. */
   async saveSettings(restart = true): Promise<void> {
-    setDebug(this.settings.debugLogging);
+    configureDiagnostics({
+      app: this.app,
+      uid: this.settings.uid,
+      debugLogging: this.settings.debugLogging,
+      diagnosticLogging: this.settings.diagnosticLogging,
+    });
+    setDiagnosticLogging(this.settings.diagnosticLogging);
     await this.persist();
     if (restart) this.debouncedRestart();
   }

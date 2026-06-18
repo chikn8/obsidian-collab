@@ -70,6 +70,8 @@ export interface CollabPluginSettings {
   ntfyTopic: string;
   /** Verbose console logging for bug-testing. */
   debugLogging: boolean;
+  /** Persist a redacted structured diagnostic trace for feedback-loop debugging. */
+  diagnosticLogging: boolean;
   shares: Share[];
 }
 
@@ -82,6 +84,7 @@ export const DEFAULT_SETTINGS: CollabPluginSettings = {
   uid: "",
   ntfyTopic: "",
   debugLogging: false,
+  diagnosticLogging: false,
   shares: [],
 };
 

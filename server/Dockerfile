@@ -12,5 +12,6 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY package.json ./
 ENV HOST=0.0.0.0
+ENV NODE_OPTIONS=--max-old-space-size=384
 EXPOSE 8080
 CMD ["node", "dist/index.js"]

@@ -25,6 +25,7 @@ import { bindInviteIdentity, getInvite, getMinEpoch, putInvite, revokeInvite, se
 import { getPersistenceHealth } from "./persistence.js";
 import { startBackups, stopBackups, getBackupHealth } from "./backups.js";
 import { auditEvent } from "./audit.js";
+import { getRuntimeHealth } from "./runtime.js";
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = parseInt(process.env.PORT || "8080", 10);
@@ -194,13 +195,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === "/health") {
-      const [persistence, snapshots] = await Promise.all([
+      const [persistence, snapshots, runtime] = await Promise.all([
         getPersistenceHealth(),
         Promise.resolve(getSnapshotsHealth()),
+        Promise.resolve(getRuntimeHealth()),
       ]);
       const shareState = getShareStateHealth();
       const backups = getBackupHealth();
-      const ok = persistence.ok && snapshots.ok && shareState.ok && backups.ok;
+      const ok = persistence.ok && snapshots.ok && shareState.ok && backups.ok && runtime.ok;
       return json(ok ? 200 : 503, {
         status: ok ? "ok" : "degraded",
         service: "obsidian-collab-server",
@@ -209,12 +211,13 @@ const server = http.createServer(async (req, res) => {
         snapshots,
         shareState,
         backups,
+        runtime,
       });
     }
 
     if (p === "/metrics") {
       if (!metricsAuthorized(req, url)) return json(401, { error: "unauthorized" });
-      return json(200, getMetrics());
+      return json(200, { ...getMetrics(), runtime: getRuntimeHealth() });
     }
 
     if (p === "/blob" && (req.method === "GET" || req.method === "PUT")) {

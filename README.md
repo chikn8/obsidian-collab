@@ -189,6 +189,10 @@ Settings → Real-Time Collaboration:
 | `SAVE_SWEEP_INTERVAL_MS` | `60000` | Dirty-room persistence sweep cadence |
 | `STALE_SAVE_MS` | — | `/health` 503s if dirty room state remains unsaved longer than this |
 | `MIN_FREE_BYTES` | — | `/health` 503s below this much free disk |
+| `NODE_OPTIONS` | `--max-old-space-size=384` in Docker | Node/V8 heap cap; raise/lower to fit the Railway memory limit |
+| `MEMORY_HEALTH_MAX_RSS_BYTES` | cgroup limit × `0.92` if detectable | `/health` 503s when process RSS crosses this |
+| `MEMORY_HEALTH_MAX_HEAP_USED_BYTES` | `0` | Optional `/health` heap-used ceiling; `0` disables |
+| `MEMORY_HEALTH_CGROUP_RATIO` | `0.92` | RSS health threshold ratio when a container memory limit is detectable |
 | `SNAPSHOT_GIT_REMOTE` / `SNAPSHOT_GIT_BRANCH` | — / `main` | Push note-history snapshots off-box |
 | `REQUIRE_SNAPSHOT_REMOTE` | `false` | Make `/health` fail until snapshot git push is configured |
 | `PERSIST_BACKUP_COMMAND` | — | Shell command for periodic full-corpus backup (gets `$PERSIST_DIR`) |
@@ -267,8 +271,8 @@ manual installs but violates Obsidian's current community-directory naming rule 
 ## Operations & recovery
 
 - **Health:** `GET /health` returns 503 when persistence/snapshots/backups are unhealthy (so Railway
-  restarts and `OPS_NTFY_TOPIC` pages you). `GET /metrics` exposes rooms, file paths, connections,
-  rate-limited and backpressure-closed counts, so call it with
+  restarts and `OPS_NTFY_TOPIC` pages you), or when runtime memory crosses configured guardrails.
+  `GET /metrics` exposes rooms, file paths, connections, runtime memory, rate-limited and backpressure-closed counts, so call it with
   `Authorization: Bearer $METRICS_TOKEN` on public deployments.
 - **Backups:** set `SNAPSHOT_GIT_REMOTE` (push history) **and** `PERSIST_BACKUP_COMMAND` (full-corpus
   archive), then set `REQUIRE_SNAPSHOT_REMOTE=true` and `REQUIRE_PERSIST_BACKUP=true`. Without these,

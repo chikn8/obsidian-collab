@@ -90,7 +90,7 @@ races. Your own devices are just "more clients on the share" — the plugin alre
 ┌────────────── Obsidian (each collaborator) ──────────────┐        ┌──── Relay server (Railway) ────┐
 │                                                          │        │                                │
 │  active editor ──yCollab──┐                              │  WSS   │  per-room Y.Doc (in memory)    │
-│                           ├─ per-file Y.Doc ── FileProvider ───────┼─ relay updates to all conns   │
+│                           ├─ per-file Y.Doc ── FileProvider ═══════╪═ mux: one socket/share        │
 │  file explorer / disk ────┘   (headless sync)            │        │  atomic .yjs persistence       │
 │                                                          │        │  git snapshots + blob store    │
 │  manifest Y.Map ───────────── SyncManager ───────────────┼────────┼─ off-box backups (git/archive) │
@@ -100,6 +100,8 @@ races. Your own devices are just "more clients on the share" — the plugin alre
 
 - **Per-file Y.Doc** holds text in `Y.Text("codemirror")` and comments in `Y.Map("comments")`. The
   active editor binds via `yCollab` (live cursors); background files sync headlessly via `FileProvider`.
+  Namespaced shares tunnel these rooms over one multiplexed WebSocket per share; legacy shares keep the
+  original one-room-per-socket transport.
 - **Binary attachments** (images, PDFs, audio/video) are uploaded as content-addressed blobs and referenced
   from the manifest by SHA-256 hash. They are not merged like text; the newest manifest entry wins.
 - **Per-share manifest** is a `Y.Map("files")` keyed by relative path, tracking the file tree as

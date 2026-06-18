@@ -15,6 +15,7 @@ const MESSAGE_AWARENESS = 1;
 // 2 = messageAuth, 3 = messageQueryAwareness are reserved by y-websocket.
 const MESSAGE_NOTIFY = 4; // {fromUid, fromName, toUid, title, body} — mention push
 const MESSAGE_TOPIC_REGISTER = 5; // {uid, topic} — register ntfy topic
+const MESSAGE_MUX = 6; // outer frame: roomName + inner y-websocket frame
 
 const PING_INTERVAL = 30000;
 const SYNC_DEBUG_LOG = process.env.SYNC_DEBUG_LOG === "true";
@@ -28,6 +29,7 @@ const SEND_BUFFER_LIMIT = 8 * 1024 * 1024; // drop a hopelessly backed-up socket
 let rateLimitedCount = 0;
 let backpressureClosedCount = 0;
 let nextConnId = 1;
+const activeMuxConnections = new Set<WebSocket>();
 
 type RoomStats = {
   inboundSyncMessages: number;
@@ -74,6 +76,17 @@ function fileTextLen(doc: WSSharedDoc): number | null {
 
 function stateBytes(doc: Y.Doc): number {
   return Y.encodeStateAsUpdate(doc).byteLength;
+}
+
+function rawDataToUint8Array(data: RawData): Uint8Array {
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  const buffer = Array.isArray(data) ? Buffer.concat(data) : data;
+  if (buffer instanceof Buffer) {
+    return new Uint8Array(
+      buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+    );
+  }
+  return new Uint8Array(buffer as any);
 }
 
 /** Per-connection token-bucket rate limit. Returns false when over budget. */
@@ -232,7 +245,7 @@ class WSSharedDoc extends Y.Doc {
         );
         const message = encoding.toUint8Array(encoder);
         this.conns.forEach((_, conn) => {
-          send(conn, message);
+          send(conn, message, this.name);
         });
       }
     );
@@ -248,7 +261,7 @@ class WSSharedDoc extends Y.Doc {
       const message = encoding.toUint8Array(encoder);
       this.conns.forEach((_, conn) => {
         if (origin !== conn) {
-          send(conn, message);
+          send(conn, message, this.name);
         }
       });
     });
@@ -276,6 +289,7 @@ export function getMetrics() {
   return {
     rooms: docs.size,
     connections,
+    muxConnections: activeMuxConnections.size,
     rateLimited: rateLimitedCount,
     backpressureClosed: backpressureClosedCount,
     detail: rooms.sort((a, b) => b.conns - a.conns).slice(0, 100),
@@ -326,15 +340,99 @@ export async function saveAllDocs(reason = "manual"): Promise<void> {
   }
 }
 
+function ensureConnectionIdentity(conn: WebSocket, req: IncomingMessage, url: URL): void {
+  if ((conn as any).collabConnId !== undefined) return;
+  (conn as any).collabConnId = nextConnId++;
+  (conn as any).collabRole = (req as any).collabRole || "editor";
+  (conn as any).collabShareId = (req as any).collabShareId || null;
+  (conn as any).collabEpoch = (req as any).collabEpoch ?? 0;
+  (conn as any).collabInviteId = (req as any).collabInviteId || null;
+  (conn as any).collabIdentity = identityFromUrl(url, (conn as any).collabConnId);
+}
+
+function muxRoomAllowed(conn: WebSocket, roomName: string): boolean {
+  const shareId = (conn as any).collabShareId;
+  if (!shareId) return false;
+  if (roomName === `@${shareId}:__mux__`) return false;
+  return roomName.startsWith(`@${shareId}:`);
+}
+
+async function joinRoom(conn: WebSocket, req: IncomingMessage, roomName: string, url: URL): Promise<WSSharedDoc> {
+  ensureConnectionIdentity(conn, req, url);
+  const doc = await getOrCreateDoc(roomName);
+  startPeriodicSave(roomName, doc);
+  if (doc.conns.has(conn)) return doc;
+
+  doc.conns.set(conn, new Set());
+
+  console.log(
+    `[rooms] client connected to ${roomName} (${doc.conns.size} total)`
+  );
+  logEvent("info", "room.connect", {
+    room: roomName,
+    ...roomInfo(roomName),
+    connId: (conn as any).collabConnId,
+    role: (conn as any).collabRole || "editor",
+    uid: (conn as any).collabIdentity?.uid,
+    name: (conn as any).collabIdentity?.name,
+    epoch: (conn as any).collabEpoch ?? 0,
+    inviteId: (conn as any).collabInviteId || undefined,
+    conns: doc.conns.size,
+    clients: doc.awareness.getStates().size,
+    textLen: fileTextLen(doc),
+    stateBytes: stateBytes(doc),
+    mux: !!(conn as any).collabMux,
+  });
+  void auditEvent("ws.join", {
+    room: roomName,
+    ...roomInfo(roomName),
+    connId: (conn as any).collabConnId,
+    role: (conn as any).collabRole || "editor",
+    uid: (conn as any).collabIdentity?.uid,
+    name: (conn as any).collabIdentity?.name,
+    device: (conn as any).collabIdentity?.device,
+    deviceId: (conn as any).collabIdentity?.deviceId,
+    epoch: (conn as any).collabEpoch ?? 0,
+    inviteId: (conn as any).collabInviteId || undefined,
+    remote: req.socket.remoteAddress || "",
+    conns: doc.conns.size,
+    mux: !!(conn as any).collabMux,
+  });
+
+  const syncEncoder = encoding.createEncoder();
+  encoding.writeVarUint(syncEncoder, MESSAGE_SYNC);
+  syncProtocol.writeSyncStep1(syncEncoder, doc);
+  send(conn, encoding.toUint8Array(syncEncoder), roomName);
+
+  const awarenessStates = doc.awareness.getStates();
+  if (awarenessStates.size > 0) {
+    const awarenessEncoder = encoding.createEncoder();
+    encoding.writeVarUint(awarenessEncoder, MESSAGE_AWARENESS);
+    encoding.writeVarUint8Array(
+      awarenessEncoder,
+      awarenessProtocol.encodeAwarenessUpdate(
+        doc.awareness,
+        Array.from(awarenessStates.keys())
+      )
+    );
+    send(conn, encoding.toUint8Array(awarenessEncoder), roomName);
+  }
+
+  return doc;
+}
+
 export function closeRevokedConnections(shareId: string, minEpoch: number): number {
   let closed = 0;
+  const seen = new Set<WebSocket>();
   const prefix = `@${shareId}:`;
   for (const [roomName, doc] of docs) {
     if (!roomName.startsWith(prefix)) continue;
     for (const conn of doc.conns.keys()) {
+      if (seen.has(conn)) continue;
       const connShareId = (conn as any).collabShareId;
       const connEpoch = Number((conn as any).collabEpoch ?? 0);
       if (connShareId === shareId && connEpoch < minEpoch) {
+        seen.add(conn);
         closed++;
         conn.close(4003, "Share access revoked");
       }
@@ -346,11 +444,14 @@ export function closeRevokedConnections(shareId: string, minEpoch: number): numb
 
 export function closeInviteConnections(shareId: string, inviteId: string): number {
   let closed = 0;
+  const seen = new Set<WebSocket>();
   const prefix = `@${shareId}:`;
   for (const [roomName, doc] of docs) {
     if (!roomName.startsWith(prefix)) continue;
     for (const conn of doc.conns.keys()) {
+      if (seen.has(conn)) continue;
       if ((conn as any).collabShareId === shareId && (conn as any).collabInviteId === inviteId) {
+        seen.add(conn);
         closed++;
         conn.close(4003, "Invite access revoked");
       }
@@ -363,8 +464,17 @@ export function closeInviteConnections(shareId: string, inviteId: string): numbe
 /**
  * Send a binary message to a WebSocket client.
  */
-function send(conn: WebSocket, message: Uint8Array): void {
+function send(conn: WebSocket, message: Uint8Array, roomName?: string): void {
   if (conn.readyState !== WebSocket.OPEN) return;
+  let out = message;
+  if ((conn as any).collabMux) {
+    if (!roomName) return;
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MESSAGE_MUX);
+    encoding.writeVarString(encoder, roomName);
+    encoding.writeVarUint8Array(encoder, message);
+    out = encoding.toUint8Array(encoder);
+  }
   // Backpressure: a slow/cellular peer that can't drain makes the server buffer
   // unbounded send data → OOM. Close it; it reconnects and re-syncs cleanly.
   if (conn.bufferedAmount > SEND_BUFFER_LIMIT) {
@@ -374,7 +484,7 @@ function send(conn: WebSocket, message: Uint8Array): void {
     return;
   }
   try {
-    conn.send(message, (err) => {
+    conn.send(out, (err) => {
       if (err) {
         console.error("[rooms] send error:", err);
         closeConn(conn);
@@ -417,7 +527,7 @@ function handleMessage(
         syncProtocol.readSyncMessage(decoder, encoder, doc, conn);
         recordSyncMessage(doc, conn, subtype, message.byteLength, beforeTextLen, beforeStateBytes);
         if (encoding.length(encoder) > 1) {
-          send(conn, encoding.toUint8Array(encoder));
+          send(conn, encoding.toUint8Array(encoder), doc.name);
         }
         break;
       }
@@ -530,10 +640,11 @@ function recordSyncMessage(
  * Close a connection and clean up.
  */
 function closeConn(conn: WebSocket): void {
-  // Find which doc this connection belongs to
+  let closedAny = false;
   for (const [roomName, doc] of docs) {
     const controlledIds = doc.conns.get(conn);
     if (!controlledIds) continue;
+    closedAny = true;
 
     doc.conns.delete(conn);
 
@@ -590,14 +701,14 @@ function closeConn(conn: WebSocket): void {
           console.error("[rooms] persistence error:", e);
         });
     }
-
-    break;
   }
 
-  try {
-    conn.close();
-  } catch (e) {
-    // Already closed
+  if (closedAny) {
+    try {
+      conn.close();
+    } catch (e) {
+      // Already closed
+    }
   }
 }
 
@@ -620,51 +731,7 @@ export async function setupWSConnection(
     return;
   }
 
-  const doc = await getOrCreateDoc(roomName);
-  startPeriodicSave(roomName, doc);
-
-  // Carry the role granted at the auth/upgrade step (default editor).
-  (conn as any).collabConnId = nextConnId++;
-  (conn as any).collabRole = (req as any).collabRole || "editor";
-  (conn as any).collabShareId = (req as any).collabShareId || null;
-  (conn as any).collabEpoch = (req as any).collabEpoch ?? 0;
-  (conn as any).collabInviteId = (req as any).collabInviteId || null;
-  (conn as any).collabIdentity = identityFromUrl(url, (conn as any).collabConnId);
-
-  // Track this connection
-  doc.conns.set(conn, new Set());
-
-  console.log(
-    `[rooms] client connected to ${roomName} (${doc.conns.size} total)`
-  );
-  logEvent("info", "room.connect", {
-    room: roomName,
-    ...roomInfo(roomName),
-    connId: (conn as any).collabConnId,
-    role: (conn as any).collabRole || "editor",
-    uid: (conn as any).collabIdentity?.uid,
-    name: (conn as any).collabIdentity?.name,
-    epoch: (conn as any).collabEpoch ?? 0,
-    inviteId: (conn as any).collabInviteId || undefined,
-    conns: doc.conns.size,
-    clients: doc.awareness.getStates().size,
-    textLen: fileTextLen(doc),
-    stateBytes: stateBytes(doc),
-  });
-  void auditEvent("ws.join", {
-    room: roomName,
-    ...roomInfo(roomName),
-    connId: (conn as any).collabConnId,
-    role: (conn as any).collabRole || "editor",
-    uid: (conn as any).collabIdentity?.uid,
-    name: (conn as any).collabIdentity?.name,
-    device: (conn as any).collabIdentity?.device,
-    deviceId: (conn as any).collabIdentity?.deviceId,
-    epoch: (conn as any).collabEpoch ?? 0,
-    inviteId: (conn as any).collabInviteId || undefined,
-    remote: req.socket.remoteAddress || "",
-    conns: doc.conns.size,
-  });
+  const doc = await joinRoom(conn, req, roomName, url);
 
   // Handle incoming messages
   conn.on("message", (data: RawData) => {
@@ -673,17 +740,7 @@ export async function setupWSConnection(
       if (++rateLimitedCount % 100 === 1) console.warn(`[rooms] rate-limited a connection on ${roomName}`);
       return;
     }
-    const message =
-      data instanceof ArrayBuffer
-        ? new Uint8Array(data)
-        : new Uint8Array(
-            data instanceof Buffer
-              ? data.buffer.slice(
-                  data.byteOffset,
-                  data.byteOffset + data.byteLength
-                )
-              : (data as any)
-          );
+    const message = rawDataToUint8Array(data);
     handleMessage(conn, doc, message);
   });
 
@@ -721,27 +778,98 @@ export async function setupWSConnection(
   conn.on("close", () => {
     clearInterval(pingInterval);
   });
+}
 
-  // Send initial sync step 1
-  {
-    const encoder = encoding.createEncoder();
-    encoding.writeVarUint(encoder, MESSAGE_SYNC);
-    syncProtocol.writeSyncStep1(encoder, doc);
-    send(conn, encoding.toUint8Array(encoder));
-  }
+export async function setupMuxConnection(
+  conn: WebSocket,
+  req: IncomingMessage
+): Promise<void> {
+  const url = new URL(req.url || "/", `http://${req.headers.host}`);
+  (conn as any).collabMux = true;
+  ensureConnectionIdentity(conn, req, url);
+  activeMuxConnections.add(conn);
 
-  // Send current awareness states
-  const awarenessStates = doc.awareness.getStates();
-  if (awarenessStates.size > 0) {
-    const encoder = encoding.createEncoder();
-    encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
-    encoding.writeVarUint8Array(
-      encoder,
-      awarenessProtocol.encodeAwarenessUpdate(
-        doc.awareness,
-        Array.from(awarenessStates.keys())
-      )
-    );
-    send(conn, encoding.toUint8Array(encoder));
-  }
+  console.log(`[rooms] mux client connected for share ${(conn as any).collabShareId || "unknown"}`);
+  logEvent("info", "mux.connect", {
+    connId: (conn as any).collabConnId,
+    shareId: (conn as any).collabShareId || undefined,
+    role: (conn as any).collabRole || "editor",
+    uid: (conn as any).collabIdentity?.uid,
+  });
+  void auditEvent("mux.join", {
+    connId: (conn as any).collabConnId,
+    shareId: (conn as any).collabShareId || undefined,
+    role: (conn as any).collabRole || "editor",
+    uid: (conn as any).collabIdentity?.uid,
+    name: (conn as any).collabIdentity?.name,
+    remote: req.socket.remoteAddress || "",
+  });
+
+  conn.on("message", (data: RawData) => {
+    if (!allowMessage(conn)) {
+      if (++rateLimitedCount % 100 === 1) console.warn(`[rooms] rate-limited a mux connection`);
+      return;
+    }
+    void (async () => {
+      try {
+        const message = rawDataToUint8Array(data);
+        const decoder = decoding.createDecoder(message);
+        const outerType = decoding.readVarUint(decoder);
+        if (outerType !== MESSAGE_MUX) {
+          console.warn("[rooms] unknown mux outer message type:", outerType);
+          return;
+        }
+        const roomName = decoding.readVarString(decoder);
+        if (!muxRoomAllowed(conn, roomName)) {
+          void auditEvent("mux.room.rejected", {
+            room: roomName,
+            shareId: (conn as any).collabShareId || undefined,
+            connId: (conn as any).collabConnId,
+            reason: "share-mismatch",
+          });
+          conn.close(4403, "Room not in share");
+          return;
+        }
+        const inner = decoding.readVarUint8Array(decoder);
+        const doc = await joinRoom(conn, req, roomName, url);
+        handleMessage(conn, doc, inner);
+      } catch (e) {
+        console.error("[rooms] mux message handling error:", e);
+      }
+    })();
+  });
+
+  conn.on("close", () => {
+    activeMuxConnections.delete(conn);
+    closeConn(conn);
+  });
+
+  conn.on("error", (err) => {
+    console.error("[rooms] mux connection error:", err);
+    closeConn(conn);
+  });
+
+  let alive = true;
+  const pingInterval = setInterval(() => {
+    if (!alive) {
+      closeConn(conn);
+      clearInterval(pingInterval);
+      return;
+    }
+    alive = false;
+    try {
+      conn.ping();
+    } catch (e) {
+      closeConn(conn);
+      clearInterval(pingInterval);
+    }
+  }, PING_INTERVAL);
+
+  conn.on("pong", () => {
+    alive = true;
+  });
+
+  conn.on("close", () => {
+    clearInterval(pingInterval);
+  });
 }

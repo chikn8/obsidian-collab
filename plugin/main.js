@@ -654,6 +654,11 @@ var Decoder = class {
 };
 var createDecoder = (uint8Array) => new Decoder(uint8Array);
 var hasContent = (decoder) => decoder.pos !== decoder.arr.length;
+var clone = (decoder, newPos = decoder.pos) => {
+  const _decoder = createDecoder(decoder.arr);
+  _decoder.pos = newPos;
+  return _decoder;
+};
 var readUint8Array = (decoder, len) => {
   const view = new Uint8Array(decoder.arr.buffer, decoder.pos + decoder.arr.byteOffset, len);
   decoder.pos += len;
@@ -9839,6 +9844,259 @@ var WebsocketProvider = class extends ObservableV2 {
 
 // src/collab/YjsProvider.ts
 var import_obsidian = require("obsidian");
+
+// src/collab/MuxProvider.ts
+var MESSAGE_SYNC = 0;
+var MESSAGE_AWARENESS = 1;
+var MESSAGE_MUX = 6;
+var connections = /* @__PURE__ */ new Map();
+function paramsKey(params2) {
+  return Object.entries(params2).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
+}
+function muxKey(args2) {
+  return `${args2.serverUrl}|${args2.shareId}|${paramsKey(args2.params)}`;
+}
+function muxUrl(args2) {
+  const base = args2.serverUrl.replace(/\/$/, "");
+  const q = new URLSearchParams(args2.params);
+  return `${base}/${encodeURIComponent(`@${args2.shareId}:__mux__`)}?${q.toString()}`;
+}
+function toBytes(data) {
+  return data instanceof Uint8Array ? data : new Uint8Array(data);
+}
+var MuxConnection = class {
+  constructor(args2) {
+    this.args = args2;
+    this.ws = null;
+    this.providers = /* @__PURE__ */ new Map();
+    this.reconnectTimer = null;
+    this.attempts = 0;
+    this.shouldConnect = true;
+    this.connect();
+  }
+  get connected() {
+    var _a2;
+    return ((_a2 = this.ws) == null ? void 0 : _a2.readyState) === WebSocket.OPEN;
+  }
+  register(provider) {
+    let set = this.providers.get(provider.roomName);
+    if (!set) {
+      set = /* @__PURE__ */ new Set();
+      this.providers.set(provider.roomName, set);
+    }
+    set.add(provider);
+    provider.setConnected(this.connected);
+    if (this.connected) provider.onSocketOpen();
+  }
+  unregister(provider) {
+    var _a2;
+    const set = this.providers.get(provider.roomName);
+    set == null ? void 0 : set.delete(provider);
+    if (set && set.size === 0) this.providers.delete(provider.roomName);
+    if (this.providers.size === 0) {
+      this.shouldConnect = false;
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      (_a2 = this.ws) == null ? void 0 : _a2.close();
+      connections.delete(muxKey(this.args));
+    }
+  }
+  connect() {
+    this.shouldConnect = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
+    this.providers.forEach((set) => set.forEach((p) => p.emitStatus("connecting")));
+    const ws = new WebSocket(muxUrl(this.args));
+    ws.binaryType = "arraybuffer";
+    this.ws = ws;
+    ws.onopen = () => {
+      if (this.ws !== ws) return;
+      this.attempts = 0;
+      this.providers.forEach((set) => set.forEach((p) => {
+        p.setConnected(true);
+        p.emitStatus("connected");
+        p.onSocketOpen();
+      }));
+    };
+    ws.onclose = () => this.handleClosed(ws);
+    ws.onerror = () => {
+      if (this.ws !== ws) return;
+      this.providers.forEach((set) => set.forEach((p) => p.emit("connection-error")));
+    };
+    ws.onmessage = (event) => {
+      if (this.ws !== ws) return;
+      this.handleMessage(event.data);
+    };
+  }
+  disconnect() {
+    var _a2;
+    this.shouldConnect = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    (_a2 = this.ws) == null ? void 0 : _a2.close();
+  }
+  send(roomName, inner) {
+    if (!this.connected || !this.ws) return;
+    const encoder = createEncoder();
+    writeVarUint(encoder, MESSAGE_MUX);
+    writeVarString(encoder, roomName);
+    writeVarUint8Array(encoder, inner);
+    this.ws.send(toUint8Array(encoder));
+  }
+  handleClosed(ws) {
+    if (this.ws !== ws) return;
+    this.ws = null;
+    this.providers.forEach((set) => set.forEach((p) => {
+      p.setConnected(false);
+      p.setSynced(false);
+      p.emitStatus("disconnected");
+    }));
+    if (!this.shouldConnect || this.providers.size === 0) return;
+    const delay = Math.min(1e4, 500 * Math.pow(2, this.attempts++));
+    this.reconnectTimer = setTimeout(() => this.connect(), delay);
+  }
+  handleMessage(raw) {
+    const bytes = raw instanceof ArrayBuffer ? new Uint8Array(raw) : toBytes(raw);
+    const decoder = createDecoder(bytes);
+    const outerType = readVarUint(decoder);
+    if (outerType !== MESSAGE_MUX) return;
+    const roomName = readVarString(decoder);
+    const inner = readVarUint8Array(decoder);
+    const set = this.providers.get(roomName);
+    if (!set) return;
+    for (const provider of set) provider.receive(inner);
+  }
+};
+function sharedConnection(args2) {
+  const key = muxKey(args2);
+  let conn = connections.get(key);
+  if (!conn) {
+    conn = new MuxConnection(args2);
+    connections.set(key, conn);
+  }
+  return conn;
+}
+var MuxProvider = class {
+  constructor(args2) {
+    this.wsconnected = false;
+    this.listeners = /* @__PURE__ */ new Map();
+    this.synced = false;
+    this.roomName = args2.roomName;
+    this.ydoc = args2.ydoc;
+    this.awareness = new Awareness(this.ydoc);
+    this.awareness.setLocalState(null);
+    this.conn = sharedConnection(args2);
+    this.ws = { send: (data) => this.conn.send(this.roomName, data) };
+    this.updateHandler = (update, origin) => {
+      if (origin === this) return;
+      const encoder = createEncoder();
+      writeVarUint(encoder, MESSAGE_SYNC);
+      writeUpdate(encoder, update);
+      this.send(toUint8Array(encoder));
+    };
+    this.ydoc.on("update", this.updateHandler);
+    this.awarenessHandler = ({ added, updated, removed }) => {
+      const changedClients = added.concat(updated, removed);
+      const encoder = createEncoder();
+      writeVarUint(encoder, MESSAGE_AWARENESS);
+      writeVarUint8Array(
+        encoder,
+        encodeAwarenessUpdate(this.awareness, changedClients)
+      );
+      this.send(toUint8Array(encoder));
+    };
+    this.awareness.on("update", this.awarenessHandler);
+    this.conn.register(this);
+  }
+  on(event, listener) {
+    let set = this.listeners.get(event);
+    if (!set) {
+      set = /* @__PURE__ */ new Set();
+      this.listeners.set(event, set);
+    }
+    set.add(listener);
+  }
+  off(event, listener) {
+    var _a2;
+    (_a2 = this.listeners.get(event)) == null ? void 0 : _a2.delete(listener);
+  }
+  emit(event, ...args2) {
+    var _a2;
+    (_a2 = this.listeners.get(event)) == null ? void 0 : _a2.forEach((listener) => listener(...args2));
+  }
+  emitStatus(status) {
+    this.emit("status", { status });
+  }
+  setConnected(connected) {
+    this.wsconnected = connected;
+  }
+  setSynced(synced) {
+    if (this.synced === synced) return;
+    this.synced = synced;
+    this.emit("sync", synced);
+  }
+  onSocketOpen() {
+    this.sendSyncStep1();
+    this.flushLocalAwareness();
+  }
+  connect() {
+    this.conn.connect();
+  }
+  disconnect() {
+    this.conn.disconnect();
+  }
+  destroy() {
+    this.ydoc.off("update", this.updateHandler);
+    this.awareness.off("update", this.awarenessHandler);
+    removeAwarenessStates(this.awareness, Array.from(this.awareness.getStates().keys()), this);
+    this.awareness.destroy();
+    this.conn.unregister(this);
+    this.listeners.clear();
+  }
+  receive(message) {
+    const decoder = createDecoder(message);
+    const messageType = readVarUint(decoder);
+    if (messageType === MESSAGE_SYNC) {
+      const subtype = readVarUint(clone(decoder));
+      const encoder = createEncoder();
+      writeVarUint(encoder, MESSAGE_SYNC);
+      readSyncMessage(decoder, encoder, this.ydoc, this);
+      if (length(encoder) > 1) this.send(toUint8Array(encoder));
+      if (subtype === 1) this.setSynced(true);
+    } else if (messageType === MESSAGE_AWARENESS) {
+      applyAwarenessUpdate(this.awareness, readVarUint8Array(decoder), this);
+    }
+  }
+  sendSyncStep1() {
+    const encoder = createEncoder();
+    writeVarUint(encoder, MESSAGE_SYNC);
+    writeSyncStep1(encoder, this.ydoc);
+    this.send(toUint8Array(encoder));
+  }
+  flushLocalAwareness() {
+    const local = this.awareness.getLocalState();
+    if (!local) return;
+    const encoder = createEncoder();
+    writeVarUint(encoder, MESSAGE_AWARENESS);
+    writeVarUint8Array(
+      encoder,
+      encodeAwarenessUpdate(this.awareness, [this.awareness.clientID])
+    );
+    this.send(toUint8Array(encoder));
+  }
+  send(message) {
+    this.conn.send(this.roomName, message);
+  }
+};
+
+// src/collab/YjsProvider.ts
 function detectDevice() {
   if (import_obsidian.Platform.isMobile) return "mobile";
   return "desktop";
@@ -9864,20 +10122,29 @@ function installDeviceId() {
   cachedDeviceId = id2;
   return id2;
 }
+function shareIdFromRoom(roomName) {
+  if (!roomName.startsWith("@")) return null;
+  const idx = roomName.indexOf(":");
+  return idx > 1 ? roomName.slice(1, idx) : null;
+}
 function createProvider(serverUrl, roomName, ydoc, token, userInfo, callbacks, authParams = {}) {
   const device = detectDevice();
   const deviceId = installDeviceId();
-  const provider = new WebsocketProvider(serverUrl, roomName, ydoc, {
-    params: {
-      token,
-      uid: userInfo.uid,
-      name: userInfo.name,
-      color: userInfo.color,
-      device,
-      deviceId,
-      ...userInfo.identityPublicKey && userInfo.identitySignature ? { identityKey: userInfo.identityPublicKey, identitySig: userInfo.identitySignature } : {},
-      ...authParams
-    },
+  const params2 = {
+    token,
+    uid: userInfo.uid,
+    name: userInfo.name,
+    color: userInfo.color,
+    device,
+    deviceId,
+    ...userInfo.identityPublicKey && userInfo.identitySignature ? { identityKey: userInfo.identityPublicKey, identitySig: userInfo.identitySignature } : {},
+    ...authParams
+  };
+  const useMux = params2.__mux === "true";
+  delete params2.__mux;
+  const shareId = shareIdFromRoom(roomName);
+  const provider = useMux && shareId ? new MuxProvider({ serverUrl, shareId, roomName, ydoc, params: params2 }) : new WebsocketProvider(serverUrl, roomName, ydoc, {
+    params: params2,
     connect: true,
     // WebsocketProvider handles reconnection automatically
     maxBackoffTime: 1e4
@@ -11672,7 +11939,7 @@ var SyncManager = class {
           }
         }
       },
-      shareAuthParams(this.share)
+      this.providerAuthParams()
     );
     this.manifestMap.observe((event) => {
       if (this.processingManifest) return;
@@ -11932,7 +12199,7 @@ var SyncManager = class {
         roomName: fileRoom(this.share, relPath),
         shareId: this.histShareId,
         token: shareToken(this.share, this.settings.serverPassword),
-        authParams: shareAuthParams(this.share),
+        authParams: this.providerAuthParams(),
         echo: this.echo,
         onStatusChange: () => {
         },
@@ -12588,6 +12855,12 @@ var SyncManager = class {
     const safe = safeRelPath(relPath, this.share.localFolder);
     if (!safe) log("loop", "rejected unsafe manifest path", context, String(relPath));
     return safe;
+  }
+  providerAuthParams() {
+    return {
+      ...shareAuthParams(this.share),
+      ...this.share.legacy ? {} : { __mux: "true" }
+    };
   }
   getLocalFiles() {
     const folder = this.app.vault.getAbstractFileByPath(this.share.localFolder);

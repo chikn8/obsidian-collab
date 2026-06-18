@@ -2,6 +2,7 @@ import { WebsocketProvider } from "y-websocket";
 import { Platform } from "obsidian";
 import * as Y from "yjs";
 import type { ConnectionStatus } from "../types";
+import { MuxProvider } from "./MuxProvider";
 
 function detectDevice(): string {
   if (Platform.isMobile) return "mobile";
@@ -40,6 +41,12 @@ export interface ProviderCallbacks {
   onSynced: (synced: boolean) => void;
 }
 
+function shareIdFromRoom(roomName: string): string | null {
+  if (!roomName.startsWith("@")) return null;
+  const idx = roomName.indexOf(":");
+  return idx > 1 ? roomName.slice(1, idx) : null;
+}
+
 /**
  * Creates a configured WebsocketProvider with auth and awareness.
  */
@@ -51,26 +58,32 @@ export function createProvider(
   userInfo: { uid: string; name: string; color: string; identityPublicKey?: string; identitySignature?: string },
   callbacks: ProviderCallbacks,
   authParams: Record<string, string> = {}
-): WebsocketProvider {
+): WebsocketProvider | MuxProvider {
   const device = detectDevice();
   const deviceId = installDeviceId();
-  const provider = new WebsocketProvider(serverUrl, roomName, ydoc, {
-    params: {
-      token,
-      uid: userInfo.uid,
-      name: userInfo.name,
-      color: userInfo.color,
-      device,
-      deviceId,
-      ...(userInfo.identityPublicKey && userInfo.identitySignature
-        ? { identityKey: userInfo.identityPublicKey, identitySig: userInfo.identitySignature }
-        : {}),
-      ...authParams,
-    },
-    connect: true,
-    // WebsocketProvider handles reconnection automatically
-    maxBackoffTime: 10000,
-  });
+  const params: Record<string, string> = {
+    token,
+    uid: userInfo.uid,
+    name: userInfo.name,
+    color: userInfo.color,
+    device,
+    deviceId,
+    ...(userInfo.identityPublicKey && userInfo.identitySignature
+      ? { identityKey: userInfo.identityPublicKey, identitySig: userInfo.identitySignature }
+      : {}),
+    ...authParams,
+  };
+  const useMux = params.__mux === "true";
+  delete params.__mux;
+  const shareId = shareIdFromRoom(roomName);
+  const provider = useMux && shareId
+    ? new MuxProvider({ serverUrl, shareId, roomName, ydoc, params })
+    : new WebsocketProvider(serverUrl, roomName, ydoc, {
+      params,
+      connect: true,
+      // WebsocketProvider handles reconnection automatically
+      maxBackoffTime: 10000,
+    });
 
   // Set local awareness state so others can see our cursor. `uid` is the stable
   // join key across the separate manifest/file awarenesses (different clientIDs).

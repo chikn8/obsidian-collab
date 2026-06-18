@@ -22,10 +22,16 @@ The **active editor** additionally binds to its file's `Y.Text` via `yCollab` (`
 which is what makes typing feel instant and renders remote cursors/selections natively. Background
 (non-focused) files keep syncing headlessly through their `FileProvider`.
 
+Namespaced shares use a multiplexed WebSocket transport: one authenticated physical socket per
+client/share carries frames for the manifest and each text-file room. The server still stores and evicts
+separate `WSSharedDoc` rooms internally, so persistence/history behavior is unchanged. Legacy shares keep
+the old one-room-per-socket transport for compatibility.
+
 ### Rooms
 Room names are namespaced per share so shares never collide:
 - `@<shareId>:__manifest__` — the folder manifest
 - `@<shareId>:file:<encodeURIComponent(relPath)>` — one per text file
+- `@<shareId>:__mux__` — the physical multiplex socket endpoint for a namespaced share
 
 The original single-folder setup auto-migrates to a **legacy** share that keeps the old *un-prefixed*
 rooms (`__manifest__`, `file:…`) so existing data and collaborators are untouched. `share.legacy` and

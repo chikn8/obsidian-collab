@@ -1,7 +1,7 @@
 import http from "http";
 import { randomBytes } from "crypto";
 import { WebSocketServer } from "ws";
-import { setupWSConnection, getMetrics, saveAllDocs, closeRevokedConnections, closeInviteConnections } from "./rooms.js";
+import { setupMuxConnection, setupWSConnection, getMetrics, saveAllDocs, closeRevokedConnections, closeInviteConnections } from "./rooms.js";
 import { BLOB_MAX_BYTES, loadBlob, readBlobBody, safeBlobHash, safeBlobRelPath, storeBlob } from "./blobs.js";
 import {
   authenticate,
@@ -451,6 +451,7 @@ server.on("upgrade", async (request, socket, head) => {
   let grantedRole: Role = "editor";
   let ok: boolean;
   const shareId = shareIdOf(room);
+  const muxRoom = !!shareId && room === `@${shareId}:__mux__`;
   if (shareId) {
     const role = await verifyNamespacedAccess({
       shareId,
@@ -492,6 +493,7 @@ server.on("upgrade", async (request, socket, head) => {
   (request as any).collabShareId = shareId;
   (request as any).collabEpoch = epochParam ?? 0;
   (request as any).collabInviteId = inviteParam ?? null;
+  (request as any).collabMux = muxRoom;
   wss.handleUpgrade(request, socket, head, (ws) => {
     wss.emit("connection", ws, request);
   });
@@ -500,7 +502,8 @@ server.on("upgrade", async (request, socket, head) => {
 // Handle new WebSocket connections
 wss.on("connection", async (ws, req) => {
   try {
-    await setupWSConnection(ws, req);
+    if ((req as any).collabMux) await setupMuxConnection(ws, req);
+    else await setupWSConnection(ws, req);
   } catch (e) {
     console.error("[server] connection setup error:", e);
     ws.close(4500, "Internal server error");

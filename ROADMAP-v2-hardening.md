@@ -36,10 +36,12 @@ real-server WebSocket e2e for convergence, viewer write rejection, restart durab
 different signed install is rejected before joining the room.
 **Tier 4 foundation**: binary attachments sync through content-addressed `/blob` uploads/downloads and
 manifest `kind:"binary"` entries.
+**Scale foundation**: namespaced shares multiplex manifest + file Yjs rooms over one physical WebSocket
+per client/share; server e2e verifies two rooms over two mux sockets.
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
-(ops, not code) · account-grade identity/key rotation · socket multiplexing / scale ceiling
-(Tier 3.1) · blob GC/object-store polish · side-by-side diff polish · human device-matrix test.
+(ops, not code) · account-grade identity/key rotation · HA/process tuning · blob GC/object-store polish ·
+side-by-side diff polish · human device-matrix test.
 
 ---
 
@@ -289,17 +291,14 @@ intentional best-effort catches but log them under the `err` namespace.
 
 # Tier 3 — Scale ceiling & HA (XL, architectural — gate the rest of scale on this)
 
-### 3.1 — Multiplex to ONE socket per client per share (XL)
-**Problem.** `onManifestSynced` opens a `FileProvider` (its own WS socket) for **every** manifest entry on
-connect; the server holds one in-memory `WSSharedDoc` per room, evicted only at zero connections, with no LRU
-or memory ceiling. A 1,000-note share × 4 cofounders = 4,000 sockets + 1,000 resident docs for an idle vault;
-mobile dials 1,000 sockets at once (Alpine FD ~1024 blows first); every redeploy is a reconnect
-thundering-herd that can trip the 30s healthcheck → self-inflicted outage that worsens as the vault grows.
-**Fix.** Multiplex: one socket per client per share, tunnel per-file Y.Doc frames over it with room-id as a
-frame field (y-sweet/Hocuspocus model). Interim, cheaper: **lazy-open** file rooms only for open/recently-
-active files + the manifest; add client connect jitter; replace per-room 60s save timers + per-conn 30s pings
-with a per-room dirty-flag **global sweep**.
-**Verify.** A 1,000-file share opens O(1) sockets/client; redeploy reconnect is smooth; idle memory bounded.
+### 3.1 — Multiplex to ONE socket per client per share (implemented foundation)
+**Status.** Namespaced shares now use a multiplexed WebSocket endpoint (`@<shareId>:__mux__`) that carries
+manifest + file-room Yjs frames over one authenticated physical socket per client/share. Internally the
+server still keeps one `WSSharedDoc` per room and evicts it on last disconnect, so persistence/history stay
+unchanged. Legacy shares keep the old per-room socket transport. Real-server e2e verifies two text rooms
+syncing through two mux sockets.
+**Remaining.** Dirty-flag global save sweep instead of per-room timers, memory-pressure/LRU tuning,
+reconnect jitter/backoff polish, and true HA storage/fan-out.
 
 ### 3.2 — Server-side share minting / per-share key isolation (implemented foundation; follow-ups remain)
 **Status.** Implemented the foundation: `/share/create` mints new shares with `SHARE_MINT_TOKEN`, returns

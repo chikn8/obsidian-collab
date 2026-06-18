@@ -250,7 +250,7 @@ export class SyncManager {
           }
         },
       },
-      shareAuthParams(this.share)
+      this.providerAuthParams()
     );
 
     // Observe manifest changes from remote
@@ -564,7 +564,7 @@ export class SyncManager {
         roomName: fileRoom(this.share, relPath),
         shareId: this.histShareId,
         token: shareToken(this.share, this.settings.serverPassword),
-        authParams: shareAuthParams(this.share),
+        authParams: this.providerAuthParams(),
         echo: this.echo,
         onStatusChange: () => {},  // Individual file status not shown
         onUsersChange: (users) => this.onUsersChange(users),
@@ -1271,6 +1271,13 @@ export class SyncManager {
     const safe = safeRelPath(relPath, this.share.localFolder);
     if (!safe) log("loop", "rejected unsafe manifest path", context, String(relPath));
     return safe;
+  }
+
+  private providerAuthParams(): Record<string, string> {
+    return {
+      ...shareAuthParams(this.share),
+      ...(this.share.legacy ? {} : { __mux: "true" }),
+    };
   }
 
   private getLocalFiles(): string[] {

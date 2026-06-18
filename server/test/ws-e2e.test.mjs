@@ -11,6 +11,8 @@ import * as syncProtocol from "y-protocols/sync";
 import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
 
+const MESSAGE_MUX = 6;
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, "..");
 const distIndex = path.join(serverRoot, "dist", "index.js");
@@ -248,6 +250,102 @@ class SyncClient {
   }
 }
 
+class MuxClient {
+  constructor(wsBase, shareId, rooms, params) {
+    this.shareId = shareId;
+    this.docs = new Map();
+    this.closeCode = null;
+    const url = new URL(`${wsBase}/${encodeURIComponent(`@${shareId}:__mux__`)}`);
+    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
+    this.ws = new WebSocket(url);
+    for (const room of rooms) {
+      const doc = new Y.Doc();
+      this.docs.set(room, doc);
+      doc.on("update", (update, origin) => {
+        if (origin === this || this.ws.readyState !== WebSocket.OPEN) return;
+        const inner = encoding.createEncoder();
+        encoding.writeVarUint(inner, 0);
+        syncProtocol.writeUpdate(inner, update);
+        this.sendInner(room, encoding.toUint8Array(inner));
+      });
+    }
+    this.ready = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`mux connect timeout for ${shareId}`)), 5000);
+      this.ws.on("open", () => {
+        setTimeout(() => {
+          clearTimeout(timer);
+          for (const room of this.docs.keys()) this.sendSyncStep1(room);
+          resolve();
+        }, 25);
+      });
+      this.ws.on("error", reject);
+    });
+    this.closed = new Promise((resolve) => {
+      this.ws.on("close", (code, reason) => {
+        this.closeCode = code;
+        resolve({ code, reason: reason.toString() });
+      });
+    });
+    this.ws.on("message", (data) => this.handleMessage(new Uint8Array(data)));
+  }
+
+  sendInner(room, inner) {
+    const outer = encoding.createEncoder();
+    encoding.writeVarUint(outer, MESSAGE_MUX);
+    encoding.writeVarString(outer, room);
+    encoding.writeVarUint8Array(outer, inner);
+    this.ws.send(encoding.toUint8Array(outer));
+  }
+
+  sendSyncStep1(room) {
+    const inner = encoding.createEncoder();
+    encoding.writeVarUint(inner, 0);
+    syncProtocol.writeSyncStep1(inner, this.docs.get(room));
+    this.sendInner(room, encoding.toUint8Array(inner));
+  }
+
+  handleMessage(message) {
+    const outer = decoding.createDecoder(message);
+    const outerType = decoding.readVarUint(outer);
+    if (outerType !== MESSAGE_MUX) return;
+    const room = decoding.readVarString(outer);
+    const innerBytes = decoding.readVarUint8Array(outer);
+    const doc = this.docs.get(room);
+    if (!doc) return;
+    const inner = decoding.createDecoder(innerBytes);
+    const messageType = decoding.readVarUint(inner);
+    if (messageType !== 0) return;
+    const reply = encoding.createEncoder();
+    encoding.writeVarUint(reply, 0);
+    syncProtocol.readSyncMessage(inner, reply, doc, this);
+    if (encoding.length(reply) > 1 && this.ws.readyState === WebSocket.OPEN) {
+      this.sendInner(room, encoding.toUint8Array(reply));
+    }
+  }
+
+  text(room) {
+    return this.docs.get(room).getText("codemirror").toString();
+  }
+
+  setText(room, text) {
+    const ytext = this.docs.get(room).getText("codemirror");
+    this.docs.get(room).transact(() => {
+      if (ytext.length > 0) ytext.delete(0, ytext.length);
+      if (text.length > 0) ytext.insert(0, text);
+    }, "local-test");
+  }
+
+  async waitForText(room, text, timeoutMs = 5000) {
+    await waitFor(() => this.text(room) === text, timeoutMs, `text ${JSON.stringify(text)} in ${room}`);
+  }
+
+  async close() {
+    if (this.ws.readyState !== WebSocket.CLOSED) this.ws.close();
+    await Promise.race([this.closed, sleep(1500)]);
+    for (const doc of this.docs.values()) doc.destroy();
+  }
+}
+
 async function expectWsRejected(wsBase, room, params) {
   return new Promise((resolve) => {
     const url = new URL(`${wsBase}/${encodeURIComponent(room)}`);
@@ -323,6 +421,32 @@ try {
     A.setText("hello from editor A");
     await B.waitForText("hello from editor A");
     check("B received A's edit", B.text() === "hello from editor A");
+    await A.close();
+    await B.close();
+  }
+
+  console.log("Multiplexed clients sync multiple rooms over one socket each");
+  {
+    const shareId = "e2e-mux";
+    const roomA = roomName(shareId, "mux-a.md");
+    const roomB = roomName(shareId, "mux-b.md");
+    const A = new MuxClient(server.wsBase, shareId, [roomA, roomB], authParams("editor", 1, shareId));
+    const B = new MuxClient(server.wsBase, shareId, [roomA, roomB], authParams("editor", 1, shareId));
+    await Promise.all([A.ready, B.ready]);
+    A.setText(roomA, "mux room A text");
+    A.setText(roomB, "mux room B text");
+    await B.waitForText(roomA, "mux room A text");
+    await B.waitForText(roomB, "mux room B text");
+    check("mux room A converged", B.text(roomA) === "mux room A text");
+    check("mux room B converged", B.text(roomB) === "mux room B text");
+    const metricsRes = await fetch(`${server.httpBase}/metrics`, {
+      headers: { Authorization: `Bearer ${ADMIN_SECRET}` },
+    });
+    const metrics = await metricsRes.json();
+    const aMetric = metrics.detail?.find((r) => r.room === roomA);
+    const bMetric = metrics.detail?.find((r) => r.room === roomB);
+    check("mux rooms share two physical connections", aMetric?.conns === 2 && bMetric?.conns === 2, JSON.stringify({ a: aMetric?.conns, b: bMetric?.conns }));
+    check("server sees two mux sockets", metrics.muxConnections === 2, `muxConnections=${metrics.muxConnections}`);
     await A.close();
     await B.close();
   }

@@ -16023,6 +16023,10 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       void this.persist();
     }, 500, false);
     this.debouncedPresenceDomRefresh = (0, import_obsidian11.debounce)(() => this.eachManager((m) => m.refreshPresenceUi()), 250, false);
+    this.debouncedActiveEditorRefresh = (0, import_obsidian11.debounce)((reason) => {
+      trace("bind", "active-editor-refresh", { reason, managers: this.syncManagers.size });
+      void this.handleActiveLeafChange();
+    }, 150, false);
     this.presenceDomObserver = null;
     // Active editor binding state
     this.boundView = null;
@@ -16262,6 +16266,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     try {
       await m.start();
       log("share", "started", share.legacy ? "legacy" : share.id, "->", share.localFolder);
+      this.debouncedActiveEditorRefresh("share-started");
     } catch (e) {
       this.syncManagers.delete(share.id);
       this.statusBar.setShare(share.id, { label: share.label, status: "error", fileCount: 0, pending: 0 });
@@ -16287,6 +16292,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
   async restartShares() {
     await this.stopAllShares();
     await this.startAllShares();
+    this.debouncedActiveEditorRefresh("shares-restarted");
   }
   eachManager(fn) {
     for (const m of this.syncManagers.values()) {

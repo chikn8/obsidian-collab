@@ -48,6 +48,10 @@ export default class CollabPlugin extends Plugin {
   }, 800, false);
   private debouncedPersistReadMarkers = debounce(() => { void this.persist(); }, 500, false);
   private debouncedPresenceDomRefresh = debounce(() => this.eachManager((m) => m.refreshPresenceUi()), 250, false);
+  private debouncedActiveEditorRefresh = debounce((reason: string) => {
+    trace("bind", "active-editor-refresh", { reason, managers: this.syncManagers.size });
+    void this.handleActiveLeafChange();
+  }, 150, false);
   private presenceDomObserver: MutationObserver | null = null;
 
   // Active editor binding state
@@ -327,6 +331,7 @@ export default class CollabPlugin extends Plugin {
     try {
       await m.start();
       log("share", "started", share.legacy ? "legacy" : share.id, "->", share.localFolder);
+      this.debouncedActiveEditorRefresh("share-started");
     } catch (e) {
       this.syncManagers.delete(share.id);
       this.statusBar.setShare(share.id, { label: share.label, status: "error", fileCount: 0, pending: 0 });
@@ -355,6 +360,7 @@ export default class CollabPlugin extends Plugin {
   private async restartShares(): Promise<void> {
     await this.stopAllShares();
     await this.startAllShares();
+    this.debouncedActiveEditorRefresh("shares-restarted");
   }
 
   private eachManager(fn: (m: SyncManager) => void | Promise<void>): void {

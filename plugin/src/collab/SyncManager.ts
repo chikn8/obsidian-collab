@@ -32,6 +32,7 @@ import {
   appendPresenceHost,
   clearRenderedPresence,
   findFileTreeTitle,
+  renderedPresenceConnected,
   tabHeaderForLeaf,
   tabPresenceTarget,
 } from "./PresenceDom";
@@ -88,6 +89,7 @@ export class SyncManager {
   private renderedPresence: Map<string, HTMLElement[]> = new Map();
   private renderedTabPresence: Map<string, HTMLElement[]> = new Map();
   private lastPresenceSig = "";
+  private lastPresenceHadMissingAnchors = false;
   private linkRewriteRenames: Set<string> = new Set();
   private debouncedPresence: () => void;
   private debouncedStatus: () => void;
@@ -1583,11 +1585,22 @@ export class SyncManager {
         .map(([path, users]) => [path, users.map((u) => [u.presenceKey, u.typing, u.hasCaret, u.color])])
         .sort()
     );
-    if (sig === this.lastPresenceSig) return;
+    const detachedHosts =
+      !renderedPresenceConnected(this.renderedPresence) ||
+      !renderedPresenceConnected(this.renderedTabPresence);
+    if (sig === this.lastPresenceSig && !detachedHosts && !this.lastPresenceHadMissingAnchors) return;
     this.lastPresenceSig = sig;
+    if (detachedHosts) {
+      trace("presence", "host-detached-redraw", {
+        shareId: this.histShareId,
+        fileHosts: this.renderedPresence.size,
+        tabHosts: this.renderedTabPresence.size,
+      });
+    }
 
     const fileRendered = this.renderFileTreePresence(fileUsers);
     const tabRendered = this.renderTabPresence(fileUsers);
+    this.lastPresenceHadMissingAnchors = fileRendered.missing > 0 || tabRendered.missing > 0;
     trace("presence", "rendered", {
       shareId: this.histShareId,
       activeFiles: fileUsers.size,
@@ -1690,6 +1703,7 @@ export class SyncManager {
     clearRenderedPresence(this.renderedPresence);
     clearRenderedPresence(this.renderedTabPresence);
     this.lastPresenceSig = "";
+    this.lastPresenceHadMissingAnchors = false;
   }
 
   /** Stop syncing this share */

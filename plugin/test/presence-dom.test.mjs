@@ -3,6 +3,7 @@ import {
   clearRenderedPresence,
   findFileTreeTitle,
   renderPresenceAvatars,
+  renderedPresenceConnected,
   tabHeaderForLeaf,
   tabPresenceTarget,
 } from "../src/collab/PresenceDom.ts";
@@ -204,8 +205,17 @@ console.log("presence dom\n");
   const host = appendPresenceHost(title, "collab-file-presence-host", users, "file");
   const rendered = new Map([["Shared/Note.md", [host]]]);
   check("presence host appends to target", title.children[0] === host && host.children.length === 2);
+  check("mounted presence host is connected", renderedPresenceConnected(rendered) === true);
   clearRenderedPresence(rendered);
   check("clearRenderedPresence removes hosts", title.children.length === 0 && rendered.size === 0);
+  check("detached presence host is not connected", renderedPresenceConnected(new Map([["Shared/Note.md", [host]]])) === false);
+}
+
+{
+  const doc = new FakeDocument();
+  const stale = doc.createElement("span");
+  stale.isConnected = false;
+  check("explicitly disconnected host is not connected", renderedPresenceConnected(new Map([["Shared/Note.md", [stale]]])) === false);
 }
 
 {

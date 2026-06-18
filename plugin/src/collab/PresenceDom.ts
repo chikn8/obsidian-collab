@@ -13,6 +13,21 @@ export function clearRenderedPresence(rendered: Map<string, HTMLElement[]>): voi
   rendered.clear();
 }
 
+export function renderedPresenceConnected(rendered: Map<string, HTMLElement[]>): boolean {
+  for (const els of rendered.values()) {
+    if (els.length === 0) return false;
+    for (const el of els) {
+      const isConnected = (el as any).isConnected;
+      if (typeof isConnected === "boolean") {
+        if (!isConnected) return false;
+      } else if (!el.parentElement) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 export function findFileTreeTitle(doc: Document, fullPath: string): HTMLElement | null {
   return doc.querySelector(
     `.nav-file-title[data-path="${cssAttributeValue(fullPath)}"]`

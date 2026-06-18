@@ -12052,6 +12052,20 @@ function clearRenderedPresence(rendered) {
   }
   rendered.clear();
 }
+function renderedPresenceConnected(rendered) {
+  for (const els of rendered.values()) {
+    if (els.length === 0) return false;
+    for (const el of els) {
+      const isConnected = el.isConnected;
+      if (typeof isConnected === "boolean") {
+        if (!isConnected) return false;
+      } else if (!el.parentElement) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
 function findFileTreeTitle(doc2, fullPath) {
   return doc2.querySelector(
     `.nav-file-title[data-path="${cssAttributeValue(fullPath)}"]`
@@ -12159,6 +12173,7 @@ var SyncManager = class {
     this.renderedPresence = /* @__PURE__ */ new Map();
     this.renderedTabPresence = /* @__PURE__ */ new Map();
     this.lastPresenceSig = "";
+    this.lastPresenceHadMissingAnchors = false;
     this.linkRewriteRenames = /* @__PURE__ */ new Set();
     // last-edited-by stamping (debounced per file to bound manifest churn). Written
     // to the SEPARATE `edits` map, never the files map, so it cannot LWW-clobber a
@@ -13515,10 +13530,19 @@ var SyncManager = class {
     const sig = JSON.stringify(
       Array.from(fileUsers.entries()).map(([path, users]) => [path, users.map((u) => [u.presenceKey, u.typing, u.hasCaret, u.color])]).sort()
     );
-    if (sig === this.lastPresenceSig) return;
+    const detachedHosts = !renderedPresenceConnected(this.renderedPresence) || !renderedPresenceConnected(this.renderedTabPresence);
+    if (sig === this.lastPresenceSig && !detachedHosts && !this.lastPresenceHadMissingAnchors) return;
     this.lastPresenceSig = sig;
+    if (detachedHosts) {
+      trace("presence", "host-detached-redraw", {
+        shareId: this.histShareId,
+        fileHosts: this.renderedPresence.size,
+        tabHosts: this.renderedTabPresence.size
+      });
+    }
     const fileRendered = this.renderFileTreePresence(fileUsers);
     const tabRendered = this.renderTabPresence(fileUsers);
+    this.lastPresenceHadMissingAnchors = fileRendered.missing > 0 || tabRendered.missing > 0;
     trace("presence", "rendered", {
       shareId: this.histShareId,
       activeFiles: fileUsers.size,
@@ -13614,6 +13638,7 @@ var SyncManager = class {
     clearRenderedPresence(this.renderedPresence);
     clearRenderedPresence(this.renderedTabPresence);
     this.lastPresenceSig = "";
+    this.lastPresenceHadMissingAnchors = false;
   }
   /** Stop syncing this share */
   async destroy() {

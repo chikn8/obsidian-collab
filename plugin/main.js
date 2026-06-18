@@ -10110,6 +10110,10 @@ function detectDevice() {
   if (import_obsidian.Platform.isMobile) return "mobile";
   return "desktop";
 }
+function cursorDisplayName(name, device) {
+  const base = (name == null ? void 0 : name.trim()) || "Anonymous";
+  return device ? `${base} (${device})` : base;
+}
 var DEVICE_ID_KEY = "obsidian-collab-device-id";
 var cachedDeviceId = null;
 function installDeviceId() {
@@ -10137,12 +10141,15 @@ function shareIdFromRoom(roomName) {
   return idx > 1 ? roomName.slice(1, idx) : null;
 }
 function createProvider(serverUrl, roomName, ydoc, token, userInfo, callbacks, authParams = {}) {
+  var _a2;
   const device = detectDevice();
   const deviceId = installDeviceId();
+  const displayName = ((_a2 = userInfo.name) == null ? void 0 : _a2.trim()) || "Anonymous";
+  const cursorName = cursorDisplayName(displayName, device);
   const params2 = {
     token,
     uid: userInfo.uid,
-    name: userInfo.name,
+    name: cursorName,
     color: userInfo.color,
     device,
     deviceId,
@@ -10161,7 +10168,8 @@ function createProvider(serverUrl, roomName, ydoc, token, userInfo, callbacks, a
   provider.awareness.setLocalStateField("user", {
     uid: userInfo.uid,
     deviceId,
-    name: userInfo.name,
+    name: cursorName,
+    displayName,
     color: userInfo.color,
     colorLight: userInfo.color + "33",
     // 20% opacity version for selection
@@ -11151,7 +11159,7 @@ var FileProvider = class _FileProvider {
     const users = [];
     states.forEach((state, clientId) => {
       if (clientId !== this.provider.awareness.clientID && state.user) {
-        users.push({ clientId, name: state.user.name, color: state.user.color, device: state.user.device });
+        users.push({ clientId, name: state.user.displayName || state.user.name, color: state.user.color, device: state.user.device });
       }
     });
     this.onUsersChange(users);
@@ -11734,11 +11742,12 @@ function collectPresenceDevices(args2) {
     seen.add(key);
     const baseColor = user.color || "#888888";
     const deviceId = deviceIdFromState(state, clientId);
+    const displayName = user.displayName || user.name || "Anonymous";
     out.push({
       presenceKey: key,
       uid: user.uid,
       deviceId,
-      name: user.name || "Anonymous",
+      name: displayName,
       color: deviceColor(baseColor, deviceId),
       baseColor,
       device: user.device,
@@ -12012,7 +12021,7 @@ var SyncManager = class {
       const u = s == null ? void 0 : s.user;
       if ((u == null ? void 0 : u.uid) && u.uid !== this.settings.uid && !seen.has(u.uid)) {
         seen.add(u.uid);
-        out.push({ uid: u.uid, name: u.name || "Anonymous" });
+        out.push({ uid: u.uid, name: u.displayName || u.name || "Anonymous" });
       }
     });
     return out;

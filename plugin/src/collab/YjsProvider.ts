@@ -9,6 +9,11 @@ function detectDevice(): string {
   return "desktop";
 }
 
+function cursorDisplayName(name: string, device: string): string {
+  const base = name?.trim() || "Anonymous";
+  return device ? `${base} (${device})` : base;
+}
+
 const DEVICE_ID_KEY = "obsidian-collab-device-id";
 let cachedDeviceId: string | null = null;
 
@@ -61,10 +66,12 @@ export function createProvider(
 ): WebsocketProvider | MuxProvider {
   const device = detectDevice();
   const deviceId = installDeviceId();
+  const displayName = userInfo.name?.trim() || "Anonymous";
+  const cursorName = cursorDisplayName(displayName, device);
   const params: Record<string, string> = {
     token,
     uid: userInfo.uid,
-    name: userInfo.name,
+    name: cursorName,
     color: userInfo.color,
     device,
     deviceId,
@@ -90,7 +97,8 @@ export function createProvider(
   provider.awareness.setLocalStateField("user", {
     uid: userInfo.uid,
     deviceId,
-    name: userInfo.name,
+    name: cursorName,
+    displayName,
     color: userInfo.color,
     colorLight: userInfo.color + "33", // 20% opacity version for selection
     device,

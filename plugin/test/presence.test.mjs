@@ -25,7 +25,7 @@ console.log("presence model\n");
 {
   const awareness = new FakeAwareness(1, [
     [1, {
-      user: { uid: "same-user", deviceId: "desktop-1", name: "Elijah", color: "#54a0ff", device: "desktop" },
+      user: { uid: "same-user", deviceId: "desktop-1", name: "Elijah (desktop)", displayName: "Elijah", color: "#54a0ff", device: "desktop" },
       presence: { activeFile: "note.md", typing: true },
     }],
     [2, {
@@ -49,6 +49,7 @@ console.log("presence model\n");
   check("caret state is per-device", users[0].hasCaret === true && users[1].hasCaret === false);
   check("device colors differ", users[0].color !== users[1].color, `${users[0].color} vs ${users[1].color}`);
   check("label includes device and status", presenceLabel(users[0]).includes("desktop") && presenceLabel(users[0]).includes("typing"));
+  check("displayName prevents duplicate device label", presenceLabel(users[0]) === "Elijah (desktop) (you) - typing", presenceLabel(users[0]));
 }
 
 {

@@ -139,7 +139,7 @@ export class SyncManager {
       const u = s?.user;
       if (u?.uid && u.uid !== this.settings.uid && !seen.has(u.uid)) {
         seen.add(u.uid);
-        out.push({ uid: u.uid, name: u.name || "Anonymous" });
+        out.push({ uid: u.uid, name: u.displayName || u.name || "Anonymous" });
       }
     });
     return out;

@@ -52,11 +52,12 @@ export function collectPresenceDevices(args: {
     seen.add(key);
     const baseColor = user.color || "#888888";
     const deviceId = deviceIdFromState(state, clientId);
+    const displayName = user.displayName || user.name || "Anonymous";
     out.push({
       presenceKey: key,
       uid: user.uid,
       deviceId,
-      name: user.name || "Anonymous",
+      name: displayName,
       color: deviceColor(baseColor, deviceId),
       baseColor,
       device: user.device,

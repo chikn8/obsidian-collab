@@ -521,7 +521,7 @@ export class FileProvider {
     const users: ConnectedUser[] = [];
     states.forEach((state: any, clientId: number) => {
       if (clientId !== this.provider.awareness.clientID && state.user) {
-        users.push({ clientId, name: state.user.name, color: state.user.color, device: state.user.device });
+        users.push({ clientId, name: state.user.displayName || state.user.name, color: state.user.color, device: state.user.device });
       }
     });
     this.onUsersChange(users);

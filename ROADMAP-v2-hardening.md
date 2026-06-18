@@ -299,7 +299,7 @@ manifest + file-room Yjs frames over one authenticated physical socket per clien
 server still keeps one `WSSharedDoc` per room and evicts it on last disconnect, so persistence/history stay
 unchanged. Legacy shares keep the old per-room socket transport. Real-server e2e verifies two text rooms
 syncing through two mux sockets.
-**Remaining.** Reconnect jitter/backoff polish and true HA storage/fan-out.
+**Remaining.** True HA storage/fan-out.
 
 ### 3.2 — Server-side share minting / per-share key isolation (implemented foundation; follow-ups remain)
 **Status.** Implemented the foundation: `/share/create` mints new shares with `SHARE_MINT_TOKEN`, returns

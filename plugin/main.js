@@ -9849,6 +9849,10 @@ var import_obsidian = require("obsidian");
 var MESSAGE_SYNC = 0;
 var MESSAGE_AWARENESS = 1;
 var MESSAGE_MUX = 6;
+var MUX_RECONNECT_BASE_MS = 500;
+var MUX_RECONNECT_MAX_MS = 1e4;
+var MUX_RECONNECT_MIN_MS = 250;
+var MUX_RECONNECT_JITTER_RATIO = 0.4;
 var connections = /* @__PURE__ */ new Map();
 function paramsKey(params2) {
   return Object.entries(params2).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
@@ -9860,6 +9864,11 @@ function muxUrl(args2) {
   const base = args2.serverUrl.replace(/\/$/, "");
   const q = new URLSearchParams(args2.params);
   return `${base}/${encodeURIComponent(`@${args2.shareId}:__mux__`)}?${q.toString()}`;
+}
+function reconnectDelayForAttempt(attempt, random2 = Math.random) {
+  const base = Math.min(MUX_RECONNECT_MAX_MS, MUX_RECONNECT_BASE_MS * Math.pow(2, Math.max(0, attempt)));
+  const jitter = base * MUX_RECONNECT_JITTER_RATIO * (random2() * 2 - 1);
+  return Math.max(MUX_RECONNECT_MIN_MS, Math.min(MUX_RECONNECT_MAX_MS, Math.round(base + jitter)));
 }
 function toBytes(data) {
   return data instanceof Uint8Array ? data : new Uint8Array(data);
@@ -9959,7 +9968,7 @@ var MuxConnection = class {
       p.emitStatus("disconnected");
     }));
     if (!this.shouldConnect || this.providers.size === 0) return;
-    const delay = Math.min(1e4, 500 * Math.pow(2, this.attempts++));
+    const delay = reconnectDelayForAttempt(this.attempts++);
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
   handleMessage(raw) {

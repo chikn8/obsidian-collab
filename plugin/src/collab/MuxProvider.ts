@@ -7,6 +7,10 @@ import * as decoding from "lib0/decoding";
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
 const MESSAGE_MUX = 6;
+const MUX_RECONNECT_BASE_MS = 500;
+const MUX_RECONNECT_MAX_MS = 10_000;
+const MUX_RECONNECT_MIN_MS = 250;
+const MUX_RECONNECT_JITTER_RATIO = 0.4;
 
 type Listener = (...args: any[]) => void;
 
@@ -33,6 +37,12 @@ function muxUrl(args: MuxParams): string {
   const base = args.serverUrl.replace(/\/$/, "");
   const q = new URLSearchParams(args.params);
   return `${base}/${encodeURIComponent(`@${args.shareId}:__mux__`)}?${q.toString()}`;
+}
+
+export function reconnectDelayForAttempt(attempt: number, random = Math.random): number {
+  const base = Math.min(MUX_RECONNECT_MAX_MS, MUX_RECONNECT_BASE_MS * Math.pow(2, Math.max(0, attempt)));
+  const jitter = base * MUX_RECONNECT_JITTER_RATIO * (random() * 2 - 1);
+  return Math.max(MUX_RECONNECT_MIN_MS, Math.min(MUX_RECONNECT_MAX_MS, Math.round(base + jitter)));
 }
 
 function toBytes(data: ArrayBuffer | Uint8Array): Uint8Array {
@@ -138,7 +148,7 @@ class MuxConnection {
       p.emitStatus("disconnected");
     }));
     if (!this.shouldConnect || this.providers.size === 0) return;
-    const delay = Math.min(10_000, 500 * Math.pow(2, this.attempts++));
+    const delay = reconnectDelayForAttempt(this.attempts++);
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 

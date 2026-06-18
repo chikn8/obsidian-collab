@@ -2,7 +2,7 @@ import * as Y from "yjs";
 import * as syncProtocol from "y-protocols/sync";
 import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
-import { MuxProvider } from "../src/collab/MuxProvider.ts";
+import { MuxProvider, reconnectDelayForAttempt } from "../src/collab/MuxProvider.ts";
 
 const MESSAGE_SYNC = 0;
 const MESSAGE_MUX = 6;
@@ -172,6 +172,11 @@ function setText(doc, value) {
 }
 
 console.log("mux provider\n");
+
+check("reconnect delay jitters first retry within bounds",
+  reconnectDelayForAttempt(0, () => 0) === 300 && reconnectDelayForAttempt(0, () => 1) === 700);
+check("reconnect delay caps high attempts",
+  reconnectDelayForAttempt(20, () => 1) === 10000 && reconnectDelayForAttempt(20, () => 0) === 6000);
 
 const shareId = "mux-test";
 const roomA = `@${shareId}:file:a.md`;

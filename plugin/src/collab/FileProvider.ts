@@ -390,26 +390,29 @@ export class FileProvider {
         return;
       }
 
-      const current = await this.app.vault.read(file);
-      if (current === content) {
-        trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq, reason, cause: "unchanged", len: content.length });
-        return;
-      }
-
-      // Fingerprint exactly what we're about to write so the vault "modify"
-      // echo is recognised and dropped deterministically (no timing window).
-      this.echo.mark(this.filePath, content);
+      let wrote = false;
       beginRemoteApply();
       try {
-        trace("file", "write-start", {
-          path: this.filePath,
-          room: this.roomName,
-          seq,
-          reason,
-          oldLen: current.length,
-          newLen: content.length,
+        await this.app.vault.process(file, (current) => {
+          if (current === content) return current;
+          wrote = true;
+          // Fingerprint exactly what we're about to write so the vault write
+          // echo is recognised and dropped deterministically (no timing window).
+          this.echo.mark(this.filePath, content);
+          trace("file", "write-start", {
+            path: this.filePath,
+            room: this.roomName,
+            seq,
+            reason,
+            oldLen: current.length,
+            newLen: content.length,
+          });
+          return content;
         });
-        await this.app.vault.modify(file, content);
+        if (!wrote) {
+          trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq, reason, cause: "unchanged", len: content.length });
+          return;
+        }
         trace("file", "write-ok", { path: this.filePath, room: this.roomName, seq, reason, len: content.length });
       } finally {
         endRemoteApply();
@@ -426,7 +429,7 @@ export class FileProvider {
   applyLocalChange(newContent: string): void {
     if (!this.isInitialized || this.destroyed) return;
     // While bound, yCollab already streams editor edits into ytext — the
-    // vault.modify echo would double-apply, so ignore it here.
+    // vault write echo would double-apply, so ignore it here.
     if (this.editorBound) return;
     const old = this.ytext.toString();
     if (old === newContent) return;

@@ -74,6 +74,12 @@ export class Vault {
     if (file.stat) file.stat.mtime = Date.now();
     this._emit("modify", file);
   }
+  async process(file, fn) {
+    const current = await this.read(file);
+    const next = fn(current);
+    await this.modify(file, next);
+    return next;
+  }
   async delete(file) {
     this.tree.delete(file.path);
     this.content.delete(file.path);

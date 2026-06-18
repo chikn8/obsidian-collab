@@ -15885,7 +15885,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     const role = (manager == null ? void 0 : manager.role) || "editor";
     const selfColor = this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName);
     const extras = [session.extension(), selfSelectionExtension({ name: this.settings.displayName || "You", color: selfColor })];
-    if (presence) extras.push(presence.extension(import_obsidian11.Platform.isMobile));
+    if (presence) extras.push(presence.extension(true));
     if (role !== "editor") extras.push(readOnlyExtension());
     await provider.setEditorBound(true);
     bindEditor(ev, ytext, awareness, extras);

@@ -418,7 +418,7 @@ export default class CollabPlugin extends Plugin {
     const role = manager?.role || "editor";
     const selfColor = this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName);
     const extras = [session.extension(), selfSelectionExtension({ name: this.settings.displayName || "You", color: selfColor })];
-    if (presence) extras.push(presence.extension(Platform.isMobile));
+    if (presence) extras.push(presence.extension(true));
     if (role !== "editor") extras.push(readOnlyExtension());
 
     await provider.setEditorBound(true);

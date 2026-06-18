@@ -241,7 +241,7 @@ See `server/.env.example` for a copy-paste template, and `server/RECOVERY.md` fo
 
 ```bash
 # Whole repo, machine-readable report for agents/CI triage
-node tools/ai-regression.mjs          # plugin tests/build + server tests/build/e2e + diff check
+node tools/ai-regression.mjs          # plugin tests/build + server tests/build/e2e + diagnostic-tool + diff check
 node tools/ai-regression.mjs --quick  # skips the real WebSocket e2e
 
 # Plugin

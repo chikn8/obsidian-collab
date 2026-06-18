@@ -80,7 +80,8 @@ mutationId, mutationAction, mutationAt, mutationByUid, mutationDeviceId
 ```
 
 `schemaVersion` lives on a separate `meta` map; volatile "who last edited" stamps live on a separate
-`edits` map (so a stamp can never LWW-clobber a concurrent delete on the lifecycle entry). Migration is
+`edits` map with actor uid + device provenance (so a stamp can never LWW-clobber a concurrent delete on
+the lifecycle entry, and old-client tombstones can still be reconciled more conservatively). Migration is
 idempotent and LWW-converges if two clients migrate at once.
 
 Every local lifecycle mutation also stamps the manifest entry with additive operation provenance
@@ -106,10 +107,11 @@ This closes a path-traversal → arbitrary-file-write vector.
 - **Delete-vs-edit reconciliation.** When a remote tombstone arrives for a file we still hold, the shared
   `applyRemoteTombstone` helper makes the same decision on startup and live updates. Mutation provenance
   prevents wall-clock-only resurrection across devices: same-device tombstones delete, different-device
-  apparent-newer local copies become visible `(... delete conflict ...).md`/attachment copies, and old
-  no-provenance tombstones keep the legacy safety fallback. Rename tombstones never resurrect because the
-  content moved to the new path. Conflict copies are stamped with the original path and source operation
-  so they remain reviewable in the history panel instead of being filename-only breadcrumbs.
+  apparent-newer local copies become visible `(... delete conflict ...).md`/attachment copies, and
+  old/no-provenance tombstones also conflict-copy when this install has a provenance-stamped local edit.
+  Rename tombstones never resurrect because the content moved to the new path. Conflict copies are stamped
+  with the original path and source operation so they remain reviewable in the history panel instead of
+  being filename-only breadcrumbs.
 - **Folder move/rename/delete.** Obsidian fires a *single* event for a folder (not per child), so
   `onFolderRename`/`onFolderDelete` enumerate descendants and route each through the per-file path,
   preserving content and lineage. (Without this, dragging a folder orphans every file inside it.)

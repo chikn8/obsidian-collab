@@ -160,7 +160,13 @@ export class SyncManager {
     if (!fn) {
       fn = debounce(() => {
         if (!this.editsMap) return;
-        this.editsMap.set(relPath, { by: this.settings.displayName, at: Date.now() });
+        this.editsMap.set(relPath, {
+          by: this.settings.displayName,
+          byUid: this.settings.uid,
+          deviceId: installDeviceId(),
+          device: detectDevice(),
+          at: Date.now(),
+        });
       }, 3000, false);
       this.stampDebounce.set(relPath, fn);
     }
@@ -552,6 +558,7 @@ export class SyncManager {
     const file = this.app.vault.getAbstractFileByPath(fullPath);
     const deletedAt = entry.deletedAt || entry.lastModified || 0;
     const isBinary = this.entryKind(safeRel, entry) === "binary";
+    const localEdit = this.editsMap?.get(safeRel) || null;
 
     // Delete-vs-edit handling. Renames carry `renamedTo` and must not resurrect:
     // the content moved to the new path. Ambiguous wall-clock skew gets a visible
@@ -566,6 +573,9 @@ export class SyncManager {
           localDeviceId: installDeviceId(),
           tombstoneUid: entry.mutationByUid,
           tombstoneDeviceId: entry.mutationDeviceId,
+          localEditAt: typeof localEdit?.at === "number" ? localEdit.at : undefined,
+          localEditUid: localEdit?.byUid,
+          localEditDeviceId: localEdit?.deviceId,
         })
         : "delete";
     if (
@@ -581,6 +591,9 @@ export class SyncManager {
         mutationId: entry.mutationId,
         mutationByUid: entry.mutationByUid,
         mutationDeviceId: entry.mutationDeviceId,
+        localEditAt: localEdit?.at,
+        localEditUid: localEdit?.byUid,
+        localEditDeviceId: localEdit?.deviceId,
       });
       const fileId = entry.fileId || this.fileIds.get(relPath) || newFileId();
       const mutation = this.manifestMutation("resurrect");
@@ -605,6 +618,9 @@ export class SyncManager {
         mutationId: entry.mutationId,
         mutationByUid: entry.mutationByUid,
         mutationDeviceId: entry.mutationDeviceId,
+        localEditAt: localEdit?.at,
+        localEditUid: localEdit?.byUid,
+        localEditDeviceId: localEdit?.deviceId,
       });
       if (conflictRel) {
         new Notice(`"${safeRel}" changed near a remote delete — kept a conflict copy at "${conflictRel}"`);

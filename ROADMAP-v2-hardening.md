@@ -292,12 +292,13 @@ keep). Fine as a safety bias, but ambiguous cases can surprise.
 delete still resurrect, old local copies delete, and rename tombstones still delete because the content moved
 to the new path. Mutation-stamped tombstones now avoid cross-device resurrection from `mtime` alone: a
 same-device tombstone deletes, while a different-device apparent-newer local copy becomes a conflict copy.
-Old/no-provenance tombstones retain the legacy safety behavior. The pure `tombstoneLocalDecision` helper
-covers these branches headlessly.
+Old/no-provenance tombstones now also become conflict copies when this install has a provenance-stamped
+local edit, reducing silent resurrection across mixed client versions. The pure `tombstoneLocalDecision`
+helper covers these branches headlessly.
 **Remaining.** Replace the remaining old-client fallback with a full logical/same-clock marker (e.g., an edit
 Lamport/seq on the file doc) when the file-doc protocol is revised.
-**Verify.** Unit coverage asserts resurrect/delete/conflict-copy branches. A full two-client skew simulation
-is still needed.
+**Verify.** Unit coverage asserts resurrect/delete/conflict-copy branches, including local edit stamps. A
+full two-client skew simulation is still needed.
 
 ### 2.6 — Stop swallowing client errors (implemented foundation)
 **Problem.** Many `.catch(()=>{})` hide lifecycle failures from the user and from us.

@@ -11790,11 +11790,13 @@ function isSyncablePath(path) {
 function tombstoneLocalDecision(args2) {
   if (args2.renamedTo) return "delete";
   const hasTombstoneOrigin = !!args2.tombstoneDeviceId || !!args2.tombstoneUid;
+  const hasLocalEditOrigin = !!args2.localEditDeviceId || !!args2.localEditUid;
   const sameDeviceTombstone = !!args2.localDeviceId && !!args2.tombstoneDeviceId && args2.localDeviceId === args2.tombstoneDeviceId && (!args2.localUid || !args2.tombstoneUid || args2.localUid === args2.tombstoneUid);
   if (sameDeviceTombstone) return "delete";
-  const delta = args2.localMtime - args2.deletedAt;
+  const localChangedAt = args2.localEditAt || args2.localMtime;
+  const delta = localChangedAt - args2.deletedAt;
   if (delta > RESURRECT_GRACE_MS) {
-    return hasTombstoneOrigin ? "conflict-copy" : "resurrect";
+    return hasTombstoneOrigin || hasLocalEditOrigin ? "conflict-copy" : "resurrect";
   }
   if (Math.abs(delta) <= RESURRECT_GRACE_MS) return "conflict-copy";
   return "delete";
@@ -12237,7 +12239,13 @@ var SyncManager = class {
     if (!fn) {
       fn = (0, import_obsidian4.debounce)(() => {
         if (!this.editsMap) return;
-        this.editsMap.set(relPath, { by: this.settings.displayName, at: Date.now() });
+        this.editsMap.set(relPath, {
+          by: this.settings.displayName,
+          byUid: this.settings.uid,
+          deviceId: installDeviceId(),
+          device: detectDevice(),
+          at: Date.now()
+        });
       }, 3e3, false);
       this.stampDebounce.set(relPath, fn);
     }
@@ -12581,6 +12589,7 @@ var SyncManager = class {
    * Returns true if the file was resurrected (kept).
    */
   async applyRemoteTombstone(relPath, entry, notifyIfOpen) {
+    var _a2;
     const safeRel = this.safeManifestRelPath(relPath, "remote tombstone");
     if (!safeRel) return false;
     const fullPath = this.toFullPath(safeRel);
@@ -12588,6 +12597,7 @@ var SyncManager = class {
     const file = this.app.vault.getAbstractFileByPath(fullPath);
     const deletedAt = entry.deletedAt || entry.lastModified || 0;
     const isBinary = this.entryKind(safeRel, entry) === "binary";
+    const localEdit = ((_a2 = this.editsMap) == null ? void 0 : _a2.get(safeRel)) || null;
     const localDecision = this.role === "editor" && file instanceof import_obsidian4.TFile ? tombstoneLocalDecision({
       localMtime: file.stat.mtime,
       deletedAt,
@@ -12595,7 +12605,10 @@ var SyncManager = class {
       localUid: this.settings.uid,
       localDeviceId: installDeviceId(),
       tombstoneUid: entry.mutationByUid,
-      tombstoneDeviceId: entry.mutationDeviceId
+      tombstoneDeviceId: entry.mutationDeviceId,
+      localEditAt: typeof (localEdit == null ? void 0 : localEdit.at) === "number" ? localEdit.at : void 0,
+      localEditUid: localEdit == null ? void 0 : localEdit.byUid,
+      localEditDeviceId: localEdit == null ? void 0 : localEdit.deviceId
     }) : "delete";
     if (file instanceof import_obsidian4.TFile && localDecision === "resurrect") {
       trace("manifest", "tombstone-resurrect", {
@@ -12606,7 +12619,10 @@ var SyncManager = class {
         renamedTo: entry.renamedTo,
         mutationId: entry.mutationId,
         mutationByUid: entry.mutationByUid,
-        mutationDeviceId: entry.mutationDeviceId
+        mutationDeviceId: entry.mutationDeviceId,
+        localEditAt: localEdit == null ? void 0 : localEdit.at,
+        localEditUid: localEdit == null ? void 0 : localEdit.byUid,
+        localEditDeviceId: localEdit == null ? void 0 : localEdit.deviceId
       });
       const fileId = entry.fileId || this.fileIds.get(relPath) || newFileId();
       const mutation = this.manifestMutation("resurrect");
@@ -12629,7 +12645,10 @@ var SyncManager = class {
         localMtime: file.stat.mtime,
         mutationId: entry.mutationId,
         mutationByUid: entry.mutationByUid,
-        mutationDeviceId: entry.mutationDeviceId
+        mutationDeviceId: entry.mutationDeviceId,
+        localEditAt: localEdit == null ? void 0 : localEdit.at,
+        localEditUid: localEdit == null ? void 0 : localEdit.byUid,
+        localEditDeviceId: localEdit == null ? void 0 : localEdit.deviceId
       });
       if (conflictRel) {
         new import_obsidian4.Notice(`"${safeRel}" changed near a remote delete \u2014 kept a conflict copy at "${conflictRel}"`);

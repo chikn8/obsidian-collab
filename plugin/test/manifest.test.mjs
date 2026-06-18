@@ -180,6 +180,24 @@ console.log("Delete-vs-edit tombstone decision");
       tombstoneUid: "uid-b",
       tombstoneDeviceId: "device-b",
     }) === "conflict-copy");
+  check("local edit stamp: old tombstone apparent newer edit becomes conflict copy",
+    tombstoneLocalDecision({
+      localMtime: deletedAt + RESURRECT_GRACE_MS + 1,
+      localEditAt: deletedAt + RESURRECT_GRACE_MS + 1,
+      deletedAt,
+      localUid: "uid-a",
+      localDeviceId: "device-a",
+      localEditUid: "uid-a",
+      localEditDeviceId: "device-a",
+    }) === "conflict-copy");
+  check("local edit stamp: old tombstone still deletes clearly older local copy",
+    tombstoneLocalDecision({
+      localMtime: deletedAt - RESURRECT_GRACE_MS - 1,
+      localEditAt: deletedAt - RESURRECT_GRACE_MS - 1,
+      deletedAt,
+      localEditUid: "uid-a",
+      localEditDeviceId: "device-a",
+    }) === "delete");
   check("untouched since before delete → do not resurrect",
     shouldResurrect({ localMtime: deletedAt - 5000, deletedAt }) === false);
   check("decision: untouched since before delete → delete",

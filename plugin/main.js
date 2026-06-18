@@ -9865,14 +9865,22 @@ function installDeviceId() {
   return id2;
 }
 function createProvider(serverUrl, roomName, ydoc, token, userInfo, callbacks, authParams = {}) {
+  const device = detectDevice();
+  const deviceId = installDeviceId();
   const provider = new WebsocketProvider(serverUrl, roomName, ydoc, {
-    params: { token, ...authParams },
+    params: {
+      token,
+      uid: userInfo.uid,
+      name: userInfo.name,
+      color: userInfo.color,
+      device,
+      deviceId,
+      ...authParams
+    },
     connect: true,
     // WebsocketProvider handles reconnection automatically
     maxBackoffTime: 1e4
   });
-  const device = detectDevice();
-  const deviceId = installDeviceId();
   provider.awareness.setLocalStateField("user", {
     uid: userInfo.uid,
     deviceId,

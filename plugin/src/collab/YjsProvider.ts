@@ -52,8 +52,18 @@ export function createProvider(
   callbacks: ProviderCallbacks,
   authParams: Record<string, string> = {}
 ): WebsocketProvider {
+  const device = detectDevice();
+  const deviceId = installDeviceId();
   const provider = new WebsocketProvider(serverUrl, roomName, ydoc, {
-    params: { token, ...authParams },
+    params: {
+      token,
+      uid: userInfo.uid,
+      name: userInfo.name,
+      color: userInfo.color,
+      device,
+      deviceId,
+      ...authParams,
+    },
     connect: true,
     // WebsocketProvider handles reconnection automatically
     maxBackoffTime: 10000,
@@ -61,8 +71,6 @@ export function createProvider(
 
   // Set local awareness state so others can see our cursor. `uid` is the stable
   // join key across the separate manifest/file awarenesses (different clientIDs).
-  const device = detectDevice();
-  const deviceId = installDeviceId();
   provider.awareness.setLocalStateField("user", {
     uid: userInfo.uid,
     deviceId,

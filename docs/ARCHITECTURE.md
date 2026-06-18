@@ -119,6 +119,12 @@ New shares are minted server-side through `/share/create`, authenticated by `SHA
 plus a scoped `ownerKey` for that share. Later role links are minted through `/share/link`, and revocation
 uses `/share/revoke`; both require the share's owner key and cannot derive keys for other shares.
 
+Connection identity is also stamped server-side for awareness and notifications. The client sends its
+uid/name/color/device as WebSocket params, and the relay overwrites every awareness `user` object plus
+notification sender fields with that connection identity. A connection can only update awareness client
+IDs it introduced, so it cannot remove or overwrite another live connection's presence. This is not a
+full account system; per-recipient signed identities still belong with expiring invites/audit logs.
+
 **Roles** (`viewer`/`commenter`/`editor`) are enforced *server-side*: in `rooms.ts`, a non-editor's sync
 writes (step2/update) are dropped — un-applied and un-persisted — so the read-only boundary is real, not
 just UI. **Revocation** bumps a per-share `epoch` watermark (`shareState.json`); `/share/revoke` or the

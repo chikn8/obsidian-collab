@@ -33,7 +33,7 @@ createFileProvider in-flight reservation · comment-anchor quote-verify + re-mat
 **Tier 2**: real-`FileProvider` integration test (fake vault/IDB/WS via esbuild alias) wired into CI.
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
-(ops, not code) · within-share uid spoofing (needs server-verified identity) · socket multiplexing / scale ceiling
+(ops, not code) · per-recipient signed identities/audit log · socket multiplexing / scale ceiling
 (Tier 3.1) · binary/attachment + `.canvas` sync (Tier 4.1) · version-diff UI · human device-matrix test.
 
 ---

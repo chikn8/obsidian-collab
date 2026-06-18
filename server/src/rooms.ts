@@ -38,6 +38,14 @@ type RoomStats = {
   maxTextLen: number | null;
 };
 
+interface CollabIdentity {
+  uid: string;
+  name: string;
+  color: string;
+  device?: string;
+  deviceId?: string;
+}
+
 function roomInfo(room: string): { shareId: string; kind: string; relPath?: string } {
   let rest = room;
   let shareId = "legacy";
@@ -78,6 +86,93 @@ function allowMessage(conn: any): boolean {
   if (b.tokens < 1) return false;
   b.tokens -= 1;
   return true;
+}
+
+function cleanParam(value: string | null, fallback: string, max: number, pattern?: RegExp): string {
+  const clean = (value || "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, max);
+  if (!clean) return fallback;
+  if (pattern && !pattern.test(clean)) return fallback;
+  return clean;
+}
+
+function identityFromUrl(url: URL, connId: number): CollabIdentity {
+  const uid = cleanParam(url.searchParams.get("uid"), `conn-${connId}`, 128, /^[A-Za-z0-9_-]+$/);
+  const name = cleanParam(url.searchParams.get("name"), "Anonymous", 80);
+  const color = cleanParam(url.searchParams.get("color"), "#888888", 16, /^#[0-9a-fA-F]{6}$/);
+  const device = cleanParam(url.searchParams.get("device"), "", 24, /^[A-Za-z0-9_-]+$/) || undefined;
+  const deviceId = cleanParam(url.searchParams.get("deviceId"), "", 128, /^[A-Za-z0-9_.:-]+$/) || undefined;
+  return { uid, name, color, device, deviceId };
+}
+
+export function sanitizeAwarenessStateForTest(state: any, identity: CollabIdentity): any {
+  if (state == null || typeof state !== "object") return state;
+  return {
+    ...state,
+    user: {
+      ...(state.user || {}),
+      uid: identity.uid,
+      name: identity.name,
+      color: identity.color,
+      colorLight: `${identity.color}33`,
+      device: identity.device,
+      deviceId: identity.deviceId,
+    },
+  };
+}
+
+function ownerOfAwarenessClient(doc: WSSharedDoc, clientId: number): WebSocket | null {
+  for (const [conn, ids] of doc.conns) {
+    if (ids.has(clientId)) return conn;
+  }
+  return null;
+}
+
+function filterAndStampAwarenessUpdate(
+  doc: WSSharedDoc,
+  conn: WebSocket,
+  update: Uint8Array
+): { update: Uint8Array; entries: { clientId: number; state: any }[] } | null {
+  const identity = (conn as any).collabIdentity as CollabIdentity;
+  const controlled = doc.conns.get(conn);
+  if (!identity || !controlled) return null;
+
+  const decoder = decoding.createDecoder(update);
+  const len = decoding.readVarUint(decoder);
+  const entries: { clientId: number; clock: number; state: any }[] = [];
+  for (let i = 0; i < len; i++) {
+    const clientId = decoding.readVarUint(decoder);
+    const clock = decoding.readVarUint(decoder);
+    const state = JSON.parse(decoding.readVarString(decoder));
+    const owner = ownerOfAwarenessClient(doc, clientId);
+    const owns = controlled.has(clientId);
+
+    if (state === null) {
+      if (owns) entries.push({ clientId, clock, state });
+      continue;
+    }
+
+    if (owner && owner !== conn) {
+      logEvent("warn", "awareness.rejected_foreign_client", {
+        room: doc.name,
+        ...roomInfo(doc.name),
+        connId: (conn as any).collabConnId,
+        clientId,
+      });
+      continue;
+    }
+
+    entries.push({ clientId, clock, state: sanitizeAwarenessStateForTest(state, identity) });
+  }
+
+  if (entries.length === 0) return null;
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, entries.length);
+  for (const entry of entries) {
+    encoding.writeVarUint(encoder, entry.clientId);
+    encoding.writeVarUint(encoder, entry.clock);
+    encoding.writeVarString(encoder, JSON.stringify(entry.state));
+  }
+  return { update: encoding.toUint8Array(encoder), entries };
 }
 
 /**
@@ -303,19 +398,30 @@ function handleMessage(
         break;
       }
       case MESSAGE_AWARENESS: {
-        awarenessProtocol.applyAwarenessUpdate(
-          doc.awareness,
-          decoding.readVarUint8Array(decoder),
-          conn
-        );
+        const filtered = filterAndStampAwarenessUpdate(doc, conn, decoding.readVarUint8Array(decoder));
+        if (!filtered) return;
+        awarenessProtocol.applyAwarenessUpdate(doc.awareness, filtered.update, conn);
+        const controlled = doc.conns.get(conn);
+        if (controlled) {
+          for (const entry of filtered.entries) {
+            if (entry.state === null) controlled.delete(entry.clientId);
+            else controlled.add(entry.clientId);
+          }
+        }
         break;
       }
       case MESSAGE_NOTIFY: {
         // Mention push, scoped to the SENDER's authed share. Viewers can't send.
         if (((conn as any).collabRole || "editor") === "viewer") return;
         try {
+          const identity = (conn as any).collabIdentity as CollabIdentity;
           const shareId = (conn as any).collabShareId ?? null;
-          void handleNotify(shareId, JSON.parse(decoding.readVarString(decoder)), Date.now()).catch((e) => {
+          const payload = JSON.parse(decoding.readVarString(decoder));
+          void handleNotify(shareId, {
+            ...payload,
+            fromUid: identity.uid,
+            fromName: identity.name,
+          }, Date.now()).catch((e) => {
             console.error("[rooms] notify failed:", e);
           });
         } catch { /* ignore */ }
@@ -325,8 +431,9 @@ function handleMessage(
         // Register the caller's own ntfy topic, scoped to its authed share.
         try {
           const p = JSON.parse(decoding.readVarString(decoder));
+          const identity = (conn as any).collabIdentity as CollabIdentity;
           const shareId = (conn as any).collabShareId ?? null;
-          void registerTopic(shareId, p.uid, p.topic).catch((e) => {
+          void registerTopic(shareId, identity.uid, p.topic).catch((e) => {
             console.error("[rooms] topic register failed:", e);
           });
         } catch { /* ignore */ }
@@ -476,6 +583,7 @@ export async function setupWSConnection(
   (conn as any).collabRole = (req as any).collabRole || "editor";
   (conn as any).collabShareId = (req as any).collabShareId || null;
   (conn as any).collabEpoch = (req as any).collabEpoch ?? 0;
+  (conn as any).collabIdentity = identityFromUrl(url, (conn as any).collabConnId);
 
   // Track this connection
   doc.conns.set(conn, new Set());
@@ -488,6 +596,8 @@ export async function setupWSConnection(
     ...roomInfo(roomName),
     connId: (conn as any).collabConnId,
     role: (conn as any).collabRole || "editor",
+    uid: (conn as any).collabIdentity?.uid,
+    name: (conn as any).collabIdentity?.name,
     epoch: (conn as any).collabEpoch ?? 0,
     conns: doc.conns.size,
     clients: doc.awareness.getStates().size,

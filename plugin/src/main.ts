@@ -338,6 +338,9 @@ export default class CollabPlugin extends Plugin {
   private async stopShare(id: string): Promise<void> {
     const m = this.syncManagers.get(id);
     if (m) {
+      if (this.boundPath && this.managerOwning(this.boundPath) === m) {
+        await this.unbindActiveEditor("stop-share");
+      }
       await m.destroy();
       this.syncManagers.delete(id);
     }
@@ -345,6 +348,7 @@ export default class CollabPlugin extends Plugin {
   }
 
   private async stopAllShares(): Promise<void> {
+    await this.unbindActiveEditor("stop-all-shares");
     for (const id of Array.from(this.syncManagers.keys())) await this.stopShare(id);
   }
 
@@ -427,19 +431,8 @@ export default class CollabPlugin extends Plugin {
     trace("bind", "active-leaf", { path, attempt, hasEditorView: !!ev });
 
     // Unbind the previous editor if we've moved away from it
-    if (this.boundView && (this.boundPath !== path || this.boundView !== ev)) {
-      trace("bind", "unbind-start", { oldPath: this.boundPath, nextPath: path, sameView: this.boundView === ev });
-      this.boundSession?.detach();
-      this.boundPresence?.stop();
-      try { unbindEditor(this.boundView); } catch { /* view may be gone */ }
-      await this.boundProvider?.setEditorBound(false);
-      trace("bind", "unbind-done", { oldPath: this.boundPath, nextPath: path });
-      this.boundView = null;
-      this.boundProvider = null;
-      this.boundPath = null;
-      this.boundStore = null;
-      this.boundSession = null;
-      this.boundPresence = null;
+    if ((this.boundView || this.boundProvider) && (this.boundPath !== path || this.boundView !== ev)) {
+      await this.unbindActiveEditor("active-leaf-change", path, ev);
     }
 
     if (!ev || !path || !activeFile) { this.refreshCommentsContext(); return; }
@@ -631,6 +624,31 @@ export default class CollabPlugin extends Plugin {
   private managerOwning(path: string): SyncManager | null {
     for (const m of this.syncManagers.values()) if (m.isInLinkedFolder(path)) return m;
     return null;
+  }
+
+  private async unbindActiveEditor(reason: string, nextPath: string | null = null, nextView: unknown = null): Promise<void> {
+    if (!this.boundView && !this.boundProvider && !this.boundSession && !this.boundPresence) return;
+    const oldPath = this.boundPath;
+    trace("bind", "unbind-start", {
+      oldPath,
+      nextPath,
+      reason,
+      sameView: nextView ? this.boundView === nextView : undefined,
+      hasProvider: !!this.boundProvider,
+    });
+    this.boundSession?.detach();
+    this.boundPresence?.stop();
+    if (this.boundView) {
+      try { unbindEditor(this.boundView); } catch { /* view may be gone */ }
+    }
+    await this.boundProvider?.setEditorBound(false);
+    this.boundView = null;
+    this.boundProvider = null;
+    this.boundPath = null;
+    this.boundStore = null;
+    this.boundSession = null;
+    this.boundPresence = null;
+    trace("bind", "unbind-done", { oldPath, nextPath, reason });
   }
 
   /** Detect "@Name" mentions of collaborators in `text` and push them a notification. */
@@ -1153,12 +1171,7 @@ export default class CollabPlugin extends Plugin {
     this.presenceDomObserver?.disconnect();
     this.presenceDomObserver = null;
     trace("presence", "dom-observer-stopped");
-    this.boundSession?.detach();
-    this.boundPresence?.stop();
-    if (this.boundView) {
-      try { unbindEditor(this.boundView); } catch { /* ignore */ }
-      await this.boundProvider?.setEditorBound(false);
-    }
+    await this.unbindActiveEditor("plugin-unload");
     await this.instanceWatch?.stop();
     await this.stopAllShares();
     console.log("Obsidian Collab plugin unloaded");

@@ -16247,12 +16247,16 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
   async stopShare(id2) {
     const m = this.syncManagers.get(id2);
     if (m) {
+      if (this.boundPath && this.managerOwning(this.boundPath) === m) {
+        await this.unbindActiveEditor("stop-share");
+      }
       await m.destroy();
       this.syncManagers.delete(id2);
     }
     this.statusBar.removeShare(id2);
   }
   async stopAllShares() {
+    await this.unbindActiveEditor("stop-all-shares");
     for (const id2 of Array.from(this.syncManagers.keys())) await this.stopShare(id2);
   }
   async restartShares() {
@@ -16310,7 +16314,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     (_b2 = this.getHistoryView()) == null ? void 0 : _b2.setContext(this.buildHistoryContext());
   }
   async bindActiveEditor(activeFile, attempt) {
-    var _a2, _b2, _c, _d, _e, _f, _g;
+    var _a2, _b2, _c, _d;
     if (attempt > 0 && ((_b2 = (_a2 = this.app.workspace.getActiveFile()) == null ? void 0 : _a2.path) != null ? _b2 : null) !== ((_c = activeFile == null ? void 0 : activeFile.path) != null ? _c : null)) {
       return;
     }
@@ -16318,22 +16322,8 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     const ev = view ? getEditorView(view) : null;
     const path = (_d = activeFile == null ? void 0 : activeFile.path) != null ? _d : null;
     trace("bind", "active-leaf", { path, attempt, hasEditorView: !!ev });
-    if (this.boundView && (this.boundPath !== path || this.boundView !== ev)) {
-      trace("bind", "unbind-start", { oldPath: this.boundPath, nextPath: path, sameView: this.boundView === ev });
-      (_e = this.boundSession) == null ? void 0 : _e.detach();
-      (_f = this.boundPresence) == null ? void 0 : _f.stop();
-      try {
-        unbindEditor(this.boundView);
-      } catch (e) {
-      }
-      await ((_g = this.boundProvider) == null ? void 0 : _g.setEditorBound(false));
-      trace("bind", "unbind-done", { oldPath: this.boundPath, nextPath: path });
-      this.boundView = null;
-      this.boundProvider = null;
-      this.boundPath = null;
-      this.boundStore = null;
-      this.boundSession = null;
-      this.boundPresence = null;
+    if ((this.boundView || this.boundProvider) && (this.boundPath !== path || this.boundView !== ev)) {
+      await this.unbindActiveEditor("active-leaf-change", path, ev);
     }
     if (!ev || !path || !activeFile) {
       this.refreshCommentsContext();
@@ -16511,6 +16501,34 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
   managerOwning(path) {
     for (const m of this.syncManagers.values()) if (m.isInLinkedFolder(path)) return m;
     return null;
+  }
+  async unbindActiveEditor(reason, nextPath = null, nextView = null) {
+    var _a2, _b2, _c;
+    if (!this.boundView && !this.boundProvider && !this.boundSession && !this.boundPresence) return;
+    const oldPath = this.boundPath;
+    trace("bind", "unbind-start", {
+      oldPath,
+      nextPath,
+      reason,
+      sameView: nextView ? this.boundView === nextView : void 0,
+      hasProvider: !!this.boundProvider
+    });
+    (_a2 = this.boundSession) == null ? void 0 : _a2.detach();
+    (_b2 = this.boundPresence) == null ? void 0 : _b2.stop();
+    if (this.boundView) {
+      try {
+        unbindEditor(this.boundView);
+      } catch (e) {
+      }
+    }
+    await ((_c = this.boundProvider) == null ? void 0 : _c.setEditorBound(false));
+    this.boundView = null;
+    this.boundProvider = null;
+    this.boundPath = null;
+    this.boundStore = null;
+    this.boundSession = null;
+    this.boundPresence = null;
+    trace("bind", "unbind-done", { oldPath, nextPath, reason });
   }
   /** Detect "@Name" mentions of collaborators in `text` and push them a notification. */
   notifyMentionsInText(text2, fileName, filePath) {
@@ -17008,20 +17026,12 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     }
   }
   async onunload() {
-    var _a2, _b2, _c, _d, _e;
+    var _a2, _b2;
     (_a2 = this.presenceDomObserver) == null ? void 0 : _a2.disconnect();
     this.presenceDomObserver = null;
     trace("presence", "dom-observer-stopped");
-    (_b2 = this.boundSession) == null ? void 0 : _b2.detach();
-    (_c = this.boundPresence) == null ? void 0 : _c.stop();
-    if (this.boundView) {
-      try {
-        unbindEditor(this.boundView);
-      } catch (e) {
-      }
-      await ((_d = this.boundProvider) == null ? void 0 : _d.setEditorBound(false));
-    }
-    await ((_e = this.instanceWatch) == null ? void 0 : _e.stop());
+    await this.unbindActiveEditor("plugin-unload");
+    await ((_b2 = this.instanceWatch) == null ? void 0 : _b2.stop());
     await this.stopAllShares();
     console.log("Obsidian Collab plugin unloaded");
   }

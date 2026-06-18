@@ -75,9 +75,9 @@ export class PresenceController {
 
   private typingTimer: ReturnType<typeof setTimeout> | null = null;
 
-  extension(): Extension {
+  extension(showFacepile = true): Extension {
     return [
-      facepileExtension((uid) => this.jumpTo(uid)),
+      ...(showFacepile ? [facepileExtension((uid) => this.jumpTo(uid))] : []),
       EditorView.updateListener.of((u) => { if (u.docChanged) this.bumpTyping(); }),
     ];
   }

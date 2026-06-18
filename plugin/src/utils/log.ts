@@ -23,7 +23,7 @@ interface DiagnosticsConfig {
 const MAX_ROWS = 2500;
 const MAX_TRACE_LINES = 6000;
 const MAX_STRING = 500;
-const SECRET_KEY_RE = /(secret|password|token|key|code|auth|credential)/i;
+const SECRET_KEY_RE = /(secret|password|token|key|code|auth|credential|content|body|text)/i;
 
 let DEBUG = false;
 let DIAGNOSTIC_FILE = false;

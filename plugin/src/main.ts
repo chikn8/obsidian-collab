@@ -1,4 +1,4 @@
-import { Plugin, TFile, TFolder, MarkdownView, Notice, debounce } from "obsidian";
+import { Plugin, TFile, TFolder, MarkdownView, Notice, Platform, debounce } from "obsidian";
 import type { EditorView } from "@codemirror/view";
 import { SyncManager } from "./collab/SyncManager";
 import { FileProvider } from "./collab/FileProvider";
@@ -191,29 +191,33 @@ export default class CollabPlugin extends Plugin {
     this.addCommand({
       id: "start-diagnostic-trace",
       name: "Start collab diagnostic trace (2 minutes)",
-      callback: () => {
-        const path = startDiagnosticTrace(2 * 60_000);
-        new Notice(`Collab diagnostic trace started: ${path}`, 8000);
-      },
+      callback: () => this.startDiagnosticTraceInteractive(),
     });
     this.addCommand({
       id: "export-diagnostic-bundle",
       name: "Export collab diagnostic bundle",
-      callback: async () => {
-        try {
-          const path = await exportDiagnosticBundle();
-          new Notice(`Collab diagnostic bundle written: ${path}`, 10000);
-        } catch (e) {
-          err("diag", e);
-          new Notice("Could not export collab diagnostic bundle.");
-        }
-      },
+      callback: () => this.exportDiagnosticBundleInteractive(),
     });
 
     console.log("Obsidian Collab plugin loaded (multi-share mode)");
   }
 
   // ── Share lifecycle ────────────────────────────────────────────
+
+  startDiagnosticTraceInteractive(): void {
+    const path = startDiagnosticTrace(2 * 60_000);
+    new Notice(`Collab diagnostic trace started: ${path}`, 8000);
+  }
+
+  async exportDiagnosticBundleInteractive(): Promise<void> {
+    try {
+      const path = await exportDiagnosticBundle();
+      new Notice(`Collab diagnostic bundle written: ${path}`, 10000);
+    } catch (e) {
+      err("diag", e);
+      new Notice("Could not export collab diagnostic bundle.");
+    }
+  }
 
   private async startAllShares(): Promise<void> {
     for (const share of this.settings.shares) await this.startShare(share);
@@ -344,7 +348,7 @@ export default class CollabPlugin extends Plugin {
     const role = manager?.role || "editor";
     const selfColor = this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName);
     const extras = [session.extension(), selfSelectionExtension({ name: this.settings.displayName || "You", color: selfColor })];
-    if (presence) extras.push(presence.extension());
+    if (presence) extras.push(presence.extension(Platform.isMobile));
     if (role !== "editor") extras.push(readOnlyExtension());
 
     await provider.setEditorBound(true);

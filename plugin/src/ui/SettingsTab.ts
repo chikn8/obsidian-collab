@@ -124,12 +124,12 @@ export class CollabSettingsTab extends PluginSettingTab {
       .setDesc("Capture or export redacted sync events for debugging lost saves, loops, and presence glitches.")
       .addButton((b) =>
         b.setButtonText("Trace 2 min").onClick(() => {
-          (this.app as any).commands?.executeCommandById?.("obsidian-collab:start-diagnostic-trace");
+          this.plugin.startDiagnosticTraceInteractive();
         })
       )
       .addButton((b) =>
         b.setButtonText("Export bundle").onClick(() => {
-          (this.app as any).commands?.executeCommandById?.("obsidian-collab:export-diagnostic-bundle");
+          void this.plugin.exportDiagnosticBundleInteractive();
         })
       );
 

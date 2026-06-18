@@ -19,6 +19,7 @@ check("manifest and package versions match", manifest.version === pkg.version, `
 check("versions.json maps current version to minAppVersion", versions[manifest.version] === manifest.minAppVersion, `${versions[manifest.version]} vs ${manifest.minAppVersion}`);
 check("manifest declares mobile compatibility", manifest.isDesktopOnly === false);
 check("plugin id is folder-safe", /^[a-z][a-z0-9-]*$/.test(manifest.id), manifest.id);
+check("plugin id is community-safe", !manifest.id.includes("obsidian"), manifest.id);
 
 console.log("");
 if (failures > 0) { console.error(`FAILED — ${failures} assertion(s) failed`); process.exit(1); }

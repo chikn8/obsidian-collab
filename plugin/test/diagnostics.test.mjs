@@ -53,7 +53,7 @@ check("keeps safe metadata", last?.fields?.path === "Shared/note.md" && last?.fi
 
 const bundlePath = await exportDiagnosticBundle();
 const bundle = JSON.parse(writes.get(bundlePath));
-check("exports under vault config dir", bundlePath.startsWith(".mobile-config/plugins/obsidian-collab/diagnostics/"), bundlePath);
+check("exports under vault config dir", bundlePath.startsWith(".mobile-config/plugins/live-collab/diagnostics/"), bundlePath);
 check("writes bundle file", writes.has(bundlePath));
 check("bundle includes sanitized context", bundle.context.plugin.version === "0.1-test" && bundle.context.settings.shareCount === 2);
 check("bundle context redacts secret-like fields", bundle.context.settings.serverToken === "[redacted]");

@@ -20,7 +20,7 @@ For private friend testing, use BRAT. Friends install BRAT once, add this GitHub
 release assets from GitHub releases and reloads the plugin. That avoids copying files manually, but it is
 still a beta/private channel, not Obsidian's built-in Community Plugin updater.
 
-Manual installs do not auto-update. If `.obsidian/plugins/obsidian-collab` is excluded from Obsidian
+Manual installs do not auto-update. If `.obsidian/plugins/live-collab` is excluded from Obsidian
 Sync, every device needs either BRAT, a public Community Plugin install, or a manual file copy.
 
 Do not add a silent self-updater to this plugin. A self-modifying collaboration plugin would bypass the
@@ -41,10 +41,10 @@ update" command that shows the target version and asks before writing plugin fil
 
 ## Public listing status
 
-The current plugin id is `obsidian-collab`. That is convenient for existing manual installs, but it is not
-acceptable for the public Community Plugin directory because current Obsidian naming guidance rejects
-plugin ids containing `obsidian`. Before public submission, choose a new id and write a migration note for
-existing manual installs.
+The plugin id is `live-collab`, which avoids the public Community Plugin directory restriction against
+ids containing `obsidian`. Existing manual installs that used `.obsidian/plugins/obsidian-collab` should
+install future builds in `.obsidian/plugins/live-collab`; if the new plugin data file is empty, startup
+imports the old `obsidian-collab/data.json` settings once and then saves them under the new id.
 
 Public listing also means being explicit about security and network behavior:
 

@@ -19,6 +19,7 @@ import { ensureIdentityKeys } from "./utils/identity";
 import { findMentionedUsers } from "./utils/mentions";
 import { buildThreadAuthorNotification, type CommentEventKind } from "./utils/commentNotifications";
 import { isThreadUnread, latestCommentActivity } from "./utils/commentActivity";
+import { readLegacyPluginData } from "./utils/pluginPaths";
 import {
   encodeShareCode,
   decodeShareCode,
@@ -1143,7 +1144,7 @@ export default class CollabPlugin extends Plugin {
   // ── Settings (with migration) ──────────────────────────────────
 
   async loadSettings(): Promise<void> {
-    const raw: any = (await this.loadData()) || {};
+    const raw: any = await this.loadCurrentOrLegacyData();
     // Migrate the old single-folder shape → a legacy share (zero disruption).
     if (raw.shares === undefined && (raw.linkedFolder !== undefined || raw.password !== undefined)) {
       this.settings = {
@@ -1184,6 +1185,18 @@ export default class CollabPlugin extends Plugin {
     this.settings.identityPrivateKey = identity.privateKey;
     this.settings.identitySignature = identity.signature;
     await this.persist();
+  }
+
+  private async loadCurrentOrLegacyData(): Promise<any> {
+    const current = (await this.loadData()) || {};
+    if (current && Object.keys(current).length > 0) return current;
+
+    const legacy = await readLegacyPluginData(this.app);
+    if (legacy) {
+      log("settings", "imported legacy obsidian-collab data");
+      return legacy;
+    }
+    return {};
   }
 
   /** Persist without touching live sync. */

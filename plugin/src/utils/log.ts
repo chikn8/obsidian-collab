@@ -242,7 +242,7 @@ function redactUid(uid: string): string {
 }
 
 function diagnosticDir(): string {
-  return appRef ? pluginDataPath(appRef, "diagnostics") : ".obsidian/plugins/obsidian-collab/diagnostics";
+  return appRef ? pluginDataPath(appRef, "diagnostics") : ".obsidian/plugins/live-collab/diagnostics";
 }
 
 function tracePath(): string {

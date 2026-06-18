@@ -10404,14 +10404,28 @@ var IndexeddbPersistence = class extends Observable {
 };
 
 // src/utils/pluginPaths.ts
+var PLUGIN_ID = "live-collab";
+var LEGACY_PLUGIN_ID = "obsidian-collab";
 function configDir(app) {
   return app.vault.configDir || ".obsidian";
 }
-function pluginDataDir(app) {
-  return `${configDir(app)}/plugins/obsidian-collab`;
+function pluginDataDir(app, pluginId = PLUGIN_ID) {
+  return `${configDir(app)}/plugins/${pluginId}`;
 }
 function pluginDataPath(app, relPath) {
   return `${pluginDataDir(app)}/${relPath.replace(/^\/+/, "")}`;
+}
+function legacyPluginDataPath(app, relPath) {
+  return `${pluginDataDir(app, LEGACY_PLUGIN_ID)}/${relPath.replace(/^\/+/, "")}`;
+}
+async function readLegacyPluginData(app) {
+  try {
+    const raw = await app.vault.adapter.read(legacyPluginDataPath(app, "data.json"));
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch (e) {
+    return null;
+  }
 }
 
 // src/utils/log.ts
@@ -10593,7 +10607,7 @@ function redactUid(uid) {
   return `${uid.slice(0, 4)}\u2026${uid.slice(-4)}`;
 }
 function diagnosticDir() {
-  return appRef ? pluginDataPath(appRef, "diagnostics") : ".obsidian/plugins/obsidian-collab/diagnostics";
+  return appRef ? pluginDataPath(appRef, "diagnostics") : ".obsidian/plugins/live-collab/diagnostics";
 }
 function tracePath() {
   return lastWritePath || `${diagnosticDir()}/trace-${sessionId.slice(0, 8)}.jsonl`;
@@ -16710,7 +16724,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
   // ── Settings (with migration) ──────────────────────────────────
   async loadSettings() {
     var _a2, _b2, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o;
-    const raw = await this.loadData() || {};
+    const raw = await this.loadCurrentOrLegacyData();
     if (raw.shares === void 0 && (raw.linkedFolder !== void 0 || raw.password !== void 0)) {
       this.settings = {
         serverUrl: (_a2 = raw.serverUrl) != null ? _a2 : DEFAULT_SETTINGS.serverUrl,
@@ -16746,6 +16760,16 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     this.settings.identityPrivateKey = identity.privateKey;
     this.settings.identitySignature = identity.signature;
     await this.persist();
+  }
+  async loadCurrentOrLegacyData() {
+    const current = await this.loadData() || {};
+    if (current && Object.keys(current).length > 0) return current;
+    const legacy = await readLegacyPluginData(this.app);
+    if (legacy) {
+      log("settings", "imported legacy obsidian-collab data");
+      return legacy;
+    }
+    return {};
   }
   /** Persist without touching live sync. */
   async persist() {

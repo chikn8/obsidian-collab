@@ -149,7 +149,7 @@ graceful (SIGTERM flushes active docs), so redeploys are safe with live users.
 ```bash
 cd plugin && npm install && npm run build
 # copy artifacts into your vault:
-cp main.js manifest.json styles.css "<your-vault>/.obsidian/plugins/obsidian-collab/"
+cp main.js manifest.json styles.css "<your-vault>/.obsidian/plugins/live-collab/"
 ```
 
 Enable **Real-Time Collaboration** in Settings → Community Plugins.
@@ -256,7 +256,7 @@ The summary tool also accepts the live `trace-....jsonl` file and highlights ski
 echo drops, repeated writes, and missing presence anchors:
 
 ```bash
-node tools/diagnostics-summary.mjs "<vault-config>/plugins/obsidian-collab/diagnostics/diagnostic-bundle-....json"
+node tools/diagnostics-summary.mjs "<vault-config>/plugins/live-collab/diagnostics/diagnostic-bundle-....json"
 ```
 
 Server relay logs are also structured, redacted JSON rows on stdout/stderr. They include `seq`, `dt`,
@@ -277,9 +277,10 @@ The `Release plugin` GitHub Action builds the plugin and publishes `main.js`, `m
 automatic updates inside Obsidian; for private testing, friends should use BRAT against the same GitHub
 releases. See [Releases, Auto-Updates, and Mobile](docs/RELEASES_AND_MOBILE.md).
 
-Public submission note: the current plugin id is `obsidian-collab`, which is convenient for existing
-manual installs but violates Obsidian's current community-directory naming rule against ids containing
-`obsidian`. Before submitting publicly, pick a new id and plan a settings/data migration.
+Public submission note: the plugin id is `live-collab` so release metadata is compatible with the
+community-directory naming rule against ids containing `obsidian`. New installs should use
+`.obsidian/plugins/live-collab`; the plugin imports settings from the old manual
+`.obsidian/plugins/obsidian-collab/data.json` once if the new data file is empty.
 
 ## Operations & recovery
 

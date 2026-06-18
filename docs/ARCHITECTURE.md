@@ -136,12 +136,20 @@ identity (`uid`, P-256 public key, signature). The first valid install to use an
 later uses must present the same uid + public key. `/share/invite/revoke` disables one invite and
 disconnects only sockets using that invite.
 
+Secret rotation is a grace-window model. The current primary env vars mint all new share/link/invite
+tokens. Optional comma-separated `*_PREVIOUS` env vars (`SERVER_SECRET_PREVIOUS`, `AUTH_TOKEN_PREVIOUS`,
+`ADMIN_SECRET_PREVIOUS`, `SHARE_MINT_TOKEN_PREVIOUS`, `SHARE_OWNER_SECRET_PREVIOUS`) verify old tokens
+during a temporary rotation window. Remove previous secrets after shares are revoked/re-shared onto the
+new primary values.
+
 Connection identity is also stamped server-side for awareness and notifications. The client sends its
 uid/name/color/device as WebSocket params, and the relay overwrites every awareness `user` object plus
 notification sender fields with that connection identity. A connection can only update awareness client
-IDs it introduced, so it cannot remove or overwrite another live connection's presence. This is still not
-a full account system: there is no central login, cross-device key recovery, or key rotation window yet.
-Security-relevant share/link/invite/revoke/join/reject events are written to the server audit JSONL log.
+IDs it introduced, so it cannot remove or overwrite another live connection's presence. Cursor labels use
+a device-aware `user.name` such as `Elijah (mobile)`, while plugin UI prefers `user.displayName` plus a
+separate device suffix so facepiles, mentions, and hover labels do not duplicate device text. This is still
+not a full account system: there is no central login or cross-device key recovery. Security-relevant
+share/link/invite/revoke/join/reject events are written to the server audit JSONL log.
 
 **Roles** (`viewer`/`commenter`/`editor`) are enforced *server-side*: in `rooms.ts`, a non-editor's sync
 writes (step2/update) are dropped — un-applied and un-persisted — so the read-only boundary is real, not
@@ -154,8 +162,9 @@ legacy `/admin/revoke` raises it and disconnects live revoked clients with close
 
 - **`rooms.ts`** — one in-memory `WSSharedDoc` per room; relays sync + awareness to all conns. Abuse
   caps: `maxPayload`, a per-connection inbound rate limit, and `bufferedAmount` backpressure (a
-  hopelessly backed-up slow peer is closed to avoid OOM). `/metrics` exposes counters and room/file
-  metadata, so it is protected by `METRICS_TOKEN` whenever auth is enabled.
+  hopelessly backed-up slow peer is closed to avoid OOM). Socket close cleanup uses a per-connection
+  room index rather than scanning every active room. `/metrics` exposes counters, runtime memory, and
+  room/file metadata, so it is protected by `METRICS_TOKEN` whenever auth is enabled.
 - **`persistence.ts`** — atomic `.yjs` saves (tmp + rename), one global dirty-room save sweep,
   last-disconnect saves, and SIGTERM flush; corrupt files are renamed aside and the room starts empty
   (one bad file never denies a room); `getPersistenceHealth()` powers `/health`.

@@ -13719,7 +13719,7 @@ var CommentsView = class extends import_obsidian6.ItemView {
     const threads = this.ctx.store.list();
     const visible = threads.filter((t) => this.showResolved || !t.resolved);
     if (visible.length === 0) {
-      root.createEl("p", { text: "No comments yet. Select text and right-click \u2192 \u201CAdd comment\u201D.", cls: "collab-comments-empty" });
+      root.createEl("p", { text: "No comments yet. Select text, then run Add comment to selection.", cls: "collab-comments-empty" });
       return;
     }
     const list = root.createDiv({ cls: "collab-comments-list" });
@@ -14011,6 +14011,20 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     this.registerView(COMMENTS_VIEW_TYPE, (leaf) => new CommentsView(leaf));
     this.addRibbonIcon("message-square", "Collab comments", () => this.openCommentsPanel());
     this.addCommand({ id: "open-comments", name: "Open comments panel", callback: () => this.openCommentsPanel() });
+    this.addCommand({
+      id: "add-comment-to-selection",
+      name: "Add comment to selection",
+      checkCallback: (checking) => {
+        var _a3;
+        const file = this.app.workspace.getActiveFile();
+        const canComment = !!file && !!this.managerOwning(file.path) && this.boundPath === file.path && !!this.boundView && !this.boundView.state.selection.main.empty;
+        if (checking) return canComment;
+        if (!canComment || !file) return false;
+        trace("comment", "add-command", { path: file.path });
+        void this.addCommentForSelection(file, (_a3 = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView)) != null ? _a3 : {});
+        return true;
+      }
+    });
     this.registerView(HISTORY_VIEW_TYPE, (leaf) => new HistoryView(leaf));
     this.addCommand({ id: "open-history", name: "Open version history", callback: () => this.openHistoryPanel() });
     this.registerEditorExtension([collabEditorExtension]);

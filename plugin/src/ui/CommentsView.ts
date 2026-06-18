@@ -64,7 +64,7 @@ export class CommentsView extends ItemView {
     const threads = this.ctx.store.list();
     const visible = threads.filter((t) => this.showResolved || !t.resolved);
     if (visible.length === 0) {
-      root.createEl("p", { text: "No comments yet. Select text and right-click → “Add comment”.", cls: "collab-comments-empty" });
+      root.createEl("p", { text: "No comments yet. Select text, then run Add comment to selection.", cls: "collab-comments-empty" });
       return;
     }
 

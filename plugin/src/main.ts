@@ -59,6 +59,24 @@ export default class CollabPlugin extends Plugin {
     this.registerView(COMMENTS_VIEW_TYPE, (leaf) => new CommentsView(leaf));
     this.addRibbonIcon("message-square", "Collab comments", () => this.openCommentsPanel());
     this.addCommand({ id: "open-comments", name: "Open comments panel", callback: () => this.openCommentsPanel() });
+    this.addCommand({
+      id: "add-comment-to-selection",
+      name: "Add comment to selection",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const canComment =
+          !!file &&
+          !!this.managerOwning(file.path) &&
+          this.boundPath === file.path &&
+          !!this.boundView &&
+          !this.boundView.state.selection.main.empty;
+        if (checking) return canComment;
+        if (!canComment || !file) return false;
+        trace("comment", "add-command", { path: file.path });
+        void this.addCommentForSelection(file, this.app.workspace.getActiveViewOfType(MarkdownView) ?? {});
+        return true;
+      },
+    });
 
     // Version-history sidebar
     this.registerView(HISTORY_VIEW_TYPE, (leaf) => new HistoryView(leaf));

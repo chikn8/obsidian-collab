@@ -39,6 +39,8 @@ export default class CollabPlugin extends Plugin {
   private modifyDebounceMap: Map<string, ReturnType<typeof debounce>> = new Map();
   private debouncedRestart = debounce(() => this.restartShares(), 800, false);
   private debouncedPersistReadMarkers = debounce(() => { void this.persist(); }, 500, false);
+  private debouncedPresenceDomRefresh = debounce(() => this.eachManager((m) => m.refreshPresenceUi()), 250, false);
+  private presenceDomObserver: MutationObserver | null = null;
 
   // Active editor binding state
   private boundView: EditorView | null = null;
@@ -103,6 +105,7 @@ export default class CollabPlugin extends Plugin {
     this.instanceWatch.start().catch(() => {});
 
     await this.startAllShares();
+    this.startPresenceDomObserver();
     // Bind the already-open editor (if any). Providers connect async, so the
     // retry loop in bindActiveEditor waits for the owning provider to be ready.
     void this.handleActiveLeafChange();
@@ -333,6 +336,32 @@ export default class CollabPlugin extends Plugin {
         err("vault", e);
       }
     }
+  }
+
+  private startPresenceDomObserver(): void {
+    if (
+      Platform.isMobile ||
+      typeof document === "undefined" ||
+      typeof HTMLElement === "undefined" ||
+      typeof MutationObserver === "undefined" ||
+      !document.body
+    ) {
+      return;
+    }
+    const relevant = ".workspace-tab-header, .nav-file-title";
+    this.presenceDomObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        const nodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)];
+        for (const node of nodes) {
+          if (!(node instanceof HTMLElement)) continue;
+          if (node.matches(relevant) || node.querySelector(relevant)) {
+            this.debouncedPresenceDomRefresh();
+            return;
+          }
+        }
+      }
+    });
+    this.presenceDomObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   // ── Active editor binding (perf: yCollab) ──────────────────────
@@ -1088,6 +1117,8 @@ export default class CollabPlugin extends Plugin {
   }
 
   async onunload(): Promise<void> {
+    this.presenceDomObserver?.disconnect();
+    this.presenceDomObserver = null;
     this.boundSession?.detach();
     this.boundPresence?.stop();
     if (this.boundView) {

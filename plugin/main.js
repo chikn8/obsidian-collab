@@ -15596,6 +15596,8 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     this.debouncedPersistReadMarkers = (0, import_obsidian11.debounce)(() => {
       void this.persist();
     }, 500, false);
+    this.debouncedPresenceDomRefresh = (0, import_obsidian11.debounce)(() => this.eachManager((m) => m.refreshPresenceUi()), 250, false);
+    this.presenceDomObserver = null;
     // Active editor binding state
     this.boundView = null;
     this.boundProvider = null;
@@ -15646,6 +15648,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     this.instanceWatch.start().catch(() => {
     });
     await this.startAllShares();
+    this.startPresenceDomObserver();
     void this.handleActiveLeafChange();
     this.registerEvent(
       this.app.vault.on("create", (file) => {
@@ -15846,6 +15849,25 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
         err("vault", e);
       }
     }
+  }
+  startPresenceDomObserver() {
+    if (import_obsidian11.Platform.isMobile || typeof document === "undefined" || typeof HTMLElement === "undefined" || typeof MutationObserver === "undefined" || !document.body) {
+      return;
+    }
+    const relevant = ".workspace-tab-header, .nav-file-title";
+    this.presenceDomObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        const nodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)];
+        for (const node of nodes) {
+          if (!(node instanceof HTMLElement)) continue;
+          if (node.matches(relevant) || node.querySelector(relevant)) {
+            this.debouncedPresenceDomRefresh();
+            return;
+          }
+        }
+      }
+    });
+    this.presenceDomObserver.observe(document.body, { childList: true, subtree: true });
   }
   // ── Active editor binding (perf: yCollab) ──────────────────────
   activeFocusedFile() {
@@ -16561,17 +16583,19 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     }
   }
   async onunload() {
-    var _a2, _b2, _c, _d;
-    (_a2 = this.boundSession) == null ? void 0 : _a2.detach();
-    (_b2 = this.boundPresence) == null ? void 0 : _b2.stop();
+    var _a2, _b2, _c, _d, _e;
+    (_a2 = this.presenceDomObserver) == null ? void 0 : _a2.disconnect();
+    this.presenceDomObserver = null;
+    (_b2 = this.boundSession) == null ? void 0 : _b2.detach();
+    (_c = this.boundPresence) == null ? void 0 : _c.stop();
     if (this.boundView) {
       try {
         unbindEditor(this.boundView);
       } catch (e) {
       }
-      await ((_c = this.boundProvider) == null ? void 0 : _c.setEditorBound(false));
+      await ((_d = this.boundProvider) == null ? void 0 : _d.setEditorBound(false));
     }
-    await ((_d = this.instanceWatch) == null ? void 0 : _d.stop());
+    await ((_e = this.instanceWatch) == null ? void 0 : _e.stop());
     await this.stopAllShares();
     console.log("Obsidian Collab plugin unloaded");
   }

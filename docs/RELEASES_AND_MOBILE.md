@@ -68,8 +68,9 @@ Expected to work on mobile:
 - Comments and version-history HTTP calls.
 - Binary attachment upload/download through Obsidian HTTP APIs, subject to mobile memory/network limits.
 - Multi-device presence: each phone/tablet/desktop install has its own `deviceId`, color variant, and
-  awareness entry. Cursor labels include the device, while facepiles and hover labels show the plain name
-  plus device/status.
+  awareness entry. Editor cursors, self-selection overlays, file-tree badges, tab badges, and facepiles
+  use the same device color. Cursor labels include the device, while facepiles and hover labels show the
+  plain name plus device/status.
 
 Known mobile differences:
 

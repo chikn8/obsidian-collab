@@ -46,6 +46,7 @@ interface CollabIdentity {
   uid: string;
   name: string;
   color: string;
+  baseColor: string;
   device?: string;
   deviceId?: string;
 }
@@ -114,9 +115,10 @@ function identityFromUrl(url: URL, connId: number): CollabIdentity {
   const uid = cleanParam(url.searchParams.get("uid"), `conn-${connId}`, 128, /^[A-Za-z0-9_-]+$/);
   const name = cleanParam(url.searchParams.get("name"), "Anonymous", 80);
   const color = cleanParam(url.searchParams.get("color"), "#888888", 16, /^#[0-9a-fA-F]{6}$/);
+  const baseColor = cleanParam(url.searchParams.get("baseColor"), color, 16, /^#[0-9a-fA-F]{6}$/);
   const device = cleanParam(url.searchParams.get("device"), "", 24, /^[A-Za-z0-9_-]+$/) || undefined;
   const deviceId = cleanParam(url.searchParams.get("deviceId"), "", 128, /^[A-Za-z0-9_.:-]+$/) || undefined;
-  return { uid, name, color, device, deviceId };
+  return { uid, name, color, baseColor, device, deviceId };
 }
 
 export function sanitizeAwarenessStateForTest(state: any, identity: CollabIdentity): any {
@@ -128,6 +130,7 @@ export function sanitizeAwarenessStateForTest(state: any, identity: CollabIdenti
       uid: identity.uid,
       name: identity.name,
       color: identity.color,
+      baseColor: identity.baseColor,
       colorLight: `${identity.color}33`,
       device: identity.device,
       deviceId: identity.deviceId,

@@ -3,6 +3,7 @@ import { Platform } from "obsidian";
 import * as Y from "yjs";
 import type { ConnectionStatus } from "../types";
 import { MuxProvider } from "./MuxProvider";
+import { deviceColor } from "./PresenceModel";
 
 export function detectDevice(): string {
   if (Platform.isMobile) return "mobile";
@@ -41,6 +42,10 @@ export function installDeviceId(): string {
   return id;
 }
 
+export function deviceScopedColor(baseColor: string, deviceId = installDeviceId()): string {
+  return deviceColor(baseColor || "#888888", deviceId);
+}
+
 export interface ProviderCallbacks {
   onStatus: (status: ConnectionStatus) => void;
   onSynced: (synced: boolean) => void;
@@ -68,11 +73,14 @@ export function createProvider(
   const deviceId = installDeviceId();
   const displayName = userInfo.name?.trim() || "Anonymous";
   const cursorName = cursorDisplayName(displayName, device);
+  const baseColor = userInfo.color || "#888888";
+  const scopedColor = deviceScopedColor(baseColor, deviceId);
   const params: Record<string, string> = {
     token,
     uid: userInfo.uid,
     name: cursorName,
-    color: userInfo.color,
+    color: scopedColor,
+    baseColor,
     device,
     deviceId,
     ...(userInfo.identityPublicKey && userInfo.identitySignature
@@ -99,8 +107,9 @@ export function createProvider(
     deviceId,
     name: cursorName,
     displayName,
-    color: userInfo.color,
-    colorLight: userInfo.color + "33", // 20% opacity version for selection
+    color: scopedColor,
+    colorLight: scopedColor + "33", // 20% opacity version for selection
+    baseColor,
     device,
   });
 

@@ -334,6 +334,9 @@ them, and a different signed identity is rejected before joining. Secret rotatio
 `*_PREVIOUS` env vars: old tokens verify during the grace window, while all newly minted share/link/invite
 tokens use the current primary secrets. The old client-side HMAC path remains as a legacy fallback for old
 servers.
+Per-device awareness now carries both a base color and a device-scoped color, so multiple installs for the
+same visible name render as separate, consistently colored cursors/selections/badges without requiring a
+real account system.
 **Remaining.** Account-grade identity semantics.
 **Verify.** Server auth/share-state tests and real-server e2e cover role/owner/invite separation, expiry,
 revoked-owner rejection, live invite revocation, and signed invite identity binding.

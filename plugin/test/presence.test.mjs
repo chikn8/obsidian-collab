@@ -58,6 +58,21 @@ console.log("presence model\n");
   check("deviceColor preserves hex shape", /^#[0-9a-f]{6}$/i.test(deviceColor(base, "phone")));
 }
 
+{
+  const base = "#54a0ff";
+  const scoped = deviceColor(base, "desktop-1");
+  const awareness = new FakeAwareness(1, [[
+    1,
+    {
+      user: { uid: "same-user", deviceId: "desktop-1", name: "Elijah", color: scoped, baseColor: base, device: "desktop" },
+      presence: { activeFile: "note.md", typing: false },
+    },
+  ]]);
+  const users = collectPresenceDevices({ manifestAwareness: awareness, relPath: "note.md" });
+  check("device-scoped awareness color is not jittered twice", users[0].color === scoped, `${users[0].color} vs ${scoped}`);
+  check("base color remains available for grouping", users[0].baseColor === base, users[0].baseColor);
+}
+
 console.log("");
 if (failures > 0) { console.error(`FAILED — ${failures} assertion(s) failed`); process.exit(1); }
 else console.log("ALL PASSED");

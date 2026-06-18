@@ -156,12 +156,15 @@ during a temporary rotation window. Remove previous secrets after shares are rev
 new primary values.
 
 Connection identity is also stamped server-side for awareness and notifications. The client sends its
-uid/name/color/device as WebSocket params, and the relay overwrites every awareness `user` object plus
-notification sender fields with that connection identity. A connection can only update awareness client
-IDs it introduced, so it cannot remove or overwrite another live connection's presence. Cursor labels use
-a device-aware `user.name` such as `Elijah (mobile)`, while plugin UI prefers `user.displayName` plus a
-separate device suffix so facepiles, mentions, and hover labels do not duplicate device text. This is still
-not a full account system: there is no central login or cross-device key recovery. Security-relevant
+uid/name/device-scoped color/baseColor/device as WebSocket params, and the relay overwrites every
+awareness `user` object plus notification sender fields with that connection identity. A connection can
+only update awareness client IDs it introduced, so it cannot remove or overwrite another live connection's
+presence. Cursor labels use a device-aware `user.name` such as `Elijah (mobile)`, while plugin UI prefers
+`user.displayName` plus a separate device suffix so facepiles, mentions, and hover labels do not duplicate
+device text. Each install keeps its own `deviceId`; cursor colors, self-selection overlays, file-tree
+badges, tab badges, and facepiles all use the same per-device color variant, while `baseColor` remains
+available for grouping/debugging. This is still not a full account system: there is no central login or
+cross-device key recovery. Security-relevant
 share/link/invite/revoke/join/reject events are written to the server audit JSONL log.
 
 **Roles** (`viewer`/`commenter`/`editor`) are enforced *server-side*: in `rooms.ts`, a non-editor's sync

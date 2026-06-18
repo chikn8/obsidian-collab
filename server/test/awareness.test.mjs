@@ -12,6 +12,7 @@ const identity = {
   uid: "real-user",
   name: "Real User",
   color: "#54a0ff",
+  baseColor: "#4c7dff",
   device: "desktop",
   deviceId: "device-1",
 };
@@ -23,6 +24,7 @@ const identity = {
       name: "Spoofed",
       displayName: "Plain User",
       color: "#ff0000",
+      baseColor: "#ff0000",
       device: "mobile",
       deviceId: "wrong-device",
     },
@@ -32,6 +34,7 @@ const identity = {
   const next = sanitizeAwarenessStateForTest(state, identity);
   check("overwrites spoofed uid", next.user.uid === identity.uid, next.user.uid);
   check("overwrites spoofed display fields", next.user.name === identity.name && next.user.color === identity.color);
+  check("overwrites spoofed base color", next.user.baseColor === identity.baseColor, next.user.baseColor);
   check("preserves plain display name", next.user.displayName === "Plain User", next.user.displayName);
   check("keeps non-identity awareness fields", next.presence.activeFile === "note.md" && next.cursor.head === 1);
 }

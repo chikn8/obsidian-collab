@@ -10105,6 +10105,156 @@ var MuxProvider = class {
   }
 };
 
+// src/collab/PresenceModel.ts
+function presenceKeyFromState(state, clientId) {
+  var _a2, _b2;
+  const uid = ((_a2 = state == null ? void 0 : state.user) == null ? void 0 : _a2.uid) || "unknown";
+  return `${uid}:${((_b2 = state == null ? void 0 : state.user) == null ? void 0 : _b2.deviceId) || clientId}`;
+}
+function deviceIdFromState(state, clientId) {
+  var _a2;
+  return ((_a2 = state == null ? void 0 : state.user) == null ? void 0 : _a2.deviceId) || String(clientId);
+}
+function presenceLabel(user) {
+  const device = user.device ? ` (${user.device})` : "";
+  const status = user.typing ? "typing" : user.hasCaret ? "editing" : "viewing";
+  return user.isSelf ? `${user.name}${device} (you) - ${status}` : `${user.name}${device} - ${status}`;
+}
+function presenceInitial(name) {
+  var _a2;
+  return (((_a2 = name == null ? void 0 : name.trim()) == null ? void 0 : _a2[0]) || "?").toUpperCase();
+}
+function collectPresenceDevices(args2) {
+  var _a2, _b2, _c;
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const myClientId = (_a2 = args2.manifestAwareness) == null ? void 0 : _a2.clientID;
+  (_c = (_b2 = args2.manifestAwareness) == null ? void 0 : _b2.getStates) == null ? void 0 : _c.call(_b2).forEach((state, clientId) => {
+    var _a3, _b3;
+    const user = state == null ? void 0 : state.user;
+    const presence = state == null ? void 0 : state.presence;
+    if (!(user == null ? void 0 : user.uid)) return;
+    const activeFile = (_a3 = presence == null ? void 0 : presence.activeFile) != null ? _a3 : null;
+    if (args2.relPath !== void 0 && activeFile !== args2.relPath) return;
+    const key = presenceKeyFromState(state, clientId);
+    if (seen.has(key)) return;
+    seen.add(key);
+    const baseColor = user.baseColor || user.color || "#888888";
+    const deviceId = deviceIdFromState(state, clientId);
+    const displayName = user.displayName || user.name || "Anonymous";
+    const color = user.baseColor ? user.color || deviceColor(baseColor, deviceId) : deviceColor(baseColor, deviceId);
+    out.push({
+      presenceKey: key,
+      uid: user.uid,
+      deviceId,
+      name: displayName,
+      color,
+      baseColor,
+      device: user.device,
+      activeFile,
+      typing: !!(presence == null ? void 0 : presence.typing),
+      hasCaret: !!((_b3 = args2.caretKeys) == null ? void 0 : _b3.has(key)),
+      isSelf: clientId === myClientId
+    });
+  });
+  return sortPresence(out);
+}
+function sortPresence(users) {
+  return [...users].sort((a, b) => {
+    if (a.isSelf !== b.isSelf) return a.isSelf ? -1 : 1;
+    const name = a.name.localeCompare(b.name);
+    if (name !== 0) return name;
+    return (a.device || "").localeCompare(b.device || "");
+  });
+}
+function deviceColor(baseColor, deviceId) {
+  const rgb = parseHex(baseColor);
+  if (!rgb) return baseColor;
+  const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+  const jitter = hash(deviceId) % 37 - 18;
+  const saturation = clamp(hsl.s + (hash(deviceId + "s") % 15 - 5), 45, 88);
+  const lightness = clamp(hsl.l + (hash(deviceId + "l") % 17 - 8), 36, 66);
+  return hslToHex((hsl.h + jitter + 360) % 360, saturation, lightness);
+}
+function parseHex(hex) {
+  const clean2 = hex.trim().replace(/^#/, "");
+  if (!/^[0-9a-f]{6}$/i.test(clean2)) return null;
+  return {
+    r: parseInt(clean2.slice(0, 2), 16),
+    g: parseInt(clean2.slice(2, 4), 16),
+    b: parseInt(clean2.slice(4, 6), 16)
+  };
+}
+function rgbToHsl(r, g, b) {
+  r /= 255;
+  g /= 255;
+  b /= 255;
+  const max2 = Math.max(r, g, b);
+  const min2 = Math.min(r, g, b);
+  let h = 0;
+  let s = 0;
+  const l = (max2 + min2) / 2;
+  if (max2 !== min2) {
+    const d = max2 - min2;
+    s = l > 0.5 ? d / (2 - max2 - min2) : d / (max2 + min2);
+    switch (max2) {
+      case r:
+        h = (g - b) / d + (g < b ? 6 : 0);
+        break;
+      case g:
+        h = (b - r) / d + 2;
+        break;
+      case b:
+        h = (r - g) / d + 4;
+        break;
+    }
+    h *= 60;
+  }
+  return { h, s: s * 100, l: l * 100 };
+}
+function hslToHex(h, s, l) {
+  s /= 100;
+  l /= 100;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(h / 60 % 2 - 1));
+  const m = l - c / 2;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) {
+    r = c;
+    g = x;
+  } else if (h < 120) {
+    r = x;
+    g = c;
+  } else if (h < 180) {
+    g = c;
+    b = x;
+  } else if (h < 240) {
+    g = x;
+    b = c;
+  } else if (h < 300) {
+    r = x;
+    b = c;
+  } else {
+    r = c;
+    b = x;
+  }
+  return `#${toHex((r + m) * 255)}${toHex((g + m) * 255)}${toHex((b + m) * 255)}`;
+}
+function toHex(n) {
+  return Math.round(n).toString(16).padStart(2, "0");
+}
+function hash(seed) {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function clamp(n, min2, max2) {
+  return Math.max(min2, Math.min(max2, n));
+}
+
 // src/collab/YjsProvider.ts
 function detectDevice() {
   if (import_obsidian.Platform.isMobile) return "mobile";
@@ -10135,6 +10285,9 @@ function installDeviceId() {
   cachedDeviceId = id2;
   return id2;
 }
+function deviceScopedColor(baseColor, deviceId = installDeviceId()) {
+  return deviceColor(baseColor || "#888888", deviceId);
+}
 function shareIdFromRoom(roomName) {
   if (!roomName.startsWith("@")) return null;
   const idx = roomName.indexOf(":");
@@ -10146,11 +10299,14 @@ function createProvider(serverUrl, roomName, ydoc, token, userInfo, callbacks, a
   const deviceId = installDeviceId();
   const displayName = ((_a2 = userInfo.name) == null ? void 0 : _a2.trim()) || "Anonymous";
   const cursorName = cursorDisplayName(displayName, device);
+  const baseColor = userInfo.color || "#888888";
+  const scopedColor = deviceScopedColor(baseColor, deviceId);
   const params2 = {
     token,
     uid: userInfo.uid,
     name: cursorName,
-    color: userInfo.color,
+    color: scopedColor,
+    baseColor,
     device,
     deviceId,
     ...userInfo.identityPublicKey && userInfo.identitySignature ? { identityKey: userInfo.identityPublicKey, identitySig: userInfo.identitySignature } : {},
@@ -10170,9 +10326,10 @@ function createProvider(serverUrl, roomName, ydoc, token, userInfo, callbacks, a
     deviceId,
     name: cursorName,
     displayName,
-    color: userInfo.color,
-    colorLight: userInfo.color + "33",
+    color: scopedColor,
+    colorLight: scopedColor + "33",
     // 20% opacity version for selection
+    baseColor,
     device
   });
   provider.on("status", (event) => {
@@ -11896,155 +12053,6 @@ function liveManifestEntry(previous, relPath, fileId, displayName, extra = {}) {
     createdBy: (previous == null ? void 0 : previous.createdBy) || displayName,
     ...extra
   };
-}
-
-// src/collab/PresenceModel.ts
-function presenceKeyFromState(state, clientId) {
-  var _a2, _b2;
-  const uid = ((_a2 = state == null ? void 0 : state.user) == null ? void 0 : _a2.uid) || "unknown";
-  return `${uid}:${((_b2 = state == null ? void 0 : state.user) == null ? void 0 : _b2.deviceId) || clientId}`;
-}
-function deviceIdFromState(state, clientId) {
-  var _a2;
-  return ((_a2 = state == null ? void 0 : state.user) == null ? void 0 : _a2.deviceId) || String(clientId);
-}
-function presenceLabel(user) {
-  const device = user.device ? ` (${user.device})` : "";
-  const status = user.typing ? "typing" : user.hasCaret ? "editing" : "viewing";
-  return user.isSelf ? `${user.name}${device} (you) - ${status}` : `${user.name}${device} - ${status}`;
-}
-function presenceInitial(name) {
-  var _a2;
-  return (((_a2 = name == null ? void 0 : name.trim()) == null ? void 0 : _a2[0]) || "?").toUpperCase();
-}
-function collectPresenceDevices(args2) {
-  var _a2, _b2, _c;
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  const myClientId = (_a2 = args2.manifestAwareness) == null ? void 0 : _a2.clientID;
-  (_c = (_b2 = args2.manifestAwareness) == null ? void 0 : _b2.getStates) == null ? void 0 : _c.call(_b2).forEach((state, clientId) => {
-    var _a3, _b3;
-    const user = state == null ? void 0 : state.user;
-    const presence = state == null ? void 0 : state.presence;
-    if (!(user == null ? void 0 : user.uid)) return;
-    const activeFile = (_a3 = presence == null ? void 0 : presence.activeFile) != null ? _a3 : null;
-    if (args2.relPath !== void 0 && activeFile !== args2.relPath) return;
-    const key = presenceKeyFromState(state, clientId);
-    if (seen.has(key)) return;
-    seen.add(key);
-    const baseColor = user.color || "#888888";
-    const deviceId = deviceIdFromState(state, clientId);
-    const displayName = user.displayName || user.name || "Anonymous";
-    out.push({
-      presenceKey: key,
-      uid: user.uid,
-      deviceId,
-      name: displayName,
-      color: deviceColor(baseColor, deviceId),
-      baseColor,
-      device: user.device,
-      activeFile,
-      typing: !!(presence == null ? void 0 : presence.typing),
-      hasCaret: !!((_b3 = args2.caretKeys) == null ? void 0 : _b3.has(key)),
-      isSelf: clientId === myClientId
-    });
-  });
-  return sortPresence(out);
-}
-function sortPresence(users) {
-  return [...users].sort((a, b) => {
-    if (a.isSelf !== b.isSelf) return a.isSelf ? -1 : 1;
-    const name = a.name.localeCompare(b.name);
-    if (name !== 0) return name;
-    return (a.device || "").localeCompare(b.device || "");
-  });
-}
-function deviceColor(baseColor, deviceId) {
-  const rgb = parseHex(baseColor);
-  if (!rgb) return baseColor;
-  const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
-  const jitter = hash(deviceId) % 37 - 18;
-  const saturation = clamp(hsl.s + (hash(deviceId + "s") % 15 - 5), 45, 88);
-  const lightness = clamp(hsl.l + (hash(deviceId + "l") % 17 - 8), 36, 66);
-  return hslToHex((hsl.h + jitter + 360) % 360, saturation, lightness);
-}
-function parseHex(hex) {
-  const clean2 = hex.trim().replace(/^#/, "");
-  if (!/^[0-9a-f]{6}$/i.test(clean2)) return null;
-  return {
-    r: parseInt(clean2.slice(0, 2), 16),
-    g: parseInt(clean2.slice(2, 4), 16),
-    b: parseInt(clean2.slice(4, 6), 16)
-  };
-}
-function rgbToHsl(r, g, b) {
-  r /= 255;
-  g /= 255;
-  b /= 255;
-  const max2 = Math.max(r, g, b);
-  const min2 = Math.min(r, g, b);
-  let h = 0;
-  let s = 0;
-  const l = (max2 + min2) / 2;
-  if (max2 !== min2) {
-    const d = max2 - min2;
-    s = l > 0.5 ? d / (2 - max2 - min2) : d / (max2 + min2);
-    switch (max2) {
-      case r:
-        h = (g - b) / d + (g < b ? 6 : 0);
-        break;
-      case g:
-        h = (b - r) / d + 2;
-        break;
-      case b:
-        h = (r - g) / d + 4;
-        break;
-    }
-    h *= 60;
-  }
-  return { h, s: s * 100, l: l * 100 };
-}
-function hslToHex(h, s, l) {
-  s /= 100;
-  l /= 100;
-  const c = (1 - Math.abs(2 * l - 1)) * s;
-  const x = c * (1 - Math.abs(h / 60 % 2 - 1));
-  const m = l - c / 2;
-  let r = 0, g = 0, b = 0;
-  if (h < 60) {
-    r = c;
-    g = x;
-  } else if (h < 120) {
-    r = x;
-    g = c;
-  } else if (h < 180) {
-    g = c;
-    b = x;
-  } else if (h < 240) {
-    g = x;
-    b = c;
-  } else if (h < 300) {
-    r = x;
-    b = c;
-  } else {
-    r = c;
-    b = x;
-  }
-  return `#${toHex((r + m) * 255)}${toHex((g + m) * 255)}${toHex((b + m) * 255)}`;
-}
-function toHex(n) {
-  return Math.round(n).toString(16).padStart(2, "0");
-}
-function hash(seed) {
-  let h = 2166136261;
-  for (let i = 0; i < seed.length; i++) {
-    h ^= seed.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-function clamp(n, min2, max2) {
-  return Math.max(min2, Math.min(max2, n));
 }
 
 // src/collab/PresenceDom.ts
@@ -16572,7 +16580,8 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     const relPath = manager ? manager.toRel(path) : path;
     const presence = manifestAwareness && manager ? new PresenceController(ev, provider.getDoc(), manifestAwareness, awareness, relPath) : null;
     const role = (manager == null ? void 0 : manager.role) || "editor";
-    const selfColor = this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName);
+    const selfBaseColor = this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName);
+    const selfColor = deviceScopedColor(selfBaseColor);
     const extras = [session.extension(), selfSelectionExtension({ name: this.settings.displayName || "You", color: selfColor })];
     if (presence) extras.push(presence.extension(true));
     if (role !== "editor") extras.push(readOnlyExtension());

@@ -50,15 +50,16 @@ export function collectPresenceDevices(args: {
     const key = presenceKeyFromState(state, clientId);
     if (seen.has(key)) return;
     seen.add(key);
-    const baseColor = user.color || "#888888";
+    const baseColor = user.baseColor || user.color || "#888888";
     const deviceId = deviceIdFromState(state, clientId);
     const displayName = user.displayName || user.name || "Anonymous";
+    const color = user.baseColor ? (user.color || deviceColor(baseColor, deviceId)) : deviceColor(baseColor, deviceId);
     out.push({
       presenceKey: key,
       uid: user.uid,
       deviceId,
       name: displayName,
-      color: deviceColor(baseColor, deviceId),
+      color,
       baseColor,
       device: user.device,
       activeFile,

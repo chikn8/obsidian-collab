@@ -10,6 +10,7 @@ import { CommentStore, type ThreadView } from "./collab/CommentStore";
 import { CommentSession } from "./collab/CommentLayer";
 import { PresenceController } from "./collab/Presence";
 import { selfSelectionExtension } from "./collab/SelfSelection";
+import { deviceScopedColor } from "./collab/YjsProvider";
 import { CommentsView, COMMENTS_VIEW_TYPE } from "./ui/CommentsView";
 import { CommentInboxView, COMMENT_INBOX_VIEW_TYPE, type CommentInboxItem } from "./ui/CommentInboxView";
 import { promptModal } from "./ui/modals";
@@ -483,7 +484,8 @@ export default class CollabPlugin extends Plugin {
         : null;
 
     const role = manager?.role || "editor";
-    const selfColor = this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName);
+    const selfBaseColor = this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName);
+    const selfColor = deviceScopedColor(selfBaseColor);
     const extras = [session.extension(), selfSelectionExtension({ name: this.settings.displayName || "You", color: selfColor })];
     if (presence) extras.push(presence.extension(true));
     if (role !== "editor") extras.push(readOnlyExtension());

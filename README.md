@@ -183,7 +183,8 @@ Settings → Real-Time Collaboration:
 | `PERSIST_DIR` | `./collab-data` | Durable state dir — **mount a persistent volume here** |
 | `WS_MAX_PAYLOAD` | `2097152` | Max inbound WS frame (anti-bloat/OOM) |
 | `BLOB_MAX_BYTES` | `26214400` | Max attachment/blob upload size |
-| `STALE_SAVE_MS` | — | `/health` 503s if a save is older than this while rooms are active |
+| `SAVE_SWEEP_INTERVAL_MS` | `60000` | Dirty-room persistence sweep cadence |
+| `STALE_SAVE_MS` | — | `/health` 503s if dirty room state remains unsaved longer than this |
 | `MIN_FREE_BYTES` | — | `/health` 503s below this much free disk |
 | `SNAPSHOT_GIT_REMOTE` / `SNAPSHOT_GIT_BRANCH` | — / `main` | Push note-history snapshots off-box |
 | `REQUIRE_SNAPSHOT_REMOTE` | `false` | Make `/health` fail until snapshot git push is configured |

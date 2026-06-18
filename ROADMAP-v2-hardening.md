@@ -37,7 +37,8 @@ different signed install is rejected before joining the room.
 **Tier 4 foundation**: binary attachments sync through content-addressed `/blob` uploads/downloads and
 manifest `kind:"binary"` entries.
 **Scale foundation**: namespaced shares multiplex manifest + file Yjs rooms over one physical WebSocket
-per client/share; server e2e verifies two rooms over two mux sockets.
+per client/share; server e2e verifies two rooms over two mux sockets; server persistence uses one
+dirty-room global save sweep instead of one interval per active room.
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
 (ops, not code) · account-grade identity/key rotation · HA/process tuning · blob GC/object-store polish ·
@@ -297,8 +298,7 @@ manifest + file-room Yjs frames over one authenticated physical socket per clien
 server still keeps one `WSSharedDoc` per room and evicts it on last disconnect, so persistence/history stay
 unchanged. Legacy shares keep the old per-room socket transport. Real-server e2e verifies two text rooms
 syncing through two mux sockets.
-**Remaining.** Dirty-flag global save sweep instead of per-room timers, memory-pressure/LRU tuning,
-reconnect jitter/backoff polish, and true HA storage/fan-out.
+**Remaining.** Memory-pressure/LRU tuning, reconnect jitter/backoff polish, and true HA storage/fan-out.
 
 ### 3.2 — Server-side share minting / per-share key isolation (implemented foundation; follow-ups remain)
 **Status.** Implemented the foundation: `/share/create` mints new shares with `SHARE_MINT_TOKEN`, returns

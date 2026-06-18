@@ -5,7 +5,7 @@ import * as syncProtocol from "y-protocols/sync";
 import * as awarenessProtocol from "y-protocols/awareness";
 import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
-import { loadState, saveState, startPeriodicSave, stopPeriodicSave } from "./persistence.js";
+import { loadState, markDirty, saveState, startPeriodicSave, stopPeriodicSave } from "./persistence.js";
 import { handleNotify, registerTopic } from "./notify.js";
 import { logEvent } from "./logging.js";
 import { auditEvent } from "./audit.js";
@@ -254,6 +254,7 @@ class WSSharedDoc extends Y.Doc {
     this.on("update", (update: Uint8Array, origin: any) => {
       if (origin !== "load") {
         this.stats.lastUpdateAt = Date.now();
+        markDirty(this.name);
       }
       const encoder = encoding.createEncoder();
       encoding.writeVarUint(encoder, MESSAGE_SYNC);

@@ -8,12 +8,17 @@ import { atomicWriteFile } from "./storage.js";
 export const PERSIST_DIR = process.env.PERSIST_DIR || "./collab-data";
 const saveQueues: Map<string, Promise<void>> = new Map();
 const activeRooms: Map<string, number> = new Map();
+const activeDocs: Map<string, Y.Doc> = new Map();
+const dirtyRooms: Map<string, { version: number; firstDirtyAt: number }> = new Map();
+const dirtySaves: Set<string> = new Set();
 const STALE_SAVE_MS = Number(process.env.STALE_SAVE_MS || 3 * 60_000);
 const MIN_FREE_BYTES = Number(process.env.MIN_FREE_BYTES || 100 * 1024 * 1024);
+const SAVE_SWEEP_INTERVAL = Number(process.env.SAVE_SWEEP_INTERVAL_MS || 60_000);
 
 let lastSaveOk = true;
 let lastSaveTs = 0;
 let lastSaveError: string | null = null;
+let saveSweepInterval: ReturnType<typeof setInterval> | null = null;
 
 function statePath(roomName: string): string {
   return path.join(PERSIST_DIR, encodeURIComponent(roomName) + ".yjs");
@@ -72,6 +77,7 @@ export async function saveState(
 ): Promise<void> {
   await enqueueSave(roomName, async () => {
     const filePath = statePath(roomName);
+    const dirtyVersion = dirtyRooms.get(roomName)?.version;
     const state = Y.encodeStateAsUpdate(ydoc);
 
     try {
@@ -92,53 +98,87 @@ export async function saveState(
       void alertOps("snapshot-write", "ObsidianSync snapshot write failed", `Room ${roomName}: ${String(e?.message || e)}`);
     });
 
+    const currentDirty = dirtyRooms.get(roomName);
+    if (dirtyVersion !== undefined && currentDirty?.version === dirtyVersion) dirtyRooms.delete(roomName);
     console.log(`[persistence] saved state for room: ${roomName}`);
   });
 }
 
-const PERIODIC_SAVE_INTERVAL = 60_000; // 60 seconds
+async function saveDirtyRoom(roomName: string, ydoc: Y.Doc): Promise<void> {
+  const dirty = dirtyRooms.get(roomName);
+  if (!dirty || dirtySaves.has(roomName)) return;
+  dirtySaves.add(roomName);
+  const version = dirty.version;
+  try {
+    await saveState(roomName, ydoc);
+    const current = dirtyRooms.get(roomName);
+    if (current?.version === version) dirtyRooms.delete(roomName);
+  } catch (e) {
+    console.error(`[persistence] dirty save error for ${roomName}:`, e);
+  } finally {
+    dirtySaves.delete(roomName);
+  }
+}
 
-// Track active save intervals per room so we can clean them up
-const saveIntervals: Map<string, ReturnType<typeof setInterval>> = new Map();
+function ensureSaveSweep(): void {
+  if (saveSweepInterval) return;
+  saveSweepInterval = setInterval(() => {
+    for (const [roomName, ydoc] of activeDocs) {
+      if (dirtyRooms.has(roomName)) void saveDirtyRoom(roomName, ydoc);
+    }
+  }, SAVE_SWEEP_INTERVAL);
+  console.log(`[persistence] started dirty save sweep every ${SAVE_SWEEP_INTERVAL}ms`);
+}
 
-/**
- * Start periodic saving for a room while it has active connections.
- * Call this when the first client connects to a room.
- */
-export function startPeriodicSave(roomName: string, ydoc: Y.Doc): void {
-  if (saveIntervals.has(roomName)) return; // already running
-  activeRooms.set(roomName, Date.now());
+function stopSaveSweepIfIdle(): void {
+  if (activeDocs.size > 0 || !saveSweepInterval) return;
+  clearInterval(saveSweepInterval);
+  saveSweepInterval = null;
+  console.log("[persistence] stopped dirty save sweep");
+}
 
-  const interval = setInterval(() => {
-    saveState(roomName, ydoc).catch((e) => {
-      console.error(`[persistence] periodic save error for ${roomName}:`, e);
-    });
-  }, PERIODIC_SAVE_INTERVAL);
-
-  saveIntervals.set(roomName, interval);
-  console.log(`[persistence] started periodic save for room: ${roomName}`);
+export function markDirty(roomName: string): void {
+  const now = Date.now();
+  const current = dirtyRooms.get(roomName);
+  dirtyRooms.set(roomName, {
+    version: (current?.version ?? 0) + 1,
+    firstDirtyAt: current?.firstDirtyAt ?? now,
+  });
 }
 
 /**
- * Stop periodic saving for a room.
+ * Register an active room for dirty-state saving while it has connections.
+ * Call this when the first client connects to a room.
+ */
+export function startPeriodicSave(roomName: string, ydoc: Y.Doc): void {
+  const alreadyActive = activeDocs.has(roomName);
+  activeRooms.set(roomName, activeRooms.get(roomName) ?? Date.now());
+  activeDocs.set(roomName, ydoc);
+  ensureSaveSweep();
+  if (!alreadyActive) console.log(`[persistence] tracking dirty saves for room: ${roomName}`);
+}
+
+/**
+ * Stop dirty-state saving for a room.
  * Call this when the last client disconnects.
  */
 export function stopPeriodicSave(roomName: string): void {
+  const wasActive = activeDocs.delete(roomName);
   activeRooms.delete(roomName);
-  const interval = saveIntervals.get(roomName);
-  if (interval) {
-    clearInterval(interval);
-    saveIntervals.delete(roomName);
-    console.log(`[persistence] stopped periodic save for room: ${roomName}`);
-  }
+  dirtyRooms.delete(roomName);
+  dirtySaves.delete(roomName);
+  if (wasActive) console.log(`[persistence] stopped dirty save tracking for room: ${roomName}`);
+  stopSaveSweepIfIdle();
 }
 
 export async function getPersistenceHealth() {
   const now = Date.now();
-  const oldestActiveTs = activeRooms.size > 0 ? Math.min(...activeRooms.values()) : 0;
+  const oldestDirtyTs = dirtyRooms.size > 0
+    ? Math.min(...Array.from(dirtyRooms.values(), (dirty) => dirty.firstDirtyAt))
+    : 0;
   const stale =
-    activeRooms.size > 0 &&
-    now - (lastSaveTs || oldestActiveTs) > STALE_SAVE_MS;
+    dirtyRooms.size > 0 &&
+    now - oldestDirtyTs > STALE_SAVE_MS;
 
   let freeBytes: number | null = null;
   let diskError: string | null = null;
@@ -158,6 +198,8 @@ export async function getPersistenceHealth() {
     lastSaveAgeMs: lastSaveTs ? now - lastSaveTs : null,
     lastSaveError,
     activeRooms: activeRooms.size,
+    dirtyRooms: dirtyRooms.size,
+    savingDirtyRooms: dirtySaves.size,
     stale,
     staleSaveMs: STALE_SAVE_MS,
     freeBytes,

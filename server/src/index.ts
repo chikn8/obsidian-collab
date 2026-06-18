@@ -2,7 +2,7 @@ import http from "http";
 import { randomBytes } from "crypto";
 import { WebSocketServer } from "ws";
 import { setupMuxConnection, setupWSConnection, getMetrics, saveAllDocs, closeRevokedConnections, closeInviteConnections } from "./rooms.js";
-import { BLOB_MAX_BYTES, getBlobStorageHealth, loadBlob, readBlobBody, safeBlobHash, safeBlobRelPath, storeBlob } from "./blobs.js";
+import { BLOB_MAX_BYTES, loadBlob, readBlobBody, safeBlobHash, safeBlobRelPath, storeBlob } from "./blobs.js";
 import { BLOB_GC_GRACE_MS, startBlobGc, stopBlobGc, sweepOrphanBlobs } from "./blobGc.js";
 import {
   timingSafeEqualStr,
@@ -18,16 +18,17 @@ import {
   ROLES,
   type Role,
 } from "./auth.js";
-import { startSnapshots, stopSnapshots, commitSnapshotsNow, getSnapshotsHealth } from "./snapshots.js";
+import { startSnapshots, stopSnapshots, commitSnapshotsNow } from "./snapshots.js";
 import { listVersions, getVersion, listShareFiles } from "./history.js";
-import { bindInviteIdentity, getInvite, getMinEpoch, putInvite, revokeInvite, setMinEpoch, getShareStateHealth } from "./shareState.js";
-import { getPersistenceHealth } from "./persistence.js";
-import { startBackups, stopBackups, getBackupHealth } from "./backups.js";
+import { bindInviteIdentity, getInvite, getMinEpoch, putInvite, revokeInvite, setMinEpoch } from "./shareState.js";
+import { startBackups, stopBackups } from "./backups.js";
 import { auditEvent } from "./audit.js";
 import { getRuntimeHealth } from "./runtime.js";
 import { CLIENT_LOG_MAX_BYTES, clientLogFields } from "./clientLog.js";
 import { getLogDrainHealth, logEvent } from "./logging.js";
 import { incMetric } from "./metrics.js";
+import { collectServerHealth } from "./health.js";
+import { startHealthMonitor, stopHealthMonitor } from "./healthMonitor.js";
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = parseInt(process.env.PORT || "8080", 10);
@@ -245,28 +246,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === "/health") {
-      const [persistence, snapshots, runtime] = await Promise.all([
-        getPersistenceHealth(),
-        Promise.resolve(getSnapshotsHealth()),
-        Promise.resolve(getRuntimeHealth()),
-      ]);
-      const shareState = getShareStateHealth();
-      const backups = getBackupHealth();
-      const blobs = getBlobStorageHealth();
-      const logDrain = getLogDrainHealth();
-      const ok = persistence.ok && snapshots.ok && shareState.ok && backups.ok && runtime.ok && blobs.ok && logDrain.ok !== false;
-      return json(ok ? 200 : 503, {
-        status: ok ? "ok" : "degraded",
-        service: "obsidian-collab-server",
-        version: "0.2.0",
-        persistence,
-        snapshots,
-        shareState,
-        backups,
-        blobs,
-        runtime,
-        logDrain,
-      });
+      const health = await collectServerHealth();
+      return json(health.status === "ok" ? 200 : 503, health);
     }
 
     if (p === "/metrics") {
@@ -640,6 +621,7 @@ startSnapshots().catch((e) => {
 });
 startBackups();
 startBlobGc();
+startHealthMonitor();
 
 // Start listening
 server.listen(PORT, HOST, () => {
@@ -672,6 +654,7 @@ async function shutdown(signal: string): Promise<void> {
   stopSnapshots();
   stopBackups();
   stopBlobGc();
+  stopHealthMonitor();
   await saveAllDocs(signal).catch((e) => console.error("[server] final save failed:", e));
   await commitSnapshotsNow().catch((e) => console.error("[server] final snapshot commit failed:", e));
 

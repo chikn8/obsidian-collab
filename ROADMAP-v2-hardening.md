@@ -281,9 +281,10 @@ errors. In production the same redacted rows are also retained to a bounded JSON
 `logDrain` status so a broken retained-log path becomes visible. `/metrics` now includes cumulative
 counters for save/snapshot failures, disconnects, revocations, rejected writes/paths, rejected awareness,
 rate limiting, backpressure closes, send failures, client errors, and mux room rejections, alongside live
-room/runtime state.
-**Remaining.** Add explicit external threshold alerts if the hosted platform cannot alert on `/health` and
-`/metrics`.
+room/runtime state. An in-process health monitor can also check the same aggregate health object on a
+cadence and send deduped `OPS_NTFY_TOPIC` alerts when any component is degraded, so alerting does not depend
+only on the hosted platform.
+**Remaining.** Production must still set/verify `OPS_NTFY_TOPIC` if relying on the internal alert path.
 **Verify.** Unit/e2e coverage checks metric counter behavior and `/metrics.counters` increments on real
 clientlog, blob rejection, and revocation paths.
 

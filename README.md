@@ -219,6 +219,7 @@ Settings → Real-Time Collaboration:
 | `REQUIRE_PERSIST_BACKUP` | `true` in production, otherwise `false` | Make `/health` fail until full-corpus backups are configured |
 | `PERSIST_BACKUP_INTERVAL_MS` | `86400000` | Backup cadence |
 | `OPS_NTFY_TOPIC` | — | ntfy topic for save/backup/corruption alerts |
+| `HEALTH_ALERT_INTERVAL_MS` | `60000` in production, otherwise `0` | Internal `/health` degradation alert cadence; set `0` if the host alerts externally |
 
 See `server/.env.example` for a copy-paste template, and `server/RECOVERY.md` for backup/restore.
 

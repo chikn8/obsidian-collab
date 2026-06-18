@@ -1,7 +1,7 @@
 import { App, Notice } from "obsidian";
 import { log } from "../utils/log";
+import { pluginDataPath } from "../utils/pluginPaths";
 
-const DIR = ".obsidian/plugins/obsidian-collab/instances";
 const HEARTBEAT_MS = 30_000;
 const FRESH_MS = 75_000; // an instance is "live" if its heartbeat is this recent
 
@@ -25,6 +25,10 @@ export class InstanceWatch {
     this.registerInterval = registerInterval;
   }
 
+  private dir(): string {
+    return pluginDataPath(this.app, "instances");
+  }
+
   async start(): Promise<void> {
     await this.beat();
     await this.check();
@@ -36,20 +40,21 @@ export class InstanceWatch {
 
   async stop(): Promise<void> {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
-    try { await this.app.vault.adapter.remove(`${DIR}/${this.id}.json`); } catch { /* ignore */ }
+    try { await this.app.vault.adapter.remove(`${this.dir()}/${this.id}.json`); } catch { /* ignore */ }
   }
 
   private async beat(): Promise<void> {
     const adapter = this.app.vault.adapter;
-    await adapter.mkdir(DIR).catch(() => {});
-    await adapter.write(`${DIR}/${this.id}.json`, JSON.stringify({ ts: Date.now() })).catch(() => {});
+    const dir = this.dir();
+    await adapter.mkdir(dir).catch(() => {});
+    await adapter.write(`${dir}/${this.id}.json`, JSON.stringify({ ts: Date.now() })).catch(() => {});
   }
 
   private async check(): Promise<void> {
     const adapter = this.app.vault.adapter;
     let others = 0;
     try {
-      const listing = await adapter.list(DIR);
+      const listing = await adapter.list(this.dir());
       const now = Date.now();
       for (const f of listing.files) {
         if (f.endsWith(`${this.id}.json`)) continue;

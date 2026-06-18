@@ -1,4 +1,5 @@
 import type { App } from "obsidian";
+import { pluginDataPath } from "./pluginPaths";
 
 type Level = "debug" | "info" | "warn" | "error";
 
@@ -196,8 +197,7 @@ function redactUid(uid: string): string {
 }
 
 function diagnosticDir(): string {
-  const configDir = (appRef?.vault as any)?.configDir || ".obsidian";
-  return `${configDir}/plugins/obsidian-collab/diagnostics`;
+  return appRef ? pluginDataPath(appRef, "diagnostics") : ".obsidian/plugins/obsidian-collab/diagnostics";
 }
 
 function tracePath(): string {

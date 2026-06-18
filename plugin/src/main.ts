@@ -13,6 +13,7 @@ import { selfSelectionExtension } from "./collab/SelfSelection";
 import { CommentsView, COMMENTS_VIEW_TYPE } from "./ui/CommentsView";
 import { promptModal } from "./ui/modals";
 import { configureDiagnostics, exportDiagnosticBundle, log, err, setDiagnosticLogging, startDiagnosticTrace, trace } from "./utils/log";
+import { getJson, postJson } from "./utils/http";
 import {
   encodeShareCode,
   decodeShareCode,
@@ -462,18 +463,18 @@ export default class CollabPlugin extends Plugin {
         const t = await token();
         if (!t) return [];
         try {
-          const r = await fetch(`${base}/history?share=${encodeURIComponent(histShareId)}&path=${encodeURIComponent(relPath)}&token=${encodeURIComponent(t)}${roleQ}`);
+          const r = await getJson(`${base}/history?share=${encodeURIComponent(histShareId)}&path=${encodeURIComponent(relPath)}&token=${encodeURIComponent(t)}${roleQ}`);
           if (!r.ok) return [];
-          return (await r.json()).versions || [];
+          return (r.body as any)?.versions || [];
         } catch (e) { err("history", e); return []; }
       },
       load: async (hash: string) => {
         const t = await token();
         if (!t) return null;
         try {
-          const r = await fetch(`${base}/version?share=${encodeURIComponent(histShareId)}&path=${encodeURIComponent(relPath)}&hash=${encodeURIComponent(hash)}&token=${encodeURIComponent(t)}${roleQ}`);
+          const r = await getJson(`${base}/version?share=${encodeURIComponent(histShareId)}&path=${encodeURIComponent(relPath)}&hash=${encodeURIComponent(hash)}&token=${encodeURIComponent(t)}${roleQ}`);
           if (!r.ok) return null;
-          return (await r.json()).content ?? null;
+          return (r.body as any)?.content ?? null;
         } catch (e) { err("history", e); return null; }
       },
       restore: async (text: string) => {
@@ -544,7 +545,7 @@ export default class CollabPlugin extends Plugin {
     const newEpoch = (share.epoch ?? 1) + 1;
     const token = await deriveAdminToken(this.settings.serverSecret, share.id, newEpoch);
     try {
-      const res = await fetch(`${httpBase(this.settings.serverUrl)}/admin/revoke?share=${encodeURIComponent(share.id)}&epoch=${newEpoch}&token=${encodeURIComponent(token)}`, { method: "POST" });
+      const res = await postJson(`${httpBase(this.settings.serverUrl)}/admin/revoke?share=${encodeURIComponent(share.id)}&epoch=${newEpoch}&token=${encodeURIComponent(token)}`);
       if (!res.ok) { new Notice("Revoke failed on the server."); return false; }
     } catch (e) {
       err("revoke", e); new Notice("Revoke request failed."); return false;

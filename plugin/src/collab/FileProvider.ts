@@ -5,11 +5,17 @@ import { createProvider } from "./YjsProvider";
 import { EchoGuard, beginRemoteApply, endRemoteApply } from "./EchoGuard";
 import { diffRange } from "../utils/textDiff";
 import { log, trace } from "../utils/log";
+import { pluginDataPath } from "../utils/pluginPaths";
 import { colorFor } from "../types";
 import type { CollabPluginSettings, ConnectionStatus, ConnectedUser } from "../types";
 
-const BACKUP_DIR = ".obsidian/plugins/obsidian-collab/backups";
-const TRASH_DIR = ".obsidian/plugins/obsidian-collab/trash";
+function backupDir(app: App): string {
+  return pluginDataPath(app, "backups");
+}
+
+function trashDir(app: App): string {
+  return pluginDataPath(app, "trash");
+}
 
 /**
  * Headless-only file sync with offline persistence.
@@ -534,8 +540,9 @@ export class FileProvider {
     const adapter = app.vault.adapter;
     const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const safeName = fullPath.replace(/\//g, "__");
-    const dir = `${TRASH_DIR}/${(shareId || "legacy").replace(/[^A-Za-z0-9_.-]/g, "_")}`;
-    await adapter.mkdir(TRASH_DIR).catch(() => {});
+    const root = trashDir(app);
+    const dir = `${root}/${(shareId || "legacy").replace(/[^A-Za-z0-9_.-]/g, "_")}`;
+    await adapter.mkdir(root).catch(() => {});
     await adapter.mkdir(dir).catch(() => {});
     await adapter.write(`${dir}/${safeName}__${ts}.md`, content).catch((e) => log("delete", "saveToTrash failed", fullPath, e));
   }
@@ -552,9 +559,10 @@ export class FileProvider {
     const adapter = app.vault.adapter;
     const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const safeName = fullPath.replace(/\//g, "__");
-    const snapshotPath = `${BACKUP_DIR}/${safeName}__${ts}.md`;
+    const dir = backupDir(app);
+    const snapshotPath = `${dir}/${safeName}__${ts}.md`;
 
-    await adapter.mkdir(BACKUP_DIR).catch(() => {});
+    await adapter.mkdir(dir).catch(() => {});
     await adapter.write(snapshotPath, content);
   }
 
@@ -613,7 +621,7 @@ export class FileProvider {
   static async readLatestTrash(app: App, shareId: string, fullPath: string): Promise<string | null> {
     const adapter = app.vault.adapter;
     const shareDir = (shareId || "legacy").replace(/[^A-Za-z0-9_.-]/g, "_");
-    const dir = `${TRASH_DIR}/${shareDir}`;
+    const dir = `${trashDir(app)}/${shareDir}`;
     const prefix = `${dir}/${fullPath.replace(/\//g, "__")}__`;
     try {
       const listing = await adapter.list(dir);
@@ -649,8 +657,8 @@ export class FileProvider {
         // Dir may not exist yet — that's fine
       }
     };
-    await sweep(BACKUP_DIR, maxAgeDays, false);
-    await sweep(TRASH_DIR, trashAgeDays, true); // trash is nested per-share
+    await sweep(backupDir(app), maxAgeDays, false);
+    await sweep(trashDir(app), trashAgeDays, true); // trash is nested per-share
   }
 }
 

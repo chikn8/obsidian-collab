@@ -252,6 +252,8 @@ See `server/.env.example` for a copy-paste template, and `server/RECOVERY.md` fo
 # Whole repo, machine-readable report for agents/CI triage
 node tools/ai-regression.mjs          # plugin tests/build + server tests/build/e2e + diagnostic-tool + diff check
 node tools/ai-regression.mjs --quick  # skips the real WebSocket e2e
+node tools/release-readiness.mjs      # regression + clean worktree + manual gate report
+node tools/release-readiness.mjs --prod  # also enforces live /health backup/durability gates
 
 # Plugin
 cd plugin
@@ -293,6 +295,10 @@ Production durability gate:
 ```bash
 node tools/prod-health-check.mjs
 ```
+
+Before tagging a release, run `node tools/release-readiness.mjs`. It writes a JSON report under the
+system temp directory and calls out the remaining human gates: live production health/backup verification
+when `--prod` is not used, plus the real mobile/two-person device matrix.
 
 ## Plugin updates
 

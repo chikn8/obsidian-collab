@@ -33,11 +33,13 @@ update" command that shows the target version and asks before writing plugin fil
 1. Update `plugin/manifest.json` and `plugin/package.json` to the same `x.y.z` version.
 2. Add `"x.y.z": "<minAppVersion>"` to root `versions.json`.
 3. Run `cd plugin && npm test && npm run build`.
-4. Commit the version bump.
-5. Tag with the exact version, for example `git tag 0.1.2`.
-6. Push the commit and tag. The release workflow will attach `main.js`, `manifest.json`, and
+4. Run `node tools/release-readiness.mjs`; use `--prod` when the live Railway durability gate should
+   be enforced before tagging.
+5. Commit the version bump.
+6. Tag with the exact version, for example `git tag 0.1.2`.
+7. Push the commit and tag. The release workflow will attach `main.js`, `manifest.json`, and
    `styles.css`.
-7. For BRAT users, tell them to check for plugin updates after the release exists.
+8. For BRAT users, tell them to check for plugin updates after the release exists.
 
 ## Public listing status
 

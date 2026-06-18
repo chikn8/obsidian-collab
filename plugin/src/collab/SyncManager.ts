@@ -1201,7 +1201,7 @@ export class SyncManager {
         continue;
       }
 
-      const host = appendPresenceHost(fileEl, "collab-file-presence-host", users, "file");
+      const host = appendPresenceHost(fileEl, "collab-file-presence-host", users, "file", () => this.followPresence(fullPath));
       this.renderedPresence.set(fullPath, [host]);
       rendered++;
     }
@@ -1224,11 +1224,20 @@ export class SyncManager {
         trace("presence", "tab-header-missing", { shareId: this.histShareId, path, users: users.length });
         return;
       }
-      const host = appendPresenceHost(tabPresenceTarget(header), "collab-tab-presence-host", users, "tab");
+      const host = appendPresenceHost(tabPresenceTarget(header), "collab-tab-presence-host", users, "tab", () => this.followPresence(path));
       this.renderedTabPresence.set(`${this.histShareId}:${path}:${this.renderedTabPresence.size}`, [host]);
       rendered++;
     });
     return { rendered, missing };
+  }
+
+  private async followPresence(fullPath: string): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(fullPath);
+    if (!(file instanceof TFile)) {
+      new Notice("That collaborator's file is not available locally yet.");
+      return;
+    }
+    await this.app.workspace.getLeaf(false).openFile(file);
   }
 
   private clearPresenceUi(): void {

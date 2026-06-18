@@ -11683,15 +11683,15 @@ function findFileTreeTitle(doc2, fullPath) {
     `.nav-file-title[data-path="${cssAttributeValue(fullPath)}"]`
   );
 }
-function appendPresenceHost(target, className, users, surface) {
+function appendPresenceHost(target, className, users, surface, onFollow) {
   const doc2 = target.ownerDocument || document;
   const host = doc2.createElement("span");
   host.className = className;
-  renderPresenceAvatars(host, users, surface);
+  renderPresenceAvatars(host, users, surface, onFollow);
   target.appendChild(host);
   return host;
 }
-function renderPresenceAvatars(parent, users, surface) {
+function renderPresenceAvatars(parent, users, surface, onFollow) {
   const doc2 = parent.ownerDocument || document;
   users.forEach((user, i) => {
     const av = doc2.createElement("span");
@@ -11699,8 +11699,18 @@ function renderPresenceAvatars(parent, users, surface) {
     av.style.backgroundColor = user.color;
     av.textContent = presenceInitial(user.name);
     const label = presenceLabel(user);
-    av.setAttribute("aria-label", label);
-    av.title = label;
+    let title = label;
+    if (onFollow && user.activeFile && !user.isSelf) {
+      av.classList.add("followable");
+      title = `${label} - click to open`;
+      av.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onFollow(user);
+      };
+    }
+    av.setAttribute("aria-label", title);
+    av.title = title;
     if (user.typing) av.appendChild(makeTypingDots(doc2));
     parent.appendChild(av);
   });
@@ -12796,7 +12806,7 @@ var SyncManager = class {
         trace("presence", "file-anchor-missing", { shareId: this.histShareId, path: fullPath, users: users.length });
         continue;
       }
-      const host = appendPresenceHost(fileEl, "collab-file-presence-host", users, "file");
+      const host = appendPresenceHost(fileEl, "collab-file-presence-host", users, "file", () => this.followPresence(fullPath));
       this.renderedPresence.set(fullPath, [host]);
       rendered++;
     }
@@ -12818,11 +12828,19 @@ var SyncManager = class {
         trace("presence", "tab-header-missing", { shareId: this.histShareId, path, users: users.length });
         return;
       }
-      const host = appendPresenceHost(tabPresenceTarget(header), "collab-tab-presence-host", users, "tab");
+      const host = appendPresenceHost(tabPresenceTarget(header), "collab-tab-presence-host", users, "tab", () => this.followPresence(path));
       this.renderedTabPresence.set(`${this.histShareId}:${path}:${this.renderedTabPresence.size}`, [host]);
       rendered++;
     });
     return { rendered, missing };
+  }
+  async followPresence(fullPath) {
+    const file = this.app.vault.getAbstractFileByPath(fullPath);
+    if (!(file instanceof import_obsidian4.TFile)) {
+      new import_obsidian4.Notice("That collaborator's file is not available locally yet.");
+      return;
+    }
+    await this.app.workspace.getLeaf(false).openFile(file);
   }
   clearPresenceUi() {
     clearRenderedPresence(this.renderedPresence);

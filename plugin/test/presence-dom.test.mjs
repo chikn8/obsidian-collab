@@ -24,6 +24,14 @@ class FakeElement {
     this.className = "";
     this.textContent = "";
     this.title = "";
+    this.classList = {
+      add: (...names) => {
+        const classes = new Set(this.className.split(/\s+/).filter(Boolean));
+        for (const name of names) classes.add(name);
+        this.className = Array.from(classes).join(" ");
+      },
+      contains: (name) => this.className.split(/\s+/).includes(name),
+    };
   }
 
   appendChild(child) {
@@ -137,6 +145,27 @@ console.log("presence dom\n");
   check("avatar title is hover-readable", first.title === "Elijah (desktop) (you) - typing", first.title);
   check("avatar aria mirrors title", first.getAttribute("aria-label") === first.title);
   check("typing pill has three dots", first.children[0]?.className === "collab-typing-pill" && first.children[0].children.length === 3);
+}
+
+{
+  const doc = new FakeDocument();
+  const parent = doc.createElement("span");
+  let followed = null;
+  renderPresenceAvatars(parent, users, "file", (user) => { followed = user; });
+
+  const first = parent.children[0];
+  const second = parent.children[1];
+  check("self avatar is not followable", !first.classList.contains("followable") && !first.onclick);
+  check("remote avatar advertises follow action", second.classList.contains("followable") && second.title === "Elijah (mobile) - viewing - click to open", second.title);
+  check("follow avatar aria mirrors title", second.getAttribute("aria-label") === second.title);
+
+  let prevented = false;
+  let stopped = false;
+  second.onclick?.({
+    preventDefault() { prevented = true; },
+    stopPropagation() { stopped = true; },
+  });
+  check("clicking remote avatar follows active file", followed === users[1] && prevented && stopped);
 }
 
 {

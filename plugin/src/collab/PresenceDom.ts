@@ -23,12 +23,13 @@ export function appendPresenceHost(
   target: HTMLElement,
   className: string,
   users: PresenceDevice[],
-  surface: PresenceSurface
+  surface: PresenceSurface,
+  onFollow?: (user: PresenceDevice) => void
 ): HTMLElement {
   const doc = target.ownerDocument || document;
   const host = doc.createElement("span");
   host.className = className;
-  renderPresenceAvatars(host, users, surface);
+  renderPresenceAvatars(host, users, surface, onFollow);
   target.appendChild(host);
   return host;
 }
@@ -36,7 +37,8 @@ export function appendPresenceHost(
 export function renderPresenceAvatars(
   parent: HTMLElement,
   users: PresenceDevice[],
-  surface: PresenceSurface
+  surface: PresenceSurface,
+  onFollow?: (user: PresenceDevice) => void
 ): void {
   const doc = parent.ownerDocument || document;
   users.forEach((user, i) => {
@@ -49,8 +51,18 @@ export function renderPresenceAvatars(
     av.style.backgroundColor = user.color;
     av.textContent = presenceInitial(user.name);
     const label = presenceLabel(user);
-    av.setAttribute("aria-label", label);
-    av.title = label;
+    let title = label;
+    if (onFollow && user.activeFile && !user.isSelf) {
+      av.classList.add("followable");
+      title = `${label} - click to open`;
+      av.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onFollow(user);
+      };
+    }
+    av.setAttribute("aria-label", title);
+    av.title = title;
     if (user.typing) av.appendChild(makeTypingDots(doc));
     parent.appendChild(av);
   });

@@ -18,7 +18,8 @@ Each **share** (one local folder ↔ one namespaced room set) is synced by three
 3. **Content-addressed blobs** — binary attachments are uploaded to `/blob` by SHA-256 hash and referenced
    from manifest entries (`kind:"binary"`, `blobHash`, `blobSize`). They are not CRDT merged: clearly newer
    local files are re-published, clearly older files accept the remote blob, and skew-window collisions keep
-   a visible `(... binary conflict ...).ext` sibling before the original path is updated.
+   a visible `(... binary conflict ...).ext` sibling before the original path is updated. Conflict copies
+   carry `conflict*` manifest metadata so the history panel can list and open them later.
 
 The **active editor** additionally binds to its file's `Y.Text` via `yCollab` (`EditorBinding.ts`),
 which is what makes typing feel instant and renders remote cursors/selections natively. Background
@@ -107,7 +108,8 @@ This closes a path-traversal → arbitrary-file-write vector.
   prevents wall-clock-only resurrection across devices: same-device tombstones delete, different-device
   apparent-newer local copies become visible `(... delete conflict ...).md`/attachment copies, and old
   no-provenance tombstones keep the legacy safety fallback. Rename tombstones never resurrect because the
-  content moved to the new path.
+  content moved to the new path. Conflict copies are stamped with the original path and source operation
+  so they remain reviewable in the history panel instead of being filename-only breadcrumbs.
 - **Folder move/rename/delete.** Obsidian fires a *single* event for a folder (not per child), so
   `onFolderRename`/`onFolderDelete` enumerate descendants and route each through the per-file path,
   preserving content and lineage. (Without this, dragging a folder orphans every file inside it.)

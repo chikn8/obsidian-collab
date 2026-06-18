@@ -9,6 +9,21 @@ import { isSyncableBinaryPath } from "./binary";
 export const RESURRECT_GRACE_MS = 2000;
 export const SYNCABLE_TEXT_EXTENSIONS = ["md", "canvas"] as const;
 export type TombstoneLocalDecision = "delete" | "resurrect" | "conflict-copy";
+export type ConflictKind = "delete" | "binary-update";
+
+export interface ConflictFile {
+  relPath: string;
+  originalPath: string;
+  kind: ConflictKind;
+  reason?: string;
+  createdAt?: number;
+  by?: string;
+  sourceMutationId?: string;
+  remoteUpdatedAt?: number;
+  localModifiedAt?: number;
+  remoteHash?: string;
+  localHash?: string;
+}
 
 function mutationPart(value: string | undefined, fallback: string): string {
   const clean = (value || "").trim().replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 80);
@@ -136,6 +151,24 @@ export function shouldPublishLocalOnStartup(entry: ManifestEntry | undefined): b
  *  shown in "Deleted files" because the content still exists at the new path. */
 export function isRecoverableTombstone(entry: ManifestEntry | undefined): boolean {
   return !!entry && entry.exists === false && !entry.renamedTo;
+}
+
+export function conflictFileFromManifest(relPath: string, entry: ManifestEntry | undefined): ConflictFile | null {
+  if (!entry || entry.exists === false || !entry.conflictOf) return null;
+  const kind: ConflictKind = entry.conflictKind === "delete" ? "delete" : "binary-update";
+  return {
+    relPath,
+    originalPath: entry.conflictOf,
+    kind,
+    reason: entry.conflictReason,
+    createdAt: entry.conflictCreatedAt,
+    by: entry.conflictBy,
+    sourceMutationId: entry.conflictSourceMutationId,
+    remoteUpdatedAt: entry.conflictRemoteUpdatedAt,
+    localModifiedAt: entry.conflictLocalModifiedAt,
+    remoteHash: entry.conflictRemoteHash,
+    localHash: entry.conflictLocalHash,
+  };
 }
 
 /**

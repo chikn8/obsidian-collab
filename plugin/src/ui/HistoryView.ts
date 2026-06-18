@@ -1,5 +1,6 @@
 import { ItemView, WorkspaceLeaf, setIcon, Notice } from "obsidian";
 import { applyRestoreHunk, buildInlineDiff, buildRestoreHunks, type DiffRow, type RestoreHunk } from "../utils/lineDiff";
+import type { ConflictFile } from "../utils/manifestLogic";
 
 export const HISTORY_VIEW_TYPE = "collab-history";
 
@@ -26,6 +27,10 @@ export interface HistoryContext {
   deletedFiles?: () => DeletedFile[];
   /** Un-delete a tombstoned file; returns true on success. */
   restoreDeleted?: (relPath: string) => Promise<boolean>;
+  /** Visible conflict copies retained for manual review. */
+  conflictFiles?: () => ConflictFile[];
+  /** Open a conflict copy in Obsidian; returns true on success. */
+  openConflict?: (relPath: string) => Promise<boolean>;
 }
 
 /** Version-history side panel: browse server git snapshots, preview, restore. */
@@ -61,6 +66,7 @@ export class HistoryView extends ItemView {
     }
 
     this.renderDeleted(root);
+    this.renderConflicts(root);
 
     const listEl = root.createDiv({ cls: "collab-history-list" });
     listEl.createEl("p", { text: "Loading…", cls: "collab-comments-empty" });
@@ -143,6 +149,39 @@ export class HistoryView extends ItemView {
         new Notice(ok ? `Restoring "${name}"…` : "Couldn't restore this file.");
         if (ok) setTimeout(() => this.render(), 1200);
         else restore.disabled = false;
+      };
+    }
+  }
+
+  private renderConflicts(root: HTMLElement): void {
+    const ctx = this.ctx;
+    if (!ctx?.conflictFiles || !ctx.openConflict) return;
+    const conflicts = ctx.conflictFiles();
+    if (conflicts.length === 0) return;
+
+    const section = root.createDiv({ cls: "collab-history-conflicts" });
+    section.createEl("div", { text: `Conflict copies (${conflicts.length})`, cls: "collab-history-subtitle" });
+    for (const c of conflicts) {
+      const row = section.createDiv({ cls: "collab-history-row" });
+      row.title = conflictTitle(c);
+      const main = row.createDiv({ cls: "collab-history-main" });
+      const name = c.relPath.split("/").pop() || c.relPath;
+      main.createSpan({ text: name, cls: "collab-history-when" });
+      const meta = [
+        conflictKindLabel(c.kind),
+        `for ${c.originalPath}`,
+        c.createdAt ? relTime(new Date(c.createdAt).toISOString()) : "",
+      ].filter(Boolean).join(" · ");
+      if (meta) main.createSpan({ text: " · " + meta, cls: "collab-history-author" });
+      const hashes = [shortHash(c.localHash), shortHash(c.remoteHash)].filter(Boolean);
+      if (hashes.length) main.createEl("div", { text: hashes.join(" vs "), cls: "collab-history-detail" });
+      const open = row.createEl("button", { cls: "collab-comment-btn" });
+      setIcon(open, "file-search"); open.appendText(" Open");
+      open.onclick = async (e) => {
+        e.stopPropagation();
+        open.disabled = true;
+        const ok = await ctx.openConflict!(c.relPath);
+        if (!ok) open.disabled = false;
       };
     }
   }
@@ -256,6 +295,25 @@ export class HistoryView extends ItemView {
       }
     }
   }
+}
+
+function conflictKindLabel(kind: ConflictFile["kind"]): string {
+  return kind === "delete" ? "Delete conflict" : "Attachment conflict";
+}
+
+function conflictTitle(c: ConflictFile): string {
+  const parts = [
+    conflictKindLabel(c.kind),
+    `copy: ${c.relPath}`,
+    `original: ${c.originalPath}`,
+    c.reason ? `reason: ${c.reason}` : "",
+    c.by ? `kept by: ${c.by}` : "",
+  ].filter(Boolean);
+  return parts.join("\n");
+}
+
+function shortHash(hash: string | undefined): string {
+  return hash ? hash.slice(0, 10) : "";
 }
 
 function relTime(iso: string): string {

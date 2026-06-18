@@ -13,11 +13,13 @@ import {
   isRecoverableTombstone,
   isSyncablePath,
   isSyncableTextPath,
+  conflictFileFromManifest,
   liveManifestEntry,
   manifestMutationFields,
   safeRelPath,
   shouldPublishLocalOnStartup,
   tombstoneLocalDecision,
+  type ConflictFile,
 } from "../utils/manifestLogic";
 import { colorFor, MANIFEST_SCHEMA_VERSION } from "../types";
 import type { CollabPluginSettings, ConnectedUser, SyncStatus, Share, ManifestEntry } from "../types";
@@ -574,7 +576,7 @@ export class SyncManager {
     }
 
     if (file instanceof TFile && localDecision === "conflict-copy") {
-      const conflictRel = await this.createDeleteConflictCopy(safeRel, file, provider, isBinary);
+      const conflictRel = await this.createDeleteConflictCopy(safeRel, file, provider, isBinary, entry);
       trace("manifest", "tombstone-conflict-copy", {
         shareId: this.histShareId,
         relPath: safeRel,
@@ -630,7 +632,8 @@ export class SyncManager {
     safeRel: string,
     file: TFile,
     provider: FileProvider | undefined,
-    isBinary: boolean
+    isBinary: boolean,
+    tombstoneEntry: ManifestEntry
   ): Promise<string | null> {
     const conflictRel = this.nextDeleteConflictRelPath(safeRel);
     if (!conflictRel) return null;
@@ -640,10 +643,20 @@ export class SyncManager {
     if (dir) await this.ensureFolder(dir);
 
     try {
+      const conflictMeta: Partial<ManifestEntry> = {
+        conflictOf: safeRel,
+        conflictKind: "delete",
+        conflictReason: tombstoneEntry.renamedTo ? "rename-tombstone" : "remote-delete",
+        conflictBy: this.settings.displayName,
+        conflictSourceMutationId: tombstoneEntry.mutationId,
+        conflictRemoteUpdatedAt: tombstoneEntry.deletedAt || tombstoneEntry.lastModified || 0,
+        conflictLocalModifiedAt: file.stat.mtime,
+        conflictRemoteHash: tombstoneEntry.blobHash,
+      };
       if (isBinary) {
         const data = await this.app.vault.readBinary(file);
         await this.app.vault.createBinary(conflictFullPath, data);
-        await this.publishBinaryFile(conflictRel, conflictFullPath, undefined, "delete-conflict");
+        await this.publishBinaryFile(conflictRel, conflictFullPath, undefined, "delete-conflict", conflictMeta);
       } else {
         const content = provider ? provider.getText() : await this.app.vault.read(file);
         await this.app.vault.create(conflictFullPath, content);
@@ -653,6 +666,8 @@ export class SyncManager {
         this.manifestMap?.set(conflictRel, liveManifestEntry(undefined, conflictRel, fileId, this.settings.displayName, {
           ...mutation,
           resurrectedBy: this.settings.displayName,
+          ...conflictMeta,
+          conflictCreatedAt: mutation.mutationAt,
         }));
         await this.createFileProvider(conflictRel, conflictFullPath);
       }
@@ -689,14 +704,28 @@ export class SyncManager {
     if (dir) await this.ensureFolder(dir);
 
     try {
+      const remoteUpdatedAt = remoteEntry?.blobUpdatedAt || remoteEntry?.lastModified || 0;
+      const localHash = await sha256Hex(data);
+      const conflictMeta: Partial<ManifestEntry> = {
+        conflictOf: safeRel,
+        conflictKind: "binary-update",
+        conflictReason: reason,
+        conflictBy: this.settings.displayName,
+        conflictSourceMutationId: remoteEntry?.mutationId,
+        conflictRemoteUpdatedAt: remoteUpdatedAt,
+        conflictLocalModifiedAt: file.stat.mtime,
+        conflictRemoteHash: remoteEntry?.blobHash,
+        conflictLocalHash: localHash,
+      };
       await this.app.vault.createBinary(conflictFullPath, data.slice(0));
-      await this.publishBinaryFile(conflictRel, conflictFullPath, undefined, `binary-conflict-${reason}`);
+      await this.publishBinaryFile(conflictRel, conflictFullPath, undefined, `binary-conflict-${reason}`, conflictMeta);
       trace("blob", "binary-conflict-copy", {
         shareId: this.histShareId,
         relPath: safeRel,
         conflictRel,
         localMtime: file.stat.mtime,
-        remoteUpdatedAt: remoteEntry?.blobUpdatedAt || remoteEntry?.lastModified || 0,
+        remoteUpdatedAt,
+        localHash,
         remoteHash: remoteEntry?.blobHash,
         reason,
       });
@@ -832,7 +861,13 @@ export class SyncManager {
     }
   }
 
-  private async publishBinaryFile(relPath: string, fullPath: string, prev?: ManifestEntry, reason = "local"): Promise<void> {
+  private async publishBinaryFile(
+    relPath: string,
+    fullPath: string,
+    prev?: ManifestEntry,
+    reason = "local",
+    extra: Partial<ManifestEntry> = {}
+  ): Promise<void> {
     if (!this.manifestMap || this.role !== "editor") return;
     const safeRel = this.safeManifestRelPath(relPath, `binary ${reason}`);
     if (!safeRel || !isSyncableBinaryPath(safeRel)) return;
@@ -857,6 +892,13 @@ export class SyncManager {
 
     const fileId = prev?.fileId || this.fileIds.get(safeRel) || newFileId();
     const mutation = this.manifestMutation(`binary-${reason}`);
+    const stampedExtra: Partial<ManifestEntry> = extra.conflictOf
+      ? {
+        ...extra,
+        conflictCreatedAt: extra.conflictCreatedAt || mutation.mutationAt,
+        conflictLocalHash: extra.conflictLocalHash || info.hash,
+      }
+      : extra;
     this.fileIds.set(safeRel, fileId);
     this.manifestMap.set(safeRel, liveManifestEntry(prev, safeRel, fileId, this.settings.displayName, {
       kind: "binary",
@@ -864,6 +906,7 @@ export class SyncManager {
       blobSize: info.size,
       blobUpdatedAt: mutation.mutationAt,
       ...mutation,
+      ...stampedExtra,
     }));
     trace("blob", "published", { shareId: this.histShareId, relPath: safeRel, hash: info.hash, size: info.size, reason });
   }
@@ -1436,6 +1479,31 @@ export class SyncManager {
     });
     out.sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
     return out;
+  }
+
+  /** Live conflict-copy files preserved for manual review. */
+  listConflictFiles(): ConflictFile[] {
+    if (!this.manifestMap) return [];
+    const out: ConflictFile[] = [];
+    this.manifestMap.forEach((entry: ManifestEntry | undefined, relPath: string) => {
+      if (!this.safeManifestRelPath(relPath, "conflict-files list")) return;
+      const conflict = conflictFileFromManifest(relPath, entry);
+      if (conflict) out.push(conflict);
+    });
+    out.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0) || a.relPath.localeCompare(b.relPath));
+    return out;
+  }
+
+  async openSyncedFile(relPath: string): Promise<boolean> {
+    const safeRel = this.safeManifestRelPath(relPath, "open synced file");
+    if (!safeRel) return false;
+    const file = this.app.vault.getAbstractFileByPath(this.toFullPath(safeRel));
+    if (!(file instanceof TFile)) {
+      new Notice("That file is not available locally yet.");
+      return false;
+    }
+    await this.app.workspace.getLeaf(false).openFile(file);
+    return true;
   }
 
   /**

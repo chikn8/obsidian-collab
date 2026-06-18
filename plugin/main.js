@@ -11831,6 +11831,23 @@ function shouldPublishLocalOnStartup(entry) {
 function isRecoverableTombstone(entry) {
   return !!entry && entry.exists === false && !entry.renamedTo;
 }
+function conflictFileFromManifest(relPath, entry) {
+  if (!entry || entry.exists === false || !entry.conflictOf) return null;
+  const kind = entry.conflictKind === "delete" ? "delete" : "binary-update";
+  return {
+    relPath,
+    originalPath: entry.conflictOf,
+    kind,
+    reason: entry.conflictReason,
+    createdAt: entry.conflictCreatedAt,
+    by: entry.conflictBy,
+    sourceMutationId: entry.conflictSourceMutationId,
+    remoteUpdatedAt: entry.conflictRemoteUpdatedAt,
+    localModifiedAt: entry.conflictLocalModifiedAt,
+    remoteHash: entry.conflictRemoteHash,
+    localHash: entry.conflictLocalHash
+  };
+}
 function liveManifestEntry(previous, relPath, fileId, displayName, extra = {}) {
   const {
     deleted,
@@ -12572,7 +12589,7 @@ var SyncManager = class {
       return true;
     }
     if (file instanceof import_obsidian4.TFile && localDecision === "conflict-copy") {
-      const conflictRel = await this.createDeleteConflictCopy(safeRel, file, provider, isBinary);
+      const conflictRel = await this.createDeleteConflictCopy(safeRel, file, provider, isBinary, entry);
       trace("manifest", "tombstone-conflict-copy", {
         shareId: this.histShareId,
         relPath: safeRel,
@@ -12620,7 +12637,7 @@ var SyncManager = class {
     this.fileIds.delete(safeRel);
     return false;
   }
-  async createDeleteConflictCopy(safeRel, file, provider, isBinary) {
+  async createDeleteConflictCopy(safeRel, file, provider, isBinary, tombstoneEntry) {
     var _a2;
     const conflictRel = this.nextDeleteConflictRelPath(safeRel);
     if (!conflictRel) return null;
@@ -12628,10 +12645,20 @@ var SyncManager = class {
     const dir = conflictFullPath.substring(0, conflictFullPath.lastIndexOf("/"));
     if (dir) await this.ensureFolder(dir);
     try {
+      const conflictMeta = {
+        conflictOf: safeRel,
+        conflictKind: "delete",
+        conflictReason: tombstoneEntry.renamedTo ? "rename-tombstone" : "remote-delete",
+        conflictBy: this.settings.displayName,
+        conflictSourceMutationId: tombstoneEntry.mutationId,
+        conflictRemoteUpdatedAt: tombstoneEntry.deletedAt || tombstoneEntry.lastModified || 0,
+        conflictLocalModifiedAt: file.stat.mtime,
+        conflictRemoteHash: tombstoneEntry.blobHash
+      };
       if (isBinary) {
         const data = await this.app.vault.readBinary(file);
         await this.app.vault.createBinary(conflictFullPath, data);
-        await this.publishBinaryFile(conflictRel, conflictFullPath, void 0, "delete-conflict");
+        await this.publishBinaryFile(conflictRel, conflictFullPath, void 0, "delete-conflict", conflictMeta);
       } else {
         const content = provider ? provider.getText() : await this.app.vault.read(file);
         await this.app.vault.create(conflictFullPath, content);
@@ -12640,7 +12667,9 @@ var SyncManager = class {
         this.fileIds.set(conflictRel, fileId);
         (_a2 = this.manifestMap) == null ? void 0 : _a2.set(conflictRel, liveManifestEntry(void 0, conflictRel, fileId, this.settings.displayName, {
           ...mutation,
-          resurrectedBy: this.settings.displayName
+          resurrectedBy: this.settings.displayName,
+          ...conflictMeta,
+          conflictCreatedAt: mutation.mutationAt
         }));
         await this.createFileProvider(conflictRel, conflictFullPath);
       }
@@ -12667,14 +12696,28 @@ var SyncManager = class {
     const dir = conflictFullPath.substring(0, conflictFullPath.lastIndexOf("/"));
     if (dir) await this.ensureFolder(dir);
     try {
+      const remoteUpdatedAt = (remoteEntry == null ? void 0 : remoteEntry.blobUpdatedAt) || (remoteEntry == null ? void 0 : remoteEntry.lastModified) || 0;
+      const localHash = await sha256Hex(data);
+      const conflictMeta = {
+        conflictOf: safeRel,
+        conflictKind: "binary-update",
+        conflictReason: reason,
+        conflictBy: this.settings.displayName,
+        conflictSourceMutationId: remoteEntry == null ? void 0 : remoteEntry.mutationId,
+        conflictRemoteUpdatedAt: remoteUpdatedAt,
+        conflictLocalModifiedAt: file.stat.mtime,
+        conflictRemoteHash: remoteEntry == null ? void 0 : remoteEntry.blobHash,
+        conflictLocalHash: localHash
+      };
       await this.app.vault.createBinary(conflictFullPath, data.slice(0));
-      await this.publishBinaryFile(conflictRel, conflictFullPath, void 0, `binary-conflict-${reason}`);
+      await this.publishBinaryFile(conflictRel, conflictFullPath, void 0, `binary-conflict-${reason}`, conflictMeta);
       trace("blob", "binary-conflict-copy", {
         shareId: this.histShareId,
         relPath: safeRel,
         conflictRel,
         localMtime: file.stat.mtime,
-        remoteUpdatedAt: (remoteEntry == null ? void 0 : remoteEntry.blobUpdatedAt) || (remoteEntry == null ? void 0 : remoteEntry.lastModified) || 0,
+        remoteUpdatedAt,
+        localHash,
         remoteHash: remoteEntry == null ? void 0 : remoteEntry.blobHash,
         reason
       });
@@ -12798,7 +12841,7 @@ var SyncManager = class {
       return null;
     }
   }
-  async publishBinaryFile(relPath, fullPath, prev, reason = "local") {
+  async publishBinaryFile(relPath, fullPath, prev, reason = "local", extra = {}) {
     if (!this.manifestMap || this.role !== "editor") return;
     const safeRel = this.safeManifestRelPath(relPath, `binary ${reason}`);
     if (!safeRel || !isSyncableBinaryPath(safeRel)) return;
@@ -12821,13 +12864,19 @@ var SyncManager = class {
     }
     const fileId = (prev == null ? void 0 : prev.fileId) || this.fileIds.get(safeRel) || newFileId();
     const mutation = this.manifestMutation(`binary-${reason}`);
+    const stampedExtra = extra.conflictOf ? {
+      ...extra,
+      conflictCreatedAt: extra.conflictCreatedAt || mutation.mutationAt,
+      conflictLocalHash: extra.conflictLocalHash || info.hash
+    } : extra;
     this.fileIds.set(safeRel, fileId);
     this.manifestMap.set(safeRel, liveManifestEntry(prev, safeRel, fileId, this.settings.displayName, {
       kind: "binary",
       blobHash: info.hash,
       blobSize: info.size,
       blobUpdatedAt: mutation.mutationAt,
-      ...mutation
+      ...mutation,
+      ...stampedExtra
     }));
     trace("blob", "published", { shareId: this.histShareId, relPath: safeRel, hash: info.hash, size: info.size, reason });
   }
@@ -13376,6 +13425,29 @@ var SyncManager = class {
     });
     out.sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
     return out;
+  }
+  /** Live conflict-copy files preserved for manual review. */
+  listConflictFiles() {
+    if (!this.manifestMap) return [];
+    const out = [];
+    this.manifestMap.forEach((entry, relPath) => {
+      if (!this.safeManifestRelPath(relPath, "conflict-files list")) return;
+      const conflict = conflictFileFromManifest(relPath, entry);
+      if (conflict) out.push(conflict);
+    });
+    out.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0) || a.relPath.localeCompare(b.relPath));
+    return out;
+  }
+  async openSyncedFile(relPath) {
+    const safeRel = this.safeManifestRelPath(relPath, "open synced file");
+    if (!safeRel) return false;
+    const file = this.app.vault.getAbstractFileByPath(this.toFullPath(safeRel));
+    if (!(file instanceof import_obsidian4.TFile)) {
+      new import_obsidian4.Notice("That file is not available locally yet.");
+      return false;
+    }
+    await this.app.workspace.getLeaf(false).openFile(file);
+    return true;
   }
   /**
    * Un-delete a tombstoned file. Flipping the manifest entry to exists:true makes
@@ -15797,6 +15869,7 @@ var HistoryView = class extends import_obsidian10.ItemView {
       return;
     }
     this.renderDeleted(root);
+    this.renderConflicts(root);
     const listEl = root.createDiv({ cls: "collab-history-list" });
     listEl.createEl("p", { text: "Loading\u2026", cls: "collab-comments-empty" });
     let versions = [];
@@ -15891,6 +15964,38 @@ var HistoryView = class extends import_obsidian10.ItemView {
         new import_obsidian10.Notice(ok ? `Restoring "${name}"\u2026` : "Couldn't restore this file.");
         if (ok) setTimeout(() => this.render(), 1200);
         else restore.disabled = false;
+      };
+    }
+  }
+  renderConflicts(root) {
+    const ctx = this.ctx;
+    if (!(ctx == null ? void 0 : ctx.conflictFiles) || !ctx.openConflict) return;
+    const conflicts = ctx.conflictFiles();
+    if (conflicts.length === 0) return;
+    const section = root.createDiv({ cls: "collab-history-conflicts" });
+    section.createEl("div", { text: `Conflict copies (${conflicts.length})`, cls: "collab-history-subtitle" });
+    for (const c of conflicts) {
+      const row = section.createDiv({ cls: "collab-history-row" });
+      row.title = conflictTitle(c);
+      const main = row.createDiv({ cls: "collab-history-main" });
+      const name = c.relPath.split("/").pop() || c.relPath;
+      main.createSpan({ text: name, cls: "collab-history-when" });
+      const meta = [
+        conflictKindLabel(c.kind),
+        `for ${c.originalPath}`,
+        c.createdAt ? relTime(new Date(c.createdAt).toISOString()) : ""
+      ].filter(Boolean).join(" \xB7 ");
+      if (meta) main.createSpan({ text: " \xB7 " + meta, cls: "collab-history-author" });
+      const hashes = [shortHash(c.localHash), shortHash(c.remoteHash)].filter(Boolean);
+      if (hashes.length) main.createEl("div", { text: hashes.join(" vs "), cls: "collab-history-detail" });
+      const open = row.createEl("button", { cls: "collab-comment-btn" });
+      (0, import_obsidian10.setIcon)(open, "file-search");
+      open.appendText(" Open");
+      open.onclick = async (e) => {
+        e.stopPropagation();
+        open.disabled = true;
+        const ok = await ctx.openConflict(c.relPath);
+        if (!ok) open.disabled = false;
       };
     }
   }
@@ -15995,6 +16100,22 @@ var HistoryView = class extends import_obsidian10.ItemView {
     }
   }
 };
+function conflictKindLabel(kind) {
+  return kind === "delete" ? "Delete conflict" : "Attachment conflict";
+}
+function conflictTitle(c) {
+  const parts = [
+    conflictKindLabel(c.kind),
+    `copy: ${c.relPath}`,
+    `original: ${c.originalPath}`,
+    c.reason ? `reason: ${c.reason}` : "",
+    c.by ? `kept by: ${c.by}` : ""
+  ].filter(Boolean);
+  return parts.join("\n");
+}
+function shortHash(hash2) {
+  return hash2 ? hash2.slice(0, 10) : "";
+}
 function relTime(iso) {
   const t = Date.parse(iso);
   if (isNaN(t)) return iso;
@@ -16662,7 +16783,9 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
         return ((_b2 = (_a3 = m.getFileProvider(file.path)) == null ? void 0 : _a3.getYText()) == null ? void 0 : _b2.toString()) || "";
       },
       deletedFiles: () => m.listDeletedFiles(),
-      restoreDeleted: (relPath2) => m.restoreDeletedFile(relPath2)
+      restoreDeleted: (relPath2) => m.restoreDeletedFile(relPath2),
+      conflictFiles: () => m.listConflictFiles(),
+      openConflict: (relPath2) => m.openSyncedFile(relPath2)
     };
   }
   async addCommentForSelection(file, info) {

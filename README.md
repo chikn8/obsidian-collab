@@ -58,6 +58,8 @@ These are the properties the system is engineered to hold, and how:
   base when you reconnect; a snapshot is taken before any divergent reconcile.
 - **Deletes are recoverable.** Deletes are **tombstones** (the manifest entry is retained, not hard
   deleted) + a local `trash/` copy + server git history. One-click restore from the history panel.
+- **Conflict copies are reviewable.** Delete-vs-edit and attachment skew cases keep a visible sibling
+  file and stamp the manifest so the history panel can show what original path it came from.
 - **Renames preserve everything.** A rename transfers the file's full Yjs doc (text + comments +
   anchors) and stable identity (`fileId`) into the new room — not a delete+create. Synced Markdown
   notes also repair `[[wikilinks]]` and embeds that pointed at the old path.
@@ -108,7 +110,7 @@ races. Your own devices are just "more clients on the share" — the plugin alre
 - **Binary attachments** (images, PDFs, audio/video) are uploaded as content-addressed blobs and referenced
   from the manifest by SHA-256 hash. They are not merged like text; clearly newer local attachments are
   re-published, and same-time clock-skew cases create a visible sibling conflict copy before the original
-  path is updated to the remote blob.
+  path is updated to the remote blob. The history panel lists these conflict copies for review.
 - **Per-share manifest** is a `Y.Map("files")` keyed by relative path, tracking the file tree as
   schema-v2 entries (`fileId`, `exists`, tombstone fields, additive `mutation*` provenance). `SyncManager`
   owns it and the per-file providers.
@@ -232,6 +234,8 @@ See `server/.env.example` for a copy-paste template, and `server/RECOVERY.md` fo
   history*. Preview and restore any snapshot (a pre-restore backup is saved).
 - **Recover a deleted file:** the version-history panel has a **Deleted files** section — one-click
   restore.
+- **Review conflict copies:** the version-history panel has a **Conflict copies** section with Open
+  actions for preserved delete/edit and attachment conflicts.
 
 ## Building & testing
 

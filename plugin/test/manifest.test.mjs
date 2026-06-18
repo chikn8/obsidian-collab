@@ -7,6 +7,7 @@
  */
 import * as Y from "yjs";
 import {
+  conflictFileFromManifest,
   isRecoverableTombstone,
   liveManifestEntry,
   manifestMutationFields,
@@ -230,7 +231,34 @@ console.log("Recoverable tombstone filter");
     isRecoverableTombstone({ exists: true, lastModified: 1 }) === false);
 }
 
-// ── 8. Manifest relpaths are validated before touching the vault ───────────────
+// ── 8. Conflict-copy manifest metadata powers the review list ────────────────
+console.log("Conflict-copy manifest metadata");
+{
+  const entry = liveManifestEntry(undefined, "assets/photo (binary conflict 2026).png", "id-conflict", "Me", {
+    kind: "binary",
+    conflictOf: "assets/photo.png",
+    conflictKind: "binary-update",
+    conflictReason: "live",
+    conflictCreatedAt: 123,
+    conflictBy: "Me",
+    conflictRemoteUpdatedAt: 100,
+    conflictLocalModifiedAt: 101,
+    conflictRemoteHash: "remote-hash",
+    conflictLocalHash: "local-hash",
+  });
+  const conflict = conflictFileFromManifest("assets/photo (binary conflict 2026).png", entry);
+  check("live conflict entry is listed",
+    conflict?.relPath === "assets/photo (binary conflict 2026).png" &&
+    conflict?.originalPath === "assets/photo.png" &&
+    conflict?.kind === "binary-update" &&
+    conflict?.localHash === "local-hash");
+  check("plain live entry is not listed",
+    conflictFileFromManifest("note.md", { exists: true, lastModified: 1 }) === null);
+  check("tombstoned conflict entry is not listed",
+    conflictFileFromManifest("old.md", { ...entry, exists: false, deleted: true }) === null);
+}
+
+// ── 9. Manifest relpaths are validated before touching the vault ───────────────
 console.log("Safe manifest paths");
 {
   check("accepts nested markdown path",

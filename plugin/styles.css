@@ -324,9 +324,13 @@
 .collab-history-when { font-weight: 600; }
 .collab-history-author { color: var(--text-muted); }
 .collab-history-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
-.collab-history-deleted { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--background-modifier-border); }
+.collab-history-deleted,
+.collab-history-conflicts { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--background-modifier-border); }
 .collab-history-subtitle { font-weight: 600; font-size: 0.85em; color: var(--text-muted); margin-bottom: 4px; }
-.collab-history-deleted .collab-history-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: default; }
+.collab-history-deleted .collab-history-row,
+.collab-history-conflicts .collab-history-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: default; }
+.collab-history-main { min-width: 0; }
+.collab-history-detail { color: var(--text-faint); font-size: 0.85em; overflow-wrap: anywhere; }
 .collab-history-preview { margin-top: 10px; border-top: 1px solid var(--background-modifier-border); padding-top: 6px; }
 .collab-history-hunks { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
 .collab-history-preview pre {

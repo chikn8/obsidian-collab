@@ -764,6 +764,8 @@ export default class CollabPlugin extends Plugin {
       currentText: () => m.getFileProvider(file.path)?.getYText()?.toString() || "",
       deletedFiles: () => m.listDeletedFiles(),
       restoreDeleted: (relPath: string) => m.restoreDeletedFile(relPath),
+      conflictFiles: () => m.listConflictFiles(),
+      openConflict: (relPath: string) => m.openSyncedFile(relPath),
     };
   }
 

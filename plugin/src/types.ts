@@ -71,6 +71,17 @@ export interface ManifestEntry {
   blobHash?: string;
   blobSize?: number;
   blobUpdatedAt?: number;
+  /** Structured marker for visible conflict copies preserved for manual review. */
+  conflictOf?: string;
+  conflictKind?: "delete" | "binary-update";
+  conflictReason?: string;
+  conflictCreatedAt?: number;
+  conflictBy?: string;
+  conflictSourceMutationId?: string;
+  conflictRemoteUpdatedAt?: number;
+  conflictLocalModifiedAt?: number;
+  conflictRemoteHash?: string;
+  conflictLocalHash?: string;
   /** Durable provenance for the manifest operation that last changed this lifecycle entry. */
   mutationId?: string;
   mutationAction?: string;

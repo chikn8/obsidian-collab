@@ -27,7 +27,7 @@ durability checks + 503 + `OPS_NTFY_TOPIC` alerts · atomic state writes + fail-
 corrupt-`.yjs` survival · `git gc` · refuse-to-start on weak secrets (`REQUIRE_AUTH`, `ADMIN_SECRET`,
 `MIN_SECRET_LENGTH`) · `debugLogging` default false · CI workflow.
 **Tier 1**: WS abuse caps (`WS_MAX_PAYLOAD`, per-connection rate limit, `bufferedAmount` backpressure) ·
-notify hardening (per-share registry, connection-derived sender, viewer gate, dropped `Click`) · folder
+notify hardening (per-share registry, connection-derived sender, viewer gate, safe server-derived `Click`) · folder
 move/rename/delete handling · `stampEdit` moved to a separate `edits` map (no delete-clobber) ·
 createFileProvider in-flight reservation · comment-anchor quote-verify + re-match (no mis-highlight).
 **Tier 2**: real-`FileProvider` integration test (fake vault/IDB/WS via esbuild alias) wired into CI ·
@@ -204,7 +204,8 @@ conn's own identity; **namespace the registry per shareId**; gate NOTIFY/TOPIC_R
 editor/commenter; rate-limit per-connection/IP (not per client-controlled `fromUid`). Whitelist the `Click`
 scheme/host (or drop `Click`); strip control chars.
 **Verify.** A client cannot register a topic under another uid; a forged Click with a non-whitelisted scheme
-is stripped; cross-share mention delivery is blocked.
+is stripped; safe note paths get server-derived `obsidian://open` links; cross-share mention delivery is
+blocked.
 
 ### 1.4 — `stampEdit` LWW clobbering a concurrent delete/rename (MEDIUM, M)
 **Problem.** `stampEdit` (`SyncManager.ts:122-123`) reads `cur` outside a transaction then sets the **whole**
@@ -348,9 +349,12 @@ diff loaded.
 **Remaining.** A full editor-grade compare view would still be nicer for very large files, but the main
 diff workflow is covered in the sidebar.
 
-### 4.3 — @mention autocomplete + working deep-link (M)
-CM6 `EditorSuggest` from the share roster; the push's tap opens the file. Today mentions need exact
-display-name spelling and tap nowhere.
+### 4.3 — @mention autocomplete + working deep-link (implemented foundation)
+**Status.** Comment inputs offer `@` autocomplete from the share roster, quoted full-name mentions are
+parsed reliably, and mention pushes include a server-derived `obsidian://open?path=...` click target for
+sanitized Markdown/Canvas paths.
+**Remaining.** A richer CM6 editor suggest could be added later if comments move into the editor surface;
+the current sidebar and add-comment modal paths are covered.
 
 ### 4.4 — Comment notifications beyond @mention + unread inbox (M)
 Notify thread author on reply/resolve; a cross-file unread-comment inbox. Async review is currently broken

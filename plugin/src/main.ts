@@ -15,6 +15,7 @@ import { promptModal } from "./ui/modals";
 import { configureDiagnostics, exportDiagnosticBundle, log, err, setDiagnosticLogging, startDiagnosticTrace, trace } from "./utils/log";
 import { getJson, postJson } from "./utils/http";
 import { ensureIdentityKeys } from "./utils/identity";
+import { findMentionedUsers } from "./utils/mentions";
 import {
   encodeShareCode,
   decodeShareCode,
@@ -418,7 +419,8 @@ export default class CollabPlugin extends Plugin {
         fileName,
         me: { uid: this.settings.uid, name: this.settings.displayName },
         now: () => Date.now(),
-        notifyFromText: (text) => this.notifyMentionsInText(text, fileName),
+        mentionUsers: () => this.managerOwning(this.boundPath || "")?.roster() ?? [],
+        notifyFromText: (text) => this.notifyMentionsInText(text, fileName, this.boundPath || ""),
       });
     } else {
       view.setContext(null);
@@ -436,20 +438,13 @@ export default class CollabPlugin extends Plugin {
   }
 
   /** Detect "@Name" mentions of collaborators in `text` and push them a notification. */
-  private notifyMentionsInText(text: string, fileName: string): void {
+  private notifyMentionsInText(text: string, fileName: string, filePath: string): void {
     if (!text.includes("@") || !this.boundPath) return;
     const m = this.managerOwning(this.boundPath);
     if (!m) return;
-    const roster = m.roster();
-    const seen = new Set<string>();
-    for (const c of roster) {
-      // match @Name or @"Full Name" (case-insensitive, word-ish boundary)
-      const re = new RegExp(`@"?${escapeRegExp(c.name)}"?`, "i");
-      if (re.test(text) && !seen.has(c.uid)) {
-        seen.add(c.uid);
-        m.sendMention(c.uid, `${this.settings.displayName} mentioned you in ${fileName}`, text.slice(0, 300));
-        log("mention", "notified", c.name, c.uid);
-      }
+    for (const c of findMentionedUsers(text, m.roster())) {
+      m.sendMention(c.uid, `${this.settings.displayName} mentioned you in ${fileName}`, text.slice(0, 300), filePath);
+      log("mention", "notified", c.name, c.uid);
     }
   }
 
@@ -541,7 +536,12 @@ export default class CollabPlugin extends Plugin {
     const res = await promptModal(this.app, {
       title: "Add comment",
       cta: "Comment",
-      fields: [{ key: "text", label: `On “${quote.slice(0, 40)}${quote.length > 40 ? "…" : ""}”`, placeholder: "Your comment…" }],
+      fields: [{
+        key: "text",
+        label: `On “${quote.slice(0, 40)}${quote.length > 40 ? "…" : ""}”`,
+        placeholder: "Your comment…",
+        mentionUsers: this.managerOwning(file.path)?.roster() ?? [],
+      }],
     });
     if (!res || !res.text.trim()) return;
 
@@ -553,7 +553,7 @@ export default class CollabPlugin extends Plugin {
       text: res.text.trim(),
       at: Date.now(),
     });
-    this.notifyMentionsInText(res.text.trim(), file.name);
+    this.notifyMentionsInText(res.text.trim(), file.name, file.path);
     await this.openCommentsPanel();
   }
 
@@ -983,10 +983,6 @@ export default class CollabPlugin extends Plugin {
     await this.persist();
     if (restart) this.debouncedRestart();
   }
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function bearerHeaders(token: string): Record<string, string> {

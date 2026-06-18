@@ -10240,7 +10240,7 @@ var iterateOnRequest = (request, f) => create4((resolve, reject) => {
 var iterateKeys = (store, keyrange, f, direction = "next") => iterateOnRequest(store.openKeyCursor(keyrange, direction), (cursor) => f(cursor.key));
 var getStore = (t, store) => t.objectStore(store);
 var createIDBKeyRangeUpperBound = (upper, upperOpen) => IDBKeyRange.upperBound(upper, upperOpen);
-var createIDBKeyRangeLowerBound = (lower, lowerOpen) => IDBKeyRange.lowerBound(lower, lowerOpen);
+var createIDBKeyRangeLowerBound = (lower2, lowerOpen) => IDBKeyRange.lowerBound(lower2, lowerOpen);
 
 // node_modules/y-indexeddb/src/y-indexeddb.js
 var customStoreName = "custom";
@@ -11858,14 +11858,14 @@ var SyncManager = class {
     this.debouncedPresence();
   }
   /** Send an @mention push frame (server fans out to the target's ntfy topic). */
-  sendMention(toUid, title, body, click) {
+  sendMention(toUid, title, body, filePath) {
     sendFrame(this.manifestProvider, MSG_NOTIFY, {
       fromUid: this.settings.uid,
       fromName: this.settings.displayName,
       toUid,
       title,
       body,
-      click
+      filePath
     });
   }
   /** Iterate live file providers (for reconnect / presence). */
@@ -13052,6 +13052,142 @@ var import_obsidian7 = require("obsidian");
 
 // src/ui/modals.ts
 var import_obsidian6 = require("obsidian");
+
+// src/utils/mentions.ts
+function normalizeName(name) {
+  return name.trim().replace(/\s+/g, " ");
+}
+function lower(name) {
+  return normalizeName(name).toLocaleLowerCase();
+}
+function findMentionedUsers(text2, users) {
+  if (!text2.includes("@")) return [];
+  const found = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const user of users) {
+    const name = normalizeName(user.name);
+    if (!name || seen.has(user.uid)) continue;
+    const quoted = text2.toLocaleLowerCase().includes(`@"${name.toLocaleLowerCase()}"`);
+    const bare = !/\s/.test(name) && new RegExp(`(^|[^A-Za-z0-9_-])@${escapeRegExp(name)}(?=$|[^A-Za-z0-9_-])`, "i").test(text2);
+    if (quoted || bare) {
+      seen.add(user.uid);
+      found.push(user);
+    }
+  }
+  return found;
+}
+function mentionTokenAt(text2, cursor) {
+  var _a2, _b2, _c;
+  const before = text2.slice(0, cursor);
+  const quoted = /@"([^"\n]*)$/.exec(before);
+  if ((quoted == null ? void 0 : quoted.index) !== void 0) {
+    return { from: quoted.index, to: cursor, query: quoted[1], quoted: true };
+  }
+  const bare = /(^|[\s([{:])@([^\s@"'`,.;:!?()[\]{}<>]*)$/.exec(before);
+  if (!bare) return null;
+  const prefixLen = (_b2 = (_a2 = bare[1]) == null ? void 0 : _a2.length) != null ? _b2 : 0;
+  return { from: bare.index + prefixLen, to: cursor, query: (_c = bare[2]) != null ? _c : "", quoted: false };
+}
+function matchingMentionUsers(users, query, limit = 6) {
+  const q = lower(query);
+  const seen = /* @__PURE__ */ new Set();
+  const matches = [];
+  for (const user of users) {
+    const name = normalizeName(user.name);
+    if (!name || seen.has(user.uid)) continue;
+    if (!q || lower(name).includes(q)) {
+      seen.add(user.uid);
+      matches.push({ ...user, name });
+    }
+    if (matches.length >= limit) break;
+  }
+  return matches;
+}
+function mentionTextFor(user) {
+  const name = normalizeName(user.name);
+  return /\s/.test(name) ? `@"${name}" ` : `@${name} `;
+}
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// src/ui/mentionInput.ts
+function wireMentionAutocomplete(host, input, usersProvider) {
+  const menu = host.createDiv({ cls: "collab-mention-menu" });
+  let active = 0;
+  let visible = false;
+  const close = () => {
+    visible = false;
+    menu.empty();
+    menu.removeClass("is-open");
+  };
+  const currentUsers = () => {
+    var _a2, _b2, _c;
+    return matchingMentionUsers(usersProvider(), (_c = (_b2 = mentionTokenAt(input.value, (_a2 = input.selectionStart) != null ? _a2 : input.value.length)) == null ? void 0 : _b2.query) != null ? _c : "");
+  };
+  const insert = (user) => {
+    var _a2;
+    const token = mentionTokenAt(input.value, (_a2 = input.selectionStart) != null ? _a2 : input.value.length);
+    if (!token) return;
+    const mention = mentionTextFor(user);
+    input.value = input.value.slice(0, token.from) + mention + input.value.slice(token.to);
+    const pos = token.from + mention.length;
+    input.setSelectionRange(pos, pos);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    close();
+  };
+  const render = () => {
+    var _a2;
+    const token = mentionTokenAt(input.value, (_a2 = input.selectionStart) != null ? _a2 : input.value.length);
+    const users = token ? matchingMentionUsers(usersProvider(), token.query) : [];
+    menu.empty();
+    if (!token || users.length === 0) {
+      close();
+      return;
+    }
+    visible = true;
+    active = Math.min(active, users.length - 1);
+    menu.addClass("is-open");
+    users.forEach((user, index) => {
+      const item = menu.createEl("button", { type: "button", cls: "collab-mention-item" + (index === active ? " active" : "") });
+      item.createSpan({ text: user.name, cls: "collab-mention-name" });
+      item.onclick = (e) => {
+        e.preventDefault();
+        insert(user);
+        input.focus();
+      };
+    });
+  };
+  input.addEventListener("input", () => {
+    active = 0;
+    render();
+  });
+  input.addEventListener("click", render);
+  input.addEventListener("blur", () => setTimeout(close, 120));
+  input.addEventListener("keydown", (e) => {
+    if (!visible) return;
+    const users = currentUsers();
+    if (users.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      active = (active + 1) % users.length;
+      render();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      active = (active - 1 + users.length) % users.length;
+      render();
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      insert(users[active]);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    }
+  });
+}
+
+// src/ui/modals.ts
 function promptModal(app, opts) {
   return new Promise((resolve) => {
     var _a2;
@@ -13060,12 +13196,18 @@ function promptModal(app, opts) {
     const values = {};
     for (const f of opts.fields) values[f.key] = (_a2 = f.value) != null ? _a2 : "";
     for (const f of opts.fields) {
-      new import_obsidian6.Setting(modal.contentEl).setName(f.label).addText((t) => {
+      const setting = new import_obsidian6.Setting(modal.contentEl);
+      setting.setName(f.label).addText((t) => {
         var _a3;
         t.setPlaceholder((_a3 = f.placeholder) != null ? _a3 : "").setValue(values[f.key]);
         t.onChange((v) => values[f.key] = v);
         t.inputEl.style.width = "100%";
+        if (f.mentionUsers) wireMentionAutocomplete(setting.settingEl, t.inputEl, () => {
+          var _a4;
+          return (_a4 = f.mentionUsers) != null ? _a4 : [];
+        });
       });
+      if (f.mentionUsers) setting.settingEl.addClass("collab-mention-host");
     }
     let submitted = false;
     new import_obsidian6.Setting(modal.contentEl).addButton(
@@ -14448,6 +14590,10 @@ var CommentsView = class extends import_obsidian8.ItemView {
     }
     const actions = card.createDiv({ cls: "collab-comment-actions" });
     const replyInput = actions.createEl("input", { type: "text", placeholder: "Reply\u2026 (@name to notify)", cls: "collab-comment-input" });
+    wireMentionAutocomplete(actions, replyInput, () => {
+      var _a3, _b3;
+      return (_b3 = (_a3 = this.ctx) == null ? void 0 : _a3.mentionUsers()) != null ? _b3 : [];
+    });
     const send = () => {
       const text2 = replyInput.value.trim();
       if (!text2) return;
@@ -15352,7 +15498,11 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
         fileName,
         me: { uid: this.settings.uid, name: this.settings.displayName },
         now: () => Date.now(),
-        notifyFromText: (text2) => this.notifyMentionsInText(text2, fileName)
+        mentionUsers: () => {
+          var _a2, _b2;
+          return (_b2 = (_a2 = this.managerOwning(this.boundPath || "")) == null ? void 0 : _a2.roster()) != null ? _b2 : [];
+        },
+        notifyFromText: (text2) => this.notifyMentionsInText(text2, fileName, this.boundPath || "")
       });
     } else {
       view.setContext(null);
@@ -15368,19 +15518,13 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     return null;
   }
   /** Detect "@Name" mentions of collaborators in `text` and push them a notification. */
-  notifyMentionsInText(text2, fileName) {
+  notifyMentionsInText(text2, fileName, filePath) {
     if (!text2.includes("@") || !this.boundPath) return;
     const m = this.managerOwning(this.boundPath);
     if (!m) return;
-    const roster = m.roster();
-    const seen = /* @__PURE__ */ new Set();
-    for (const c of roster) {
-      const re = new RegExp(`@"?${escapeRegExp(c.name)}"?`, "i");
-      if (re.test(text2) && !seen.has(c.uid)) {
-        seen.add(c.uid);
-        m.sendMention(c.uid, `${this.settings.displayName} mentioned you in ${fileName}`, text2.slice(0, 300));
-        log("mention", "notified", c.name, c.uid);
-      }
+    for (const c of findMentionedUsers(text2, m.roster())) {
+      m.sendMention(c.uid, `${this.settings.displayName} mentioned you in ${fileName}`, text2.slice(0, 300), filePath);
+      log("mention", "notified", c.name, c.uid);
     }
   }
   // ── Version history wiring ──────────────────────────────────────
@@ -15458,6 +15602,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     };
   }
   async addCommentForSelection(file, info) {
+    var _a2, _b2;
     const m = this.managerOwning(file.path);
     const fp = m == null ? void 0 : m.getFileProvider(file.path);
     if (m && m.role !== "editor") {
@@ -15484,7 +15629,12 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     const res = await promptModal(this.app, {
       title: "Add comment",
       cta: "Comment",
-      fields: [{ key: "text", label: `On \u201C${quote.slice(0, 40)}${quote.length > 40 ? "\u2026" : ""}\u201D`, placeholder: "Your comment\u2026" }]
+      fields: [{
+        key: "text",
+        label: `On \u201C${quote.slice(0, 40)}${quote.length > 40 ? "\u2026" : ""}\u201D`,
+        placeholder: "Your comment\u2026",
+        mentionUsers: (_b2 = (_a2 = this.managerOwning(file.path)) == null ? void 0 : _a2.roster()) != null ? _b2 : []
+      }]
     });
     if (!res || !res.text.trim()) return;
     const store = this.boundPath === file.path && this.boundStore ? this.boundStore : new CommentStore(fp.getDoc());
@@ -15497,7 +15647,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       text: res.text.trim(),
       at: Date.now()
     });
-    this.notifyMentionsInText(res.text.trim(), file.name);
+    this.notifyMentionsInText(res.text.trim(), file.name, file.path);
     await this.openCommentsPanel();
   }
   // ── Share creation / joining ───────────────────────────────────
@@ -15897,9 +16047,6 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     if (restart) this.debouncedRestart();
   }
 };
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 function bearerHeaders(token) {
   return { Authorization: `Bearer ${token}` };
 }

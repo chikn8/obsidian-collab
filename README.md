@@ -281,8 +281,8 @@ manual installs but violates Obsidian's current community-directory naming rule 
 
 The reliability core (loops, lost-content, deletes/renames, offline, folder ops) is implemented and
 test-covered; backend durability and security hardening are largely in place. Remaining work
-(scale/HA, account-grade identity/key rotation, blob GC/object-store polish, side-by-side diff polish, and the human
-device-matrix test) is tracked in **[ROADMAP-v2-hardening.md](ROADMAP-v2-hardening.md)**.
+(scale/HA, account-grade identity/key rotation, object-store polish, and the human device-matrix test) is
+tracked in **[ROADMAP-v2-hardening.md](ROADMAP-v2-hardening.md)**.
 
 **Before trusting it with important notes:** exclude the shared folder from Obsidian Sync, confirm an
 off-box backup is configured, and run one deliberate two-person + mobile break-it session.

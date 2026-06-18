@@ -169,14 +169,14 @@ export class SyncManager {
   }
 
   /** Send an @mention push frame (server fans out to the target's ntfy topic). */
-  sendMention(toUid: string, title: string, body: string, click?: string): void {
+  sendMention(toUid: string, title: string, body: string, filePath?: string): void {
     sendFrame(this.manifestProvider, MSG_NOTIFY, {
       fromUid: this.settings.uid,
       fromName: this.settings.displayName,
       toUid,
       title,
       body,
-      click,
+      filePath,
     });
   }
 

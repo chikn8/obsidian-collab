@@ -1,6 +1,8 @@
 import { ItemView, WorkspaceLeaf, setIcon } from "obsidian";
 import type { CommentStore, ThreadView } from "../collab/CommentStore";
 import type { CommentSession } from "../collab/CommentLayer";
+import type { MentionUser } from "../utils/mentions";
+import { wireMentionAutocomplete } from "./mentionInput";
 
 export const COMMENTS_VIEW_TYPE = "collab-comments";
 
@@ -10,6 +12,7 @@ export interface CommentContext {
   fileName: string;
   me: { uid: string; name: string };
   now: () => number;
+  mentionUsers: () => MentionUser[];
   /** Scan text for @mentions of collaborators and push them a notification. */
   notifyFromText: (text: string) => void;
 }
@@ -101,6 +104,7 @@ export class CommentsView extends ItemView {
     // actions
     const actions = card.createDiv({ cls: "collab-comment-actions" });
     const replyInput = actions.createEl("input", { type: "text", placeholder: "Reply… (@name to notify)", cls: "collab-comment-input" });
+    wireMentionAutocomplete(actions, replyInput, () => this.ctx?.mentionUsers() ?? []);
     const send = () => {
       const text = replyInput.value.trim();
       if (!text) return;

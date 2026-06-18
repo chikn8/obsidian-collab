@@ -167,7 +167,7 @@ legacy `/admin/revoke` raises it and disconnects live revoked clients with close
 - **`backups.ts`** — runs `PERSIST_BACKUP_COMMAND` on an interval for a full-corpus off-box archive.
 - **`notify.ts`** — `@mention` pushes via ntfy. The topic registry is **namespaced per authed share**
   (no cross-share hijack), the sender's share comes from the connection (not the client frame), viewers
-  can't send, and the client-supplied ntfy `Click` is dropped (deep-link injection guard).
+  can't send, and ntfy `Click` links are derived only from sanitized vault-relative Markdown/Canvas paths.
 - **`history.ts` / `index.ts`** — HTTP API: `/health`, `/metrics`, `/history`, `/version`, `/files`,
   `/blob`, `/admin/revoke`, `/share/invite`, `/share/invite/revoke`. Metrics require the metrics bearer token;
   read endpoints require a valid share token, and invite reads require the same signed install identity

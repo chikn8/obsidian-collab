@@ -16269,6 +16269,11 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
         this.eachManager((m) => m.refreshPresenceUi());
       })
     );
+    this.registerDomEvent(document, "visibilitychange", () => {
+      if (document.visibilityState === "hidden") void this.flushActiveEditorForLifecycle("visibility-hidden");
+    });
+    this.registerDomEvent(window, "pagehide", () => void this.flushActiveEditorForLifecycle("pagehide"));
+    this.registerDomEvent(window, "beforeunload", () => void this.flushActiveEditorForLifecycle("beforeunload"));
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
         if (file instanceof import_obsidian11.TFolder) {
@@ -16706,6 +16711,17 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     this.boundSession = null;
     this.boundPresence = null;
     trace("bind", "unbind-done", { oldPath, nextPath, reason });
+  }
+  async flushActiveEditorForLifecycle(reason) {
+    if (!this.boundProvider || !this.boundPath) return;
+    const path = this.boundPath;
+    trace("bind", "lifecycle-flush-start", { path, reason });
+    try {
+      await this.boundProvider.flushToDisk(`lifecycle-${reason}`);
+      trace("bind", "lifecycle-flush-done", { path, reason });
+    } catch (e) {
+      err("bind", "lifecycle flush failed", path, reason, e);
+    }
   }
   /** Detect "@Name" mentions of collaborators in `text` and push them a notification. */
   notifyMentionsInText(text2, fileName, filePath) {

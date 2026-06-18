@@ -78,7 +78,8 @@ Known mobile differences:
   `.nav-file-title` / `.workspace-tab-header` anchors are not present, the in-editor facepile remains the
   reliable presence surface.
 - Background execution is not guaranteed. If the mobile app is suspended, live WebSocket presence and
-  sync resume when Obsidian is foregrounded again.
+  sync resume when Obsidian is foregrounded again. Before hide/page-unload events, the plugin forces the
+  active editor's current Yjs text to disk so the latest bound-editor state is not waiting on a debounce.
 - OS-level push notifications are not provided by Obsidian plugins. The existing ntfy path is external.
 
 The practical mobile test matrix is still human: iOS and Android, one desktop peer, one phone peer,

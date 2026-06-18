@@ -166,6 +166,8 @@ console.log("Editor-bound transactions flush to disk");
   A.fp.getDoc().transact(() => {
     A.fp.getYText().insert(A.fp.getYText().length, "\nwhile-bound");
   }, "test-editor");
+  await A.fp.flushToDisk("lifecycle-visibility-hidden");
+  check("lifecycle flush projects bound editor immediately", A.disk().includes("while-bound"), `disk="${A.disk()}"`);
   await sleep(450);
   check("bound editor transaction projected to disk", A.disk().includes("while-bound"), `disk="${A.disk()}"`);
 

@@ -42,7 +42,7 @@ export async function loadState(
   try {
     const data = await fs.readFile(filePath);
     try {
-      Y.applyUpdate(ydoc, new Uint8Array(data));
+      Y.applyUpdate(ydoc, new Uint8Array(data), "load");
     } catch (e: any) {
       const corruptPath = `${filePath}.corrupt-${Date.now()}`;
       await fs.rename(filePath, corruptPath).catch((renameError) => {

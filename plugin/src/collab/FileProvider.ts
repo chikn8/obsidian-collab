@@ -164,19 +164,14 @@ export class FileProvider {
     const diskContent = initialContent || "";
     const idbContent = this.ytext.toString();
 
-    if (diskContent.length > 0 && idbContent !== diskContent) {
-      if (idbContent.length === 0) {
-        // IDB is empty (first load or cleared) — seed from disk
-        this.ytext.insert(0, diskContent);
-      } else {
-        // Both have content but differ — the disk holds offline edits. Snapshot
-        // the raw disk version FIRST (never-lose), then apply it as a CRDT diff
-        // so nothing is lost even if the subsequent server merge is messy.
-        log("offline", "reconciling offline disk edits", this.filePath,
-          `(base ${idbContent.length} → disk ${diskContent.length} chars)`);
-        await this.saveSnapshot(diskContent).catch((e) => log("offline", "pre-reconcile snapshot failed", e));
-        this.applyDiff(idbContent, diskContent);
-      }
+    if (diskContent.length > 0 && idbContent.length > 0 && idbContent !== diskContent) {
+      // IDB gives us a real CRDT base, so the disk delta is a legitimate offline
+      // edit. If IDB is empty, defer until after server sync; inserting a whole
+      // local file before seeing the server can duplicate the room on join.
+      log("offline", "reconciling offline disk edits", this.filePath,
+        `(base ${idbContent.length} → disk ${diskContent.length} chars)`);
+      await this.saveSnapshot(diskContent).catch((e) => log("offline", "pre-reconcile snapshot failed", e));
+      this.applyDiff(idbContent, diskContent);
     }
 
     // ── Connect WebSocket ───────────────────────────────────────
@@ -207,10 +202,23 @@ export class FileProvider {
               if (this.destroyed || this.isInitialized) return;
               this.isInitialized = true;
 
+              let mergedContent = this.ytext.toString();
+
+              // First client ever: only seed local disk content after proving
+              // the server room is still empty. This avoids the whole-file
+              // duplicate that happens when a joining client with empty IDB
+              // inserts its local copy before receiving the server state.
+              if (mergedContent.length === 0 && diskContent.length > 0) {
+                this.ydoc.transact(() => {
+                  this.ytext.insert(0, diskContent);
+                }, "seed");
+                mergedContent = diskContent;
+              }
+
               // ── LAYER 2: Pre-overwrite snapshot ─────────────────
-              // The CRDT merge is done. If the merged result differs
-              // from what was on disk, save the disk version first.
-              const mergedContent = this.ytext.toString();
+              // The CRDT merge is done. If the server already had content and
+              // it differs from this disk file, preserve the disk version first
+              // and adopt the CRDT state instead of merging a whole-file copy.
               if (diskContent.length > 0 && mergedContent !== diskContent) {
                 this.saveSnapshot(diskContent).catch((e) => {
                   console.error("[FileProvider] snapshot failed:", e);
@@ -219,11 +227,6 @@ export class FileProvider {
                 new Notice(
                   `Sync updated "${fileName}" — pre-sync backup saved`
                 );
-              }
-
-              // First client ever → seed with local content
-              if (this.ytext.length === 0 && diskContent.length > 0) {
-                this.ytext.insert(0, diskContent);
               }
 
               // CRDT merge done → write merged result to disk

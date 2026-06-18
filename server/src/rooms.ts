@@ -7,6 +7,7 @@ import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
 import { loadState, saveState, startPeriodicSave, stopPeriodicSave } from "./persistence.js";
 import { handleNotify, registerTopic } from "./notify.js";
+import { logEvent } from "./logging.js";
 
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
@@ -15,6 +16,9 @@ const MESSAGE_NOTIFY = 4; // {fromUid, fromName, toUid, title, body} — mention
 const MESSAGE_TOPIC_REGISTER = 5; // {uid, topic} — register ntfy topic
 
 const PING_INTERVAL = 30000;
+const SYNC_DEBUG_LOG = process.env.SYNC_DEBUG_LOG === "true";
+const LARGE_UPDATE_BYTES = Number(process.env.SYNC_LOG_LARGE_UPDATE_BYTES || 64 * 1024);
+const LARGE_TEXT_DELTA = Number(process.env.SYNC_LOG_LARGE_TEXT_DELTA || 20 * 1024);
 
 // ── Abuse caps (one authed client must not be able to OOM/bloat the box) ──────
 const MAX_MSGS_PER_SEC = 250;            // sustained inbound rate per connection
@@ -22,6 +26,46 @@ const RATE_BURST = 600;                  // bucket capacity (covers a big paste)
 const SEND_BUFFER_LIMIT = 8 * 1024 * 1024; // drop a hopelessly backed-up socket (slow-peer OOM guard)
 let rateLimitedCount = 0;
 let backpressureClosedCount = 0;
+let nextConnId = 1;
+
+type RoomStats = {
+  inboundSyncMessages: number;
+  inboundBytes: number;
+  maxInboundBytes: number;
+  suspiciousUpdates: number;
+  lastUpdateAt: number;
+  textLen: number | null;
+  maxTextLen: number | null;
+};
+
+function roomInfo(room: string): { shareId: string; kind: string; relPath?: string } {
+  let rest = room;
+  let shareId = "legacy";
+  if (rest.startsWith("@")) {
+    const idx = rest.indexOf(":");
+    shareId = idx >= 0 ? rest.slice(1, idx) : "";
+    rest = idx >= 0 ? rest.slice(idx + 1) : rest;
+  }
+  if (rest === "__manifest__") return { shareId, kind: "manifest" };
+  if (rest.startsWith("file:")) return { shareId, kind: "file", relPath: decodeURIComponent(rest.slice(5)) };
+  return { shareId, kind: "other" };
+}
+
+function syncSubtypeName(subtype: number): string {
+  if (subtype === 0) return "step1";
+  if (subtype === 1) return "step2";
+  if (subtype === 2) return "update";
+  return `unknown:${subtype}`;
+}
+
+function fileTextLen(doc: WSSharedDoc): number | null {
+  if (roomInfo(doc.name).kind !== "file") return null;
+  return doc.getText("codemirror").length;
+}
+
+function stateBytes(doc: Y.Doc): number {
+  return Y.encodeStateAsUpdate(doc).byteLength;
+}
 
 /** Per-connection token-bucket rate limit. Returns false when over budget. */
 function allowMessage(conn: any): boolean {
@@ -43,12 +87,22 @@ class WSSharedDoc extends Y.Doc {
   name: string;
   conns: Map<WebSocket, Set<number>>;
   awareness: awarenessProtocol.Awareness;
+  stats: RoomStats;
 
   constructor(name: string) {
     super({ gc: true });
     this.name = name;
     this.conns = new Map();
     this.awareness = new awarenessProtocol.Awareness(this);
+    this.stats = {
+      inboundSyncMessages: 0,
+      inboundBytes: 0,
+      maxInboundBytes: 0,
+      suspiciousUpdates: 0,
+      lastUpdateAt: 0,
+      textLen: null,
+      maxTextLen: null,
+    };
     this.awareness.setLocalState(null);
 
     // Broadcast awareness changes to all connected clients
@@ -82,6 +136,9 @@ class WSSharedDoc extends Y.Doc {
 
     // Broadcast document updates to all connected clients
     this.on("update", (update: Uint8Array, origin: any) => {
+      if (origin !== "load") {
+        this.stats.lastUpdateAt = Date.now();
+      }
       const encoder = encoding.createEncoder();
       encoding.writeVarUint(encoder, MESSAGE_SYNC);
       syncProtocol.writeUpdate(encoder, update);
@@ -102,10 +159,16 @@ const docLoads: Map<string, Promise<WSSharedDoc>> = new Map();
 /** Lightweight server metrics for /metrics (reads live in-memory state). */
 export function getMetrics() {
   let connections = 0;
-  const rooms: { room: string; conns: number; clients: number }[] = [];
+  const rooms: { room: string; conns: number; clients: number; stats: RoomStats }[] = [];
   for (const [name, doc] of docs) {
     connections += doc.conns.size;
-    rooms.push({ room: name, conns: doc.conns.size, clients: doc.awareness.getStates().size });
+    const textLen = fileTextLen(doc);
+    rooms.push({
+      room: name,
+      conns: doc.conns.size,
+      clients: doc.awareness.getStates().size,
+      stats: { ...doc.stats, textLen },
+    });
   }
   return {
     rooms: docs.size,
@@ -217,20 +280,23 @@ function handleMessage(
 
     switch (messageType) {
       case MESSAGE_SYNC: {
+        const subtype = decoding.readVarUint(decoding.clone(decoder));
+        const beforeTextLen = fileTextLen(doc);
+        const beforeStateBytes = SYNC_DEBUG_LOG ? stateBytes(doc) : null;
         // Permission boundary: non-editors may READ (sync step1 = sub-type 0)
         // but their WRITES (step2 = 1, update = 2) are dropped here — un-applied
         // and un-persisted, since doc.on('update') is the only fan-out. This is
         // the real read-only enforcement (the client UI is just cosmetic).
         const role = (conn as any).collabRole || "editor";
         if (role !== "editor") {
-          const sub = decoding.readVarUint(decoding.clone(decoder));
-          if (sub === 1 || sub === 2) {
+          if (subtype === 1 || subtype === 2) {
             return; // viewer/commenter write — ignore
           }
         }
         const encoder = encoding.createEncoder();
         encoding.writeVarUint(encoder, MESSAGE_SYNC);
         syncProtocol.readSyncMessage(decoder, encoder, doc, conn);
+        recordSyncMessage(doc, conn, subtype, message.byteLength, beforeTextLen, beforeStateBytes);
         if (encoding.length(encoder) > 1) {
           send(conn, encoding.toUint8Array(encoder));
         }
@@ -274,6 +340,61 @@ function handleMessage(
   }
 }
 
+function recordSyncMessage(
+  doc: WSSharedDoc,
+  conn: WebSocket,
+  subtype: number,
+  messageBytes: number,
+  beforeTextLen: number | null,
+  beforeStateBytes: number | null
+): void {
+  if (subtype !== 1 && subtype !== 2) return;
+
+  const afterTextLen = fileTextLen(doc);
+  doc.stats.inboundSyncMessages++;
+  doc.stats.inboundBytes += messageBytes;
+  doc.stats.maxInboundBytes = Math.max(doc.stats.maxInboundBytes, messageBytes);
+  doc.stats.lastUpdateAt = Date.now();
+  if (afterTextLen !== null) {
+    doc.stats.textLen = afterTextLen;
+    doc.stats.maxTextLen = Math.max(doc.stats.maxTextLen ?? 0, afterTextLen);
+  }
+
+  const textDelta =
+    beforeTextLen !== null && afterTextLen !== null
+      ? afterTextLen - beforeTextLen
+      : null;
+  const largeTextDelta = textDelta !== null && Math.abs(textDelta) >= LARGE_TEXT_DELTA;
+  const doubledText =
+    beforeTextLen !== null &&
+    afterTextLen !== null &&
+    beforeTextLen > 1000 &&
+    afterTextLen >= beforeTextLen * 1.8;
+  const largeUpdate = messageBytes >= LARGE_UPDATE_BYTES;
+  const shouldLog = SYNC_DEBUG_LOG || largeUpdate || largeTextDelta || doubledText;
+  if (!shouldLog) return;
+
+  if (largeUpdate || largeTextDelta || doubledText) doc.stats.suspiciousUpdates++;
+  const info = roomInfo(doc.name);
+  logEvent(largeUpdate || largeTextDelta || doubledText ? "warn" : "debug", "sync.update", {
+    room: doc.name,
+    ...info,
+    connId: (conn as any).collabConnId,
+    role: (conn as any).collabRole || "editor",
+    subtype: syncSubtypeName(subtype),
+    messageBytes,
+    beforeTextLen,
+    afterTextLen,
+    textDelta,
+    beforeStateBytes,
+    afterStateBytes: SYNC_DEBUG_LOG || largeUpdate || doubledText ? stateBytes(doc) : undefined,
+    largeUpdate,
+    largeTextDelta,
+    doubledText,
+    conns: doc.conns.size,
+  });
+}
+
 /**
  * Close a connection and clean up.
  */
@@ -295,6 +416,12 @@ function closeConn(conn: WebSocket): void {
     console.log(
       `[rooms] client disconnected from ${roomName} (${doc.conns.size} remaining)`
     );
+    logEvent("info", "room.disconnect", {
+      room: roomName,
+      ...roomInfo(roomName),
+      connId: (conn as any).collabConnId,
+      conns: doc.conns.size,
+    });
 
     // If no clients remain, persist and clean up
     if (doc.conns.size === 0) {
@@ -304,6 +431,10 @@ function closeConn(conn: WebSocket): void {
           doc.destroy();
           docs.delete(roomName);
           console.log(`[rooms] room ${roomName} closed and persisted`);
+          logEvent("info", "room.closed", {
+            room: roomName,
+            ...roomInfo(roomName),
+          });
         })
         .catch((e) => {
           console.error("[rooms] persistence error:", e);
@@ -341,6 +472,7 @@ export async function setupWSConnection(
   const doc = await getOrCreateDoc(roomName);
 
   // Carry the role granted at the auth/upgrade step (default editor).
+  (conn as any).collabConnId = nextConnId++;
   (conn as any).collabRole = (req as any).collabRole || "editor";
   (conn as any).collabShareId = (req as any).collabShareId || null;
   (conn as any).collabEpoch = (req as any).collabEpoch ?? 0;
@@ -351,6 +483,17 @@ export async function setupWSConnection(
   console.log(
     `[rooms] client connected to ${roomName} (${doc.conns.size} total)`
   );
+  logEvent("info", "room.connect", {
+    room: roomName,
+    ...roomInfo(roomName),
+    connId: (conn as any).collabConnId,
+    role: (conn as any).collabRole || "editor",
+    epoch: (conn as any).collabEpoch ?? 0,
+    conns: doc.conns.size,
+    clients: doc.awareness.getStates().size,
+    textLen: fileTextLen(doc),
+    stateBytes: stateBytes(doc),
+  });
 
   // Handle incoming messages
   conn.on("message", (data: RawData) => {

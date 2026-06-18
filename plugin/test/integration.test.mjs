@@ -65,6 +65,21 @@ console.log("Two clients: remote content reaches the peer's disk");
   A.fp.destroy(); B.fp.destroy();
 }
 
+// ── 1b. Joining with a local copy must not insert a second whole-file copy ────
+console.log("Joining with a matching local copy does not duplicate the note");
+{
+  __resetIdb(); __resetHubs();
+  const room = "@test:file:note-copy";
+  const A = await makeClient("A", room, "note.md", "hello world");
+  await sleep(900);
+  const B = await makeClient("B", room, "note.md", "hello world");
+  await sleep(900);
+  check("A stayed single-copy", A.disk() === "hello world", `A="${A.disk()}"`);
+  check("B stayed single-copy", B.disk() === "hello world", `B="${B.disk()}"`);
+  check("A and B converged without duplication", A.disk() === B.disk(), `A="${A.disk()}" B="${B.disk()}"`);
+  A.fp.destroy(); B.fp.destroy();
+}
+
 // ── 2. Bidirectional edits converge (CRDT) ────────────────────────────────────
 console.log("Bidirectional edits converge");
 {

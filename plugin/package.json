@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit && node esbuild.config.mjs production",
-    "test": "tsx test/release-metadata.test.mjs && tsx test/share-code.test.mjs && tsx test/loop-sim.test.mjs && tsx test/manifest.test.mjs && tsx test/textdiff.test.mjs && tsx test/line-diff.test.mjs && tsx test/wikilinks.test.mjs && tsx test/presence.test.mjs && tsx test/presence-dom.test.mjs && tsx test/mentions.test.mjs && node test/run-mux-provider.mjs && tsx test/diagnostics.test.mjs && tsx test/identity.test.mjs && tsx test/binary.test.mjs && node test/run-integration.mjs"
+    "test": "tsx test/release-metadata.test.mjs && tsx test/share-code.test.mjs && tsx test/comment-notifications.test.mjs && tsx test/loop-sim.test.mjs && tsx test/manifest.test.mjs && tsx test/textdiff.test.mjs && tsx test/line-diff.test.mjs && tsx test/wikilinks.test.mjs && tsx test/presence.test.mjs && tsx test/presence-dom.test.mjs && tsx test/mentions.test.mjs && node test/run-mux-provider.mjs && tsx test/diagnostics.test.mjs && tsx test/identity.test.mjs && tsx test/binary.test.mjs && node test/run-integration.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -14870,7 +14870,8 @@ var CommentsView = class extends import_obsidian8.ItemView {
       const text2 = replyInput.value.trim();
       if (!text2) return;
       this.ctx.store.addReply(t.id, { byUid: this.ctx.me.uid, byName: this.ctx.me.name, text: text2, at: this.ctx.now() });
-      this.ctx.notifyFromText(text2);
+      const notified = this.ctx.notifyFromText(text2);
+      this.ctx.notifyThreadEvent(t, "reply", text2, notified);
       replyInput.value = "";
     };
     replyInput.addEventListener("keydown", (e) => {
@@ -14882,7 +14883,11 @@ var CommentsView = class extends import_obsidian8.ItemView {
     const resolveBtn = actions.createEl("button", { cls: "collab-comment-btn" });
     (0, import_obsidian8.setIcon)(resolveBtn, t.resolved ? "rotate-ccw" : "check");
     resolveBtn.setAttr("aria-label", t.resolved ? "Reopen" : "Resolve");
-    resolveBtn.onclick = () => this.ctx.store.setResolved(t.id, !t.resolved);
+    resolveBtn.onclick = () => {
+      const next = !t.resolved;
+      this.ctx.store.setResolved(t.id, next);
+      this.ctx.notifyThreadEvent(t, next ? "resolve" : "reopen", "", /* @__PURE__ */ new Set());
+    };
     if (t.authorUid === this.ctx.me.uid) {
       const del2 = actions.createEl("button", { cls: "collab-comment-btn" });
       (0, import_obsidian8.setIcon)(del2, "trash-2");
@@ -15006,6 +15011,20 @@ async function ensureIdentityKeys(existing, uid) {
   const privateKey = utf8ToBase64url(JSON.stringify(privateJwk));
   const signature = await signIdentity(uid, publicKey, privateKey);
   return { publicKey, privateKey, signature };
+}
+
+// src/utils/commentNotifications.ts
+function buildThreadAuthorNotification(args2) {
+  var _a2;
+  if (!args2.authorUid || args2.authorUid === args2.actorUid) return null;
+  if ((_a2 = args2.alreadyNotified) == null ? void 0 : _a2.has(args2.authorUid)) return null;
+  const verb = args2.kind === "reply" ? "replied to your comment in" : args2.kind === "resolve" ? "resolved your comment in" : "reopened your comment in";
+  const body = (args2.text || args2.quote || "").slice(0, 300);
+  return {
+    toUid: args2.authorUid,
+    title: `${args2.actorName} ${verb} ${args2.fileName}`,
+    body
+  };
 }
 
 // src/ui/HistoryView.ts
@@ -15813,7 +15832,8 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
           var _a2, _b2;
           return (_b2 = (_a2 = this.managerOwning(this.boundPath || "")) == null ? void 0 : _a2.roster()) != null ? _b2 : [];
         },
-        notifyFromText: (text2) => this.notifyMentionsInText(text2, fileName, this.boundPath || "")
+        notifyFromText: (text2) => this.notifyMentionsInText(text2, fileName, this.boundPath || ""),
+        notifyThreadEvent: (thread, kind, text2, alreadyNotified) => this.notifyCommentThreadEvent(thread, kind, text2, fileName, this.boundPath || "", alreadyNotified)
       });
     } else {
       view.setContext(null);
@@ -15830,13 +15850,33 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
   }
   /** Detect "@Name" mentions of collaborators in `text` and push them a notification. */
   notifyMentionsInText(text2, fileName, filePath) {
-    if (!text2.includes("@") || !this.boundPath) return;
-    const m = this.managerOwning(this.boundPath);
-    if (!m) return;
+    const notified = /* @__PURE__ */ new Set();
+    if (!text2.includes("@") || !filePath) return notified;
+    const m = this.managerOwning(filePath);
+    if (!m) return notified;
     for (const c of findMentionedUsers(text2, m.roster())) {
       m.sendMention(c.uid, `${this.settings.displayName} mentioned you in ${fileName}`, text2.slice(0, 300), filePath);
+      notified.add(c.uid);
       log("mention", "notified", c.name, c.uid);
     }
+    return notified;
+  }
+  notifyCommentThreadEvent(thread, kind, text2, fileName, filePath, alreadyNotified) {
+    const m = this.managerOwning(filePath);
+    if (!m) return;
+    const n = buildThreadAuthorNotification({
+      kind,
+      actorUid: this.settings.uid,
+      actorName: this.settings.displayName,
+      authorUid: thread.authorUid,
+      fileName,
+      quote: thread.quote,
+      text: text2,
+      alreadyNotified
+    });
+    if (!n) return;
+    m.sendMention(n.toUid, n.title, n.body, filePath);
+    log("comment", "notified thread author", n.toUid, kind);
   }
   // ── Version history wiring ──────────────────────────────────────
   getHistoryView() {

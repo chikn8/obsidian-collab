@@ -356,9 +356,10 @@ sanitized Markdown/Canvas paths.
 **Remaining.** A richer CM6 editor suggest could be added later if comments move into the editor surface;
 the current sidebar and add-comment modal paths are covered.
 
-### 4.4 — Comment notifications beyond @mention + unread inbox (M)
-Notify thread author on reply/resolve; a cross-file unread-comment inbox. Async review is currently broken
-across devices.
+### 4.4 — Comment notifications beyond @mention + unread inbox (partial)
+**Status.** Thread authors now get push notifications when someone else replies to, resolves, or reopens
+their comment, without duplicating an explicit @mention notification.
+**Remaining.** Cross-file unread-comment inbox.
 
 ### 4.5 — Link integrity + follow-presence (implemented)
 **Status.** Presence avatars in the file tree and workspace tab headers can open a collaborator's active

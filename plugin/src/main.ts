@@ -6,7 +6,7 @@ import { InstanceWatch } from "./collab/InstanceWatch";
 import { StatusBarWidget } from "./ui/StatusBarWidget";
 import { CollabSettingsTab } from "./ui/SettingsTab";
 import { collabEditorExtension, getEditorView, bindEditor, unbindEditor, readOnlyExtension } from "./collab/EditorBinding";
-import { CommentStore } from "./collab/CommentStore";
+import { CommentStore, type ThreadView } from "./collab/CommentStore";
 import { CommentSession } from "./collab/CommentLayer";
 import { PresenceController } from "./collab/Presence";
 import { selfSelectionExtension } from "./collab/SelfSelection";
@@ -16,6 +16,7 @@ import { configureDiagnostics, exportDiagnosticBundle, log, err, setDiagnosticLo
 import { getJson, postJson } from "./utils/http";
 import { ensureIdentityKeys } from "./utils/identity";
 import { findMentionedUsers } from "./utils/mentions";
+import { buildThreadAuthorNotification, type CommentEventKind } from "./utils/commentNotifications";
 import {
   encodeShareCode,
   decodeShareCode,
@@ -460,6 +461,8 @@ export default class CollabPlugin extends Plugin {
         now: () => Date.now(),
         mentionUsers: () => this.managerOwning(this.boundPath || "")?.roster() ?? [],
         notifyFromText: (text) => this.notifyMentionsInText(text, fileName, this.boundPath || ""),
+        notifyThreadEvent: (thread, kind, text, alreadyNotified) =>
+          this.notifyCommentThreadEvent(thread, kind, text, fileName, this.boundPath || "", alreadyNotified),
       });
     } else {
       view.setContext(null);
@@ -477,14 +480,42 @@ export default class CollabPlugin extends Plugin {
   }
 
   /** Detect "@Name" mentions of collaborators in `text` and push them a notification. */
-  private notifyMentionsInText(text: string, fileName: string, filePath: string): void {
-    if (!text.includes("@") || !this.boundPath) return;
-    const m = this.managerOwning(this.boundPath);
-    if (!m) return;
+  private notifyMentionsInText(text: string, fileName: string, filePath: string): Set<string> {
+    const notified = new Set<string>();
+    if (!text.includes("@") || !filePath) return notified;
+    const m = this.managerOwning(filePath);
+    if (!m) return notified;
     for (const c of findMentionedUsers(text, m.roster())) {
       m.sendMention(c.uid, `${this.settings.displayName} mentioned you in ${fileName}`, text.slice(0, 300), filePath);
+      notified.add(c.uid);
       log("mention", "notified", c.name, c.uid);
     }
+    return notified;
+  }
+
+  private notifyCommentThreadEvent(
+    thread: ThreadView,
+    kind: CommentEventKind,
+    text: string,
+    fileName: string,
+    filePath: string,
+    alreadyNotified: Set<string>
+  ): void {
+    const m = this.managerOwning(filePath);
+    if (!m) return;
+    const n = buildThreadAuthorNotification({
+      kind,
+      actorUid: this.settings.uid,
+      actorName: this.settings.displayName,
+      authorUid: thread.authorUid,
+      fileName,
+      quote: thread.quote,
+      text,
+      alreadyNotified,
+    });
+    if (!n) return;
+    m.sendMention(n.toUid, n.title, n.body, filePath);
+    log("comment", "notified thread author", n.toUid, kind);
   }
 
   // ── Version history wiring ──────────────────────────────────────

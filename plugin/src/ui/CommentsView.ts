@@ -2,6 +2,7 @@ import { ItemView, WorkspaceLeaf, setIcon } from "obsidian";
 import type { CommentStore, ThreadView } from "../collab/CommentStore";
 import type { CommentSession } from "../collab/CommentLayer";
 import type { MentionUser } from "../utils/mentions";
+import type { CommentEventKind } from "../utils/commentNotifications";
 import { wireMentionAutocomplete } from "./mentionInput";
 
 export const COMMENTS_VIEW_TYPE = "collab-comments";
@@ -14,7 +15,8 @@ export interface CommentContext {
   now: () => number;
   mentionUsers: () => MentionUser[];
   /** Scan text for @mentions of collaborators and push them a notification. */
-  notifyFromText: (text: string) => void;
+  notifyFromText: (text: string) => Set<string>;
+  notifyThreadEvent: (thread: ThreadView, kind: CommentEventKind, text: string, alreadyNotified: Set<string>) => void;
 }
 
 const REACTIONS = ["👍", "❤️", "🎉", "😄", "👀"];
@@ -109,7 +111,8 @@ export class CommentsView extends ItemView {
       const text = replyInput.value.trim();
       if (!text) return;
       this.ctx!.store.addReply(t.id, { byUid: this.ctx!.me.uid, byName: this.ctx!.me.name, text, at: this.ctx!.now() });
-      this.ctx!.notifyFromText(text);
+      const notified = this.ctx!.notifyFromText(text);
+      this.ctx!.notifyThreadEvent(t, "reply", text, notified);
       replyInput.value = "";
     };
     replyInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); send(); } });
@@ -117,7 +120,11 @@ export class CommentsView extends ItemView {
     const resolveBtn = actions.createEl("button", { cls: "collab-comment-btn" });
     setIcon(resolveBtn, t.resolved ? "rotate-ccw" : "check");
     resolveBtn.setAttr("aria-label", t.resolved ? "Reopen" : "Resolve");
-    resolveBtn.onclick = () => this.ctx!.store.setResolved(t.id, !t.resolved);
+    resolveBtn.onclick = () => {
+      const next = !t.resolved;
+      this.ctx!.store.setResolved(t.id, next);
+      this.ctx!.notifyThreadEvent(t, next ? "resolve" : "reopen", "", new Set());
+    };
 
     if (t.authorUid === this.ctx!.me.uid) {
       const del = actions.createEl("button", { cls: "collab-comment-btn" });

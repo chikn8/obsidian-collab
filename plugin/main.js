@@ -13872,6 +13872,149 @@ async function postJson(url, body, headers) {
 
 // src/ui/HistoryView.ts
 var import_obsidian9 = require("obsidian");
+
+// src/utils/lineDiff.ts
+function splitLines(text2) {
+  if (text2.length === 0) return [];
+  const lines = text2.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines.map((line) => line.endsWith("\r") ? line.slice(0, -1) : line);
+}
+function commonPrefix(a, b) {
+  const max2 = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < max2 && a[i] === b[i]) i++;
+  return i;
+}
+function commonSuffix(a, b, prefix) {
+  const max2 = Math.min(a.length, b.length) - prefix;
+  let i = 0;
+  while (i < max2 && a[a.length - 1 - i] === b[b.length - 1 - i]) i++;
+  return i;
+}
+function appendContext(rows2, line, oldLine, newLine) {
+  rows2.push({ kind: "context", text: line, oldLine, newLine });
+}
+function fallbackMiddle(oldLines, newLines, oldOffset, newOffset) {
+  const rows2 = [];
+  for (let i = 0; i < oldLines.length; i++) {
+    rows2.push({ kind: "remove", text: oldLines[i], oldLine: oldOffset + i + 1 });
+  }
+  for (let i = 0; i < newLines.length; i++) {
+    rows2.push({ kind: "add", text: newLines[i], newLine: newOffset + i + 1 });
+  }
+  return rows2;
+}
+function lcsMiddle(oldLines, newLines, oldOffset, newOffset, maxCells) {
+  const m = oldLines.length;
+  const n = newLines.length;
+  if (m === 0 || n === 0 || m * n > maxCells) return fallbackMiddle(oldLines, newLines, oldOffset, newOffset);
+  const width = n + 1;
+  const dirs = new Uint8Array((m + 1) * (n + 1));
+  let prev = new Uint16Array(width);
+  let curr = new Uint16Array(width);
+  for (let i2 = 1; i2 <= m; i2++) {
+    curr.fill(0);
+    for (let j2 = 1; j2 <= n; j2++) {
+      const idx = i2 * width + j2;
+      if (oldLines[i2 - 1] === newLines[j2 - 1]) {
+        curr[j2] = prev[j2 - 1] + 1;
+        dirs[idx] = 3;
+      } else if (prev[j2] >= curr[j2 - 1]) {
+        curr[j2] = prev[j2];
+        dirs[idx] = 1;
+      } else {
+        curr[j2] = curr[j2 - 1];
+        dirs[idx] = 2;
+      }
+    }
+    const tmp = prev;
+    prev = curr;
+    curr = tmp;
+  }
+  const reversed = [];
+  let i = m;
+  let j = n;
+  while (i > 0 || j > 0) {
+    const dir = i > 0 && j > 0 ? dirs[i * width + j] : i > 0 ? 1 : 2;
+    if (dir === 3) {
+      reversed.push({
+        kind: "context",
+        text: oldLines[i - 1],
+        oldLine: oldOffset + i,
+        newLine: newOffset + j
+      });
+      i--;
+      j--;
+    } else if (dir === 1) {
+      reversed.push({ kind: "remove", text: oldLines[i - 1], oldLine: oldOffset + i });
+      i--;
+    } else {
+      reversed.push({ kind: "add", text: newLines[j - 1], newLine: newOffset + j });
+      j--;
+    }
+  }
+  return reversed.reverse();
+}
+function rawLineDiff(oldText, newText, maxCells) {
+  const oldLines = splitLines(oldText);
+  const newLines = splitLines(newText);
+  const prefix = commonPrefix(oldLines, newLines);
+  const suffix = commonSuffix(oldLines, newLines, prefix);
+  const rows2 = [];
+  for (let i = 0; i < prefix; i++) appendContext(rows2, oldLines[i], i + 1, i + 1);
+  const oldMid = oldLines.slice(prefix, oldLines.length - suffix);
+  const newMid = newLines.slice(prefix, newLines.length - suffix);
+  rows2.push(...lcsMiddle(oldMid, newMid, prefix, prefix, maxCells));
+  for (let i = 0; i < suffix; i++) {
+    const oldIndex = oldLines.length - suffix + i;
+    const newIndex = newLines.length - suffix + i;
+    appendContext(rows2, oldLines[oldIndex], oldIndex + 1, newIndex + 1);
+  }
+  return rows2;
+}
+function compactRows(rows2, contextLines) {
+  if (!rows2.some((row) => row.kind === "add" || row.kind === "remove")) return { rows: rows2, omitted: 0 };
+  const keep = new Uint8Array(rows2.length);
+  for (let i = 0; i < rows2.length; i++) {
+    if (rows2[i].kind !== "add" && rows2[i].kind !== "remove") continue;
+    const start = Math.max(0, i - contextLines);
+    const end = Math.min(rows2.length - 1, i + contextLines);
+    for (let j = start; j <= end; j++) keep[j] = 1;
+  }
+  const out = [];
+  let omitted = 0;
+  for (let i = 0; i < rows2.length; ) {
+    if (keep[i]) {
+      out.push(rows2[i]);
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < rows2.length && !keep[j]) j++;
+    const count2 = j - i;
+    omitted += count2;
+    out.push({ kind: "omitted", count: count2 });
+    i = j;
+  }
+  return { rows: out, omitted };
+}
+function buildInlineDiff(oldText, newText, options = {}) {
+  var _a2, _b2, _c;
+  const contextLines = Math.max(0, (_a2 = options.contextLines) != null ? _a2 : 3);
+  const maxCells = Math.max(1, (_b2 = options.maxCells) != null ? _b2 : 25e4);
+  const maxRows = Math.max(1, (_c = options.maxRows) != null ? _c : 900);
+  const raw = rawLineDiff(oldText, newText, maxCells);
+  const added = raw.filter((row) => row.kind === "add").length;
+  const removed = raw.filter((row) => row.kind === "remove").length;
+  const compact = compactRows(raw, contextLines);
+  const truncated = compact.rows.length > maxRows;
+  const rows2 = truncated ? [...compact.rows.slice(0, maxRows), { kind: "omitted", count: compact.rows.length - maxRows }] : compact.rows;
+  const omitted = compact.omitted + (truncated ? compact.rows.length - maxRows : 0);
+  return { rows: rows2, added, removed, omitted, truncated };
+}
+
+// src/ui/HistoryView.ts
 var HISTORY_VIEW_TYPE = "collab-history";
 var HistoryView = class extends import_obsidian9.ItemView {
   constructor(leaf) {
@@ -13939,6 +14082,16 @@ var HistoryView = class extends import_obsidian9.ItemView {
           }
           this.showPreview(root, v, content);
         };
+        const diff = actions.createEl("button", { text: "Diff", cls: "collab-comment-btn" });
+        diff.onclick = async (e) => {
+          e.stopPropagation();
+          const content = await this.ctx.load(v.hash);
+          if (content == null) {
+            new import_obsidian9.Notice("Couldn't load this version.");
+            return;
+          }
+          this.showDiff(root, v, content);
+        };
         const restore = actions.createEl("button", { cls: "collab-comment-btn" });
         (0, import_obsidian9.setIcon)(restore, "rotate-ccw");
         restore.appendText(" Restore");
@@ -13984,11 +14137,45 @@ var HistoryView = class extends import_obsidian9.ItemView {
     }
   }
   showPreview(root, v, content) {
-    const existing = root.querySelector(".collab-history-preview");
+    const existing = root.querySelector(".collab-history-output");
     existing == null ? void 0 : existing.remove();
-    const box = root.createDiv({ cls: "collab-history-preview" });
+    const box = root.createDiv({ cls: "collab-history-preview collab-history-output" });
     box.createEl("div", { text: `Preview \u2014 ${relTime(v.date)}`, cls: "collab-history-when" });
     box.createEl("pre", { text: content.slice(0, 4e3) + (content.length > 4e3 ? "\n\u2026" : "") });
+  }
+  showDiff(root, v, savedContent) {
+    var _a2, _b2;
+    const existing = root.querySelector(".collab-history-output");
+    existing == null ? void 0 : existing.remove();
+    const current = (_b2 = (_a2 = this.ctx) == null ? void 0 : _a2.currentText()) != null ? _b2 : "";
+    const diff = buildInlineDiff(savedContent, current, { contextLines: 3 });
+    const box = root.createDiv({ cls: "collab-history-preview collab-history-output" });
+    const title = `Diff \u2014 ${relTime(v.date)} to current (+${diff.added}/-${diff.removed})`;
+    box.createEl("div", { text: title, cls: "collab-history-when" });
+    if (diff.added === 0 && diff.removed === 0) {
+      box.createEl("p", { text: "No differences from the current note.", cls: "collab-comments-empty" });
+      return;
+    }
+    if (diff.truncated) {
+      box.createEl("p", { text: "Large diff truncated for display.", cls: "collab-comments-empty" });
+    }
+    const table = box.createDiv({ cls: "collab-history-diff" });
+    for (const row of diff.rows) this.renderDiffRow(table, row);
+  }
+  renderDiffRow(table, row) {
+    var _a2, _b2;
+    if (row.kind === "omitted") {
+      const el2 = table.createDiv({ cls: "collab-history-diff-line omitted" });
+      el2.createSpan({ text: "", cls: "collab-history-diff-num" });
+      el2.createSpan({ text: "", cls: "collab-history-diff-num" });
+      el2.createSpan({ text: `... ${(_a2 = row.count) != null ? _a2 : 0} unchanged line${row.count === 1 ? "" : "s"} ...`, cls: "collab-history-diff-text" });
+      return;
+    }
+    const el = table.createDiv({ cls: `collab-history-diff-line ${row.kind}` });
+    el.createSpan({ text: row.oldLine ? String(row.oldLine) : "", cls: "collab-history-diff-num" });
+    el.createSpan({ text: row.newLine ? String(row.newLine) : "", cls: "collab-history-diff-num" });
+    const sign = row.kind === "add" ? "+ " : row.kind === "remove" ? "- " : "  ";
+    el.createSpan({ text: sign + ((_b2 = row.text) != null ? _b2 : ""), cls: "collab-history-diff-text" });
   }
 };
 function relTime(iso) {

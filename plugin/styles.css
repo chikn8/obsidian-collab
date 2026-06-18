@@ -294,3 +294,34 @@
   white-space: pre-wrap; font-size: 0.78em; max-height: 300px; overflow: auto;
   background: var(--background-primary-alt); padding: 6px; border-radius: 6px;
 }
+.collab-history-diff {
+  margin-top: 6px;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary-alt);
+  font-family: var(--font-monospace);
+  font-size: 0.76em;
+}
+.collab-history-diff-line {
+  display: grid;
+  grid-template-columns: 3.2em 3.2em minmax(0, 1fr);
+  min-height: 1.45em;
+  white-space: pre-wrap;
+}
+.collab-history-diff-line.add { background: rgba(46, 160, 67, 0.16); }
+.collab-history-diff-line.remove { background: rgba(248, 81, 73, 0.16); }
+.collab-history-diff-line.omitted { color: var(--text-muted); background: var(--background-secondary); }
+.collab-history-diff-num {
+  user-select: none;
+  color: var(--text-faint);
+  text-align: right;
+  padding: 1px 6px 1px 2px;
+  border-right: 1px solid var(--background-modifier-border);
+}
+.collab-history-diff-text {
+  min-width: 0;
+  padding: 1px 6px;
+  overflow-wrap: anywhere;
+}

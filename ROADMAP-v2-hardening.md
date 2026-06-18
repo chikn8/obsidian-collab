@@ -34,7 +34,7 @@ createFileProvider in-flight reservation · comment-anchor quote-verify + re-mat
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
 (ops, not code) · per-recipient signed identities/audit log · socket multiplexing / scale ceiling
-(Tier 3.1) · binary/attachment + `.canvas` sync (Tier 4.1) · version-diff UI · human device-matrix test.
+(Tier 3.1) · binary/attachment + `.canvas` sync (Tier 4.1) · hunk-level version restore · human device-matrix test.
 
 ---
 
@@ -325,8 +325,9 @@ render as broken links — the biggest visible-correctness gap. Sync binaries vi
 (hash → `blob:` room or object store), referenced from the manifest; lazy-fetch on demand.
 
 ### 4.2 — Inline / side-by-side version diff (M)
-History preview is a raw 4000-char dump and restore is blind. Add a git-diff HTTP endpoint + a CM6
-side-by-side/inline diff view; "compare with current" and "restore this hunk".
+History preview is no longer only a raw 4000-char dump: the sidebar can compare a saved version with
+the current local note and render an inline line diff. Still open: hunk-level restore and a richer
+side-by-side editor view.
 
 ### 4.3 — @mention autocomplete + working deep-link (M)
 CM6 `EditorSuggest` from the share roster; the push's tap opens the file. Today mentions need exact

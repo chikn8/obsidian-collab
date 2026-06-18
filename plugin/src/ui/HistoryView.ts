@@ -1,4 +1,5 @@
 import { ItemView, WorkspaceLeaf, setIcon, Notice } from "obsidian";
+import { buildInlineDiff, type DiffRow } from "../utils/lineDiff";
 
 export const HISTORY_VIEW_TYPE = "collab-history";
 
@@ -89,6 +90,13 @@ export class HistoryView extends ItemView {
           if (content == null) { new Notice("Couldn't load this version."); return; }
           this.showPreview(root, v, content);
         };
+        const diff = actions.createEl("button", { text: "Diff", cls: "collab-comment-btn" });
+        diff.onclick = async (e) => {
+          e.stopPropagation();
+          const content = await this.ctx!.load(v.hash);
+          if (content == null) { new Notice("Couldn't load this version."); return; }
+          this.showDiff(root, v, content);
+        };
         const restore = actions.createEl("button", { cls: "collab-comment-btn" });
         setIcon(restore, "rotate-ccw"); restore.appendText(" Restore");
         restore.onclick = async (e) => {
@@ -133,11 +141,49 @@ export class HistoryView extends ItemView {
   }
 
   private showPreview(root: HTMLElement, v: Version, content: string): void {
-    const existing = root.querySelector(".collab-history-preview");
+    const existing = root.querySelector(".collab-history-output");
     existing?.remove();
-    const box = root.createDiv({ cls: "collab-history-preview" });
+    const box = root.createDiv({ cls: "collab-history-preview collab-history-output" });
     box.createEl("div", { text: `Preview — ${relTime(v.date)}`, cls: "collab-history-when" });
     box.createEl("pre", { text: content.slice(0, 4000) + (content.length > 4000 ? "\n…" : "") });
+  }
+
+  private showDiff(root: HTMLElement, v: Version, savedContent: string): void {
+    const existing = root.querySelector(".collab-history-output");
+    existing?.remove();
+    const current = this.ctx?.currentText() ?? "";
+    const diff = buildInlineDiff(savedContent, current, { contextLines: 3 });
+    const box = root.createDiv({ cls: "collab-history-preview collab-history-output" });
+    const title = `Diff — ${relTime(v.date)} to current (+${diff.added}/-${diff.removed})`;
+    box.createEl("div", { text: title, cls: "collab-history-when" });
+
+    if (diff.added === 0 && diff.removed === 0) {
+      box.createEl("p", { text: "No differences from the current note.", cls: "collab-comments-empty" });
+      return;
+    }
+
+    if (diff.truncated) {
+      box.createEl("p", { text: "Large diff truncated for display.", cls: "collab-comments-empty" });
+    }
+
+    const table = box.createDiv({ cls: "collab-history-diff" });
+    for (const row of diff.rows) this.renderDiffRow(table, row);
+  }
+
+  private renderDiffRow(table: HTMLElement, row: DiffRow): void {
+    if (row.kind === "omitted") {
+      const el = table.createDiv({ cls: "collab-history-diff-line omitted" });
+      el.createSpan({ text: "", cls: "collab-history-diff-num" });
+      el.createSpan({ text: "", cls: "collab-history-diff-num" });
+      el.createSpan({ text: `... ${row.count ?? 0} unchanged line${row.count === 1 ? "" : "s"} ...`, cls: "collab-history-diff-text" });
+      return;
+    }
+
+    const el = table.createDiv({ cls: `collab-history-diff-line ${row.kind}` });
+    el.createSpan({ text: row.oldLine ? String(row.oldLine) : "", cls: "collab-history-diff-num" });
+    el.createSpan({ text: row.newLine ? String(row.newLine) : "", cls: "collab-history-diff-num" });
+    const sign = row.kind === "add" ? "+ " : row.kind === "remove" ? "- " : "  ";
+    el.createSpan({ text: sign + (row.text ?? ""), cls: "collab-history-diff-text" });
   }
 }
 

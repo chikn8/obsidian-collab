@@ -33,7 +33,7 @@ createFileProvider in-flight reservation · comment-anchor quote-verify + re-mat
 **Tier 2**: real-`FileProvider` integration test (fake vault/IDB/WS via esbuild alias) wired into CI.
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
-(ops, not code) · per-recipient signed identities/audit log · socket multiplexing / scale ceiling
+(ops, not code) · per-recipient signed identities · socket multiplexing / scale ceiling
 (Tier 3.1) · binary/attachment sync (Tier 4.1) · hunk-level version restore · human device-matrix test.
 
 ---
@@ -300,7 +300,7 @@ with a per-room dirty-flag **global sweep**.
 only a scoped editor key plus per-share `ownerKey`, and keeps `SERVER_SECRET` on the server. `/share/link`
 and `/share/revoke` require the owner key, so a leaked client config can mint/revoke only that share. The
 old client-side HMAC path remains as a legacy fallback for old servers.
-**Remaining.** Add key-rotation windows, per-recipient/expiring invites, and an audit log (see 3.5).
+**Remaining.** Add key-rotation windows and per-recipient/expiring invites (see 3.5).
 **Verify.** Server auth tests cover role/owner key separation and revoked-owner rejection.
 
 ### 3.3 — Memory-pressure room eviction + process tuning (L)
@@ -311,9 +311,9 @@ Railway `restartPolicy` tuning; replace `closeConn`'s O(rooms) scan with a per-c
 **Fix.** Postgres / y-redis backing so stateless replicas can run behind Railway (HA + zero-downtime deploys);
 a shared relay (Redis/NATS) for cross-instance fan-out. Unlocks horizontal scale beyond one box.
 
-### 3.5 — Per-recipient revocable invites + expiring codes + audit log (M)
+### 3.5 — Per-recipient revocable invites + expiring codes (M)
 **Fix.** Fold `exp` into the HMAC for expiring share codes; per-recipient invites that revoke individually
-(not just epoch-bump-everyone); a persisted audit log of joins/revokes/cross-share attempts.
+(not just epoch-bump-everyone). A persisted audit log of joins/revokes/security rejections now exists.
 
 ---
 

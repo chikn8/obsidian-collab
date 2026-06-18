@@ -8,6 +8,7 @@ import { listVersions, getVersion, listShareFiles } from "./history.js";
 import { getMinEpoch, setMinEpoch, getShareStateHealth } from "./shareState.js";
 import { getPersistenceHealth } from "./persistence.js";
 import { startBackups, stopBackups, getBackupHealth } from "./backups.js";
+import { auditEvent } from "./audit.js";
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = parseInt(process.env.PORT || "8080", 10);
@@ -63,6 +64,10 @@ function metricsAuthorized(req: http.IncomingMessage, url: URL): boolean {
 function mintAuthorized(req: http.IncomingMessage, url: URL): boolean {
   const provided = bearerOrQueryToken(req, url);
   return !!provided && !!SHARE_MINT_TOKEN && timingSafeEqualStr(provided, SHARE_MINT_TOKEN);
+}
+
+function remoteAddress(req: http.IncomingMessage): string {
+  return req.socket.remoteAddress || "";
 }
 
 function isRole(value: string | null): value is Role {
@@ -136,6 +141,7 @@ const server = http.createServer(async (req, res) => {
       const shareId = generateShareId();
       const epoch = 1;
       await setMinEpoch(shareId, epoch);
+      void auditEvent("share.create", { shareId, role: "editor", epoch, remote: remoteAddress(req) });
       return json(200, {
         id: shareId,
         role: "editor",
@@ -152,7 +158,11 @@ const server = http.createServer(async (req, res) => {
       const token = bearerOrQueryToken(req, url);
       if (!shareId || !isRole(role)) return json(400, { error: "bad request" });
       const min = await getMinEpoch(shareId);
-      if (!verifyOwnerAccess(SHARE_OWNER_SECRET, shareId, token, epoch, min)) return json(401, { error: "unauthorized" });
+      if (!verifyOwnerAccess(SHARE_OWNER_SECRET, shareId, token, epoch, min)) {
+        void auditEvent("share.link.rejected", { shareId, role, epoch, remote: remoteAddress(req), reason: "owner-auth" });
+        return json(401, { error: "unauthorized" });
+      }
+      void auditEvent("share.link.minted", { shareId, role, epoch, remote: remoteAddress(req) });
       return json(200, {
         id: shareId,
         role,
@@ -167,10 +177,14 @@ const server = http.createServer(async (req, res) => {
       const token = bearerOrQueryToken(req, url);
       if (!shareId || epoch === undefined || !Number.isFinite(epoch)) return json(400, { error: "bad request" });
       const min = await getMinEpoch(shareId);
-      if (!verifyOwnerAccess(SHARE_OWNER_SECRET, shareId, token, epoch, min)) return json(401, { error: "unauthorized" });
+      if (!verifyOwnerAccess(SHARE_OWNER_SECRET, shareId, token, epoch, min)) {
+        void auditEvent("share.revoke.rejected", { shareId, epoch, remote: remoteAddress(req), reason: "owner-auth" });
+        return json(401, { error: "unauthorized" });
+      }
       const newEpoch = Math.max(epoch + 1, min + 1);
       await setMinEpoch(shareId, newEpoch);
       const closedConnections = closeRevokedConnections(shareId, newEpoch);
+      void auditEvent("share.revoke", { shareId, oldEpoch: epoch, newEpoch, closedConnections, remote: remoteAddress(req) });
       return json(200, {
         ok: true,
         shareId,
@@ -210,9 +224,13 @@ const server = http.createServer(async (req, res) => {
       const epoch = Number(url.searchParams.get("epoch"));
       const token = bearerOrQueryToken(req, url);
       if (!shareId || !Number.isFinite(epoch)) return json(400, { error: "bad request" });
-      if (!timingSafeEqualStr(token, adminToken(ADMIN_SECRET, shareId, epoch))) return json(401, { error: "unauthorized" });
+      if (!timingSafeEqualStr(token, adminToken(ADMIN_SECRET, shareId, epoch))) {
+        void auditEvent("admin.revoke.rejected", { shareId, epoch, remote: remoteAddress(req), reason: "admin-auth" });
+        return json(401, { error: "unauthorized" });
+      }
       await setMinEpoch(shareId, epoch);
       const closedConnections = closeRevokedConnections(shareId, epoch);
+      void auditEvent("admin.revoke", { shareId, epoch, closedConnections, remote: remoteAddress(req) });
       return json(200, { ok: true, shareId, minEpoch: epoch, closedConnections });
     }
 
@@ -254,6 +272,14 @@ server.on("upgrade", async (request, socket, head) => {
 
   if (!ok) {
     console.log(`[auth] rejected connection: invalid token for room "${room}"`);
+    void auditEvent("ws.auth.rejected", {
+      room,
+      shareId,
+      role: roleParam,
+      epoch: epochParam,
+      remote: request.socket.remoteAddress || "",
+      reason: "token",
+    });
     socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
     socket.destroy();
     return;

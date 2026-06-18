@@ -8,6 +8,7 @@ import * as decoding from "lib0/decoding";
 import { loadState, saveState, startPeriodicSave, stopPeriodicSave } from "./persistence.js";
 import { handleNotify, registerTopic } from "./notify.js";
 import { logEvent } from "./logging.js";
+import { auditEvent } from "./audit.js";
 
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
@@ -156,6 +157,13 @@ function filterAndStampAwarenessUpdate(
         room: doc.name,
         ...roomInfo(doc.name),
         connId: (conn as any).collabConnId,
+        clientId,
+      });
+      void auditEvent("awareness.rejected_foreign_client", {
+        room: doc.name,
+        ...roomInfo(doc.name),
+        connId: (conn as any).collabConnId,
+        uid: (conn as any).collabIdentity?.uid,
         clientId,
       });
       continue;
@@ -529,6 +537,17 @@ function closeConn(conn: WebSocket): void {
       connId: (conn as any).collabConnId,
       conns: doc.conns.size,
     });
+    void auditEvent("ws.leave", {
+      room: roomName,
+      ...roomInfo(roomName),
+      connId: (conn as any).collabConnId,
+      role: (conn as any).collabRole || "editor",
+      uid: (conn as any).collabIdentity?.uid,
+      name: (conn as any).collabIdentity?.name,
+      device: (conn as any).collabIdentity?.device,
+      deviceId: (conn as any).collabIdentity?.deviceId,
+      conns: doc.conns.size,
+    });
 
     // If no clients remain, persist and clean up
     if (doc.conns.size === 0) {
@@ -572,6 +591,7 @@ export async function setupWSConnection(
 
   if (!roomName) {
     console.error("[rooms] no room name provided");
+    void auditEvent("ws.bad_request", { reason: "missing-room", remote: req.socket.remoteAddress || "" });
     conn.close(4000, "No room name");
     return;
   }
@@ -603,6 +623,19 @@ export async function setupWSConnection(
     clients: doc.awareness.getStates().size,
     textLen: fileTextLen(doc),
     stateBytes: stateBytes(doc),
+  });
+  void auditEvent("ws.join", {
+    room: roomName,
+    ...roomInfo(roomName),
+    connId: (conn as any).collabConnId,
+    role: (conn as any).collabRole || "editor",
+    uid: (conn as any).collabIdentity?.uid,
+    name: (conn as any).collabIdentity?.name,
+    device: (conn as any).collabIdentity?.device,
+    deviceId: (conn as any).collabIdentity?.deviceId,
+    epoch: (conn as any).collabEpoch ?? 0,
+    remote: req.socket.remoteAddress || "",
+    conns: doc.conns.size,
   });
 
   // Handle incoming messages

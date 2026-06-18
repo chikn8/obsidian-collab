@@ -41,7 +41,7 @@ per client/share; server e2e verifies two rooms over two mux sockets; server per
 dirty-room global save sweep instead of one interval per active room.
 
 **Still open (highest first):** verify the Railway **volume is persistent** + backup env vars are set
-(ops, not code) · account-grade identity/key rotation · HA/process tuning · blob GC/object-store polish ·
+(ops, not code) · account-grade identity/key rotation · HA/process tuning · object-store polish ·
 side-by-side diff polish · human device-matrix test.
 
 ---
@@ -335,9 +335,10 @@ path; safe-listed image/PDF/audio/video attachments now upload to `/blob` as con
 objects under `$PERSIST_DIR/blobs`, with manifest `kind:"binary"`/`blobHash`/`blobSize` metadata. Editors
 can upload; any valid role can download. Peers download and write the attachment when the manifest entry
 appears. Server tests and real-server e2e cover blob validation, editor upload, viewer download, and
-viewer upload rejection.
-**Remaining.** Blob garbage collection, object-store offload for very large vaults, richer conflict UI for
-same binary changed on two devices, and human mobile testing with real images/PDFs.
+viewer upload rejection. Orphan blob GC can scan persisted manifests, keep referenced tombstone blobs for
+recovery, dry-run by default through `/admin/blob-gc`, and optionally run on an interval.
+**Remaining.** Object-store offload for very large vaults, richer conflict UI for same binary changed on
+two devices, and human mobile testing with real images/PDFs.
 
 ### 4.2 — Inline / side-by-side version diff (M)
 **Status.** History preview is no longer only a raw 4000-char dump: the sidebar can compare a saved

@@ -162,6 +162,8 @@ legacy `/admin/revoke` raises it and disconnects live revoked clients with close
   `SNAPSHOT_GIT_REMOTE` for off-box history; `git gc` keeps it bounded.
 - **`blobs.ts`** — stores content-addressed attachment blobs under `$PERSIST_DIR/blobs/<share>/<hash>`.
   Upload is editor-only, download is any valid share role, and the server verifies SHA-256 before writing.
+- **`blobGc.ts`** — scans persisted manifests for referenced `blobHash` values and removes old
+  unreferenced blob files by admin command or optional interval.
 - **`backups.ts`** — runs `PERSIST_BACKUP_COMMAND` on an interval for a full-corpus off-box archive.
 - **`notify.ts`** — `@mention` pushes via ntfy. The topic registry is **namespaced per authed share**
   (no cross-share hijack), the sender's share comes from the connection (not the client frame), viewers

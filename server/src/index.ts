@@ -3,6 +3,7 @@ import { randomBytes } from "crypto";
 import { WebSocketServer } from "ws";
 import { setupMuxConnection, setupWSConnection, getMetrics, saveAllDocs, closeRevokedConnections, closeInviteConnections } from "./rooms.js";
 import { BLOB_MAX_BYTES, loadBlob, readBlobBody, safeBlobHash, safeBlobRelPath, storeBlob } from "./blobs.js";
+import { BLOB_GC_GRACE_MS, startBlobGc, stopBlobGc, sweepOrphanBlobs } from "./blobGc.js";
 import {
   authenticate,
   timingSafeEqualStr,
@@ -74,6 +75,12 @@ function metricsAuthorized(req: http.IncomingMessage, url: URL): boolean {
   if (!REQUIRE_AUTH && !METRICS_TOKEN) return true;
   const provided = bearerOrQueryToken(req, url);
   return !!provided && !!METRICS_TOKEN && timingSafeEqualStr(provided, METRICS_TOKEN);
+}
+
+function adminAuthorized(req: http.IncomingMessage, url: URL): boolean {
+  if (!REQUIRE_AUTH && !ADMIN_SECRET) return true;
+  const provided = bearerOrQueryToken(req, url);
+  return !!provided && !!ADMIN_SECRET && timingSafeEqualStr(provided, ADMIN_SECRET);
 }
 
 function mintAuthorized(req: http.IncomingMessage, url: URL): boolean {
@@ -421,6 +428,24 @@ const server = http.createServer(async (req, res) => {
       return json(200, { ok: true, shareId, minEpoch: epoch, closedConnections });
     }
 
+    if (p === "/admin/blob-gc" && req.method === "POST") {
+      if (!adminAuthorized(req, url)) return json(401, { error: "unauthorized" });
+      const dryRun = url.searchParams.get("dryRun") !== "false";
+      const graceParam = url.searchParams.get("graceMs");
+      const graceMs = graceParam == null ? BLOB_GC_GRACE_MS : Number(graceParam);
+      if (!Number.isFinite(graceMs) || graceMs < 0) return json(400, { error: "bad graceMs" });
+      const result = await sweepOrphanBlobs({ dryRun, graceMs });
+      void auditEvent("admin.blob_gc", {
+        dryRun,
+        graceMs,
+        scanned: result.scanned,
+        deleted: result.deleted,
+        bytesDeleted: result.bytesDeleted,
+        remote: remoteAddress(req),
+      });
+      return json(200, { ok: true, ...result });
+    }
+
     return json(404, { error: "not found" });
   } catch (e) {
     console.error("[http] error:", e);
@@ -515,6 +540,7 @@ startSnapshots().catch((e) => {
   console.error("[server] failed to start snapshots:", e);
 });
 startBackups();
+startBlobGc();
 
 // Start listening
 server.listen(PORT, HOST, () => {
@@ -546,6 +572,7 @@ async function shutdown(signal: string): Promise<void> {
 
   stopSnapshots();
   stopBackups();
+  stopBlobGc();
   await saveAllDocs(signal).catch((e) => console.error("[server] final save failed:", e));
   await commitSnapshotsNow().catch((e) => console.error("[server] final snapshot commit failed:", e));
 

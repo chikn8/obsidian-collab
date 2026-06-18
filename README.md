@@ -183,6 +183,8 @@ Settings → Real-Time Collaboration:
 | `PERSIST_DIR` | `./collab-data` | Durable state dir — **mount a persistent volume here** |
 | `WS_MAX_PAYLOAD` | `2097152` | Max inbound WS frame (anti-bloat/OOM) |
 | `BLOB_MAX_BYTES` | `26214400` | Max attachment/blob upload size |
+| `BLOB_GC_GRACE_MS` | `86400000` | Minimum orphan blob age before GC may delete it |
+| `BLOB_GC_INTERVAL_MS` | `0` | Optional automatic orphan blob GC cadence; `0` disables scheduled GC |
 | `SAVE_SWEEP_INTERVAL_MS` | `60000` | Dirty-room persistence sweep cadence |
 | `STALE_SAVE_MS` | — | `/health` 503s if dirty room state remains unsaved longer than this |
 | `MIN_FREE_BYTES` | — | `/health` 503s below this much free disk |
@@ -270,6 +272,9 @@ manual installs but violates Obsidian's current community-directory naming rule 
 - **Backups:** set `SNAPSHOT_GIT_REMOTE` (push history) **and** `PERSIST_BACKUP_COMMAND` (full-corpus
   archive), then set `REQUIRE_SNAPSHOT_REMOTE=true` and `REQUIRE_PERSIST_BACKUP=true`. Without these,
   all data lives on one volume — see the warning in `server/RECOVERY.md`.
+- **Blob GC:** `POST /admin/blob-gc?dryRun=true` with `Authorization: Bearer $ADMIN_SECRET` previews
+  orphan attachment cleanup. Use `dryRun=false` to delete unreferenced blobs older than
+  `BLOB_GC_GRACE_MS`, or set `BLOB_GC_INTERVAL_MS` for scheduled sweeps.
 - **Restore:** follow `server/RECOVERY.md`.
 
 ## Project status

@@ -25,6 +25,27 @@ tar -C "$PERSIST_DIR" -czf /tmp/obsidian-sync-backup.tgz . && rclone copy /tmp/o
 
 Set `OPS_NTFY_TOPIC` so backup, save, corrupt-state, and snapshot failures page you once per failure class.
 
+## Blob garbage collection
+
+Attachment blobs are content-addressed under `blobs/<share>/<hash-prefix>/<hash>`. Deleted binary files
+remain recoverable because their manifest tombstones still reference the blob hash.
+
+Preview orphan cleanup:
+
+```sh
+curl -X POST "$BASE_URL/admin/blob-gc?dryRun=true" \
+  -H "Authorization: Bearer $ADMIN_SECRET"
+```
+
+Delete unreferenced blobs older than the configured grace window:
+
+```sh
+curl -X POST "$BASE_URL/admin/blob-gc?dryRun=false" \
+  -H "Authorization: Bearer $ADMIN_SECRET"
+```
+
+Set `BLOB_GC_INTERVAL_MS` to run this automatically; `BLOB_GC_GRACE_MS` defaults to one day.
+
 ## Restore from full-corpus backup
 
 1. Stop the Railway service or deploy a fresh service with an empty volume.

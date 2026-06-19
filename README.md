@@ -224,6 +224,21 @@ Settings → Real-Time Collaboration:
 
 See `server/.env.example` for a copy-paste template, and `server/RECOVERY.md` for backup/restore.
 
+### Security model at a glance
+
+- The relay is trusted infrastructure, not end-to-end encrypted storage. It receives shared note text,
+  filenames, comments, awareness, and synced attachments for selected shares.
+- `SERVER_SECRET` is the root share-key minting secret. Keep it server-side; normal clients should use
+  server-minted share links/invites, not the root secret.
+- `SHARE_MINT_TOKEN` lets a plugin device ask the server to create a new share without learning
+  `SERVER_SECRET`.
+- Each created share gets a scoped `ownerKey`. That owner key can mint/revoke links for that one share,
+  but it cannot derive access to other shares.
+- Invite links add a server-stored invite id, optional expiry, revocation state, and signed per-install
+  identity binding. They default to one signed install unless the creator raises **Max devices**.
+- Logs, diagnostic bundles, and optional client telemetry are redacted before storage/transmission, but
+  they are debugging aids, not a replacement for strong secrets and a trusted relay operator.
+
 ## Using it
 
 - **Share a folder:** right-click a folder → *Share this folder (collab)* (or `Cmd+P` → *Share a

@@ -13953,6 +13953,17 @@ var StatusBarWidget = class {
 // src/ui/SettingsTab.ts
 var import_obsidian7 = require("obsidian");
 
+// src/utils/inviteOptions.ts
+function parseInviteMaxDevices(value) {
+  const raw = (value || "1").trim();
+  const maxDevices = raw ? Number(raw) : 1;
+  return Number.isInteger(maxDevices) && maxDevices >= 1 && maxDevices <= 10 ? maxDevices : null;
+}
+function inviteDeviceLabel(maxDevices) {
+  const count2 = Number.isInteger(maxDevices) && (maxDevices || 0) > 0 ? maxDevices : 1;
+  return `${count2} device${count2 === 1 ? "" : "s"}`;
+}
+
 // src/ui/modals.ts
 var import_obsidian6 = require("obsidian");
 
@@ -14287,9 +14298,8 @@ var CollabSettingsTab = class extends import_obsidian7.PluginSettingTab {
               new import_obsidian7.Notice("Expiry must be a positive number of hours.");
               return;
             }
-            const maxDevicesRaw = (res.maxDevices || "1").trim();
-            const maxDevices = maxDevicesRaw ? Number(maxDevicesRaw) : 1;
-            if (!Number.isInteger(maxDevices) || maxDevices < 1 || maxDevices > 10) {
+            const maxDevices = parseInviteMaxDevices(res.maxDevices);
+            if (maxDevices == null) {
               new import_obsidian7.Notice("Max devices must be a whole number from 1 to 10.");
               return;
             }
@@ -14323,7 +14333,7 @@ var CollabSettingsTab = class extends import_obsidian7.PluginSettingTab {
         const label = invite.recipient || invite.id;
         const meta = [
           invite.role,
-          `${invite.maxDevices || 1} device${(invite.maxDevices || 1) === 1 ? "" : "s"}`,
+          inviteDeviceLabel(invite.maxDevices),
           invite.expiresAt ? `expires ${new Date(invite.expiresAt).toLocaleString()}` : "no expiry",
           invite.revokedAt ? `revoked ${new Date(invite.revokedAt).toLocaleString()}` : null
         ].filter(Boolean).join(" \xB7 ");

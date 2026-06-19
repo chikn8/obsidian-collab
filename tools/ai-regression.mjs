@@ -18,6 +18,7 @@ const steps = [
   { id: "server-build", cwd: "server", cmd: "npm", args: ["run", "build"] },
   ...(quick ? [] : [{ id: "server-e2e", cwd: "server", cmd: "npm", args: ["run", "test:e2e"] }]),
   { id: "diagnostics-summary", cwd: ".", cmd: "node", args: ["tools/diagnostics-summary.test.mjs"] },
+  { id: "requirements-audit", cwd: ".", cmd: "node", args: ["tools/requirements-audit.mjs"] },
   { id: "diff-check", cwd: ".", cmd: "git", args: ["diff", "--check"] },
 ];
 

@@ -314,7 +314,8 @@ node tools/prod-health-check.mjs
 
 Before tagging a release, run `node tools/release-readiness.mjs`. It writes a JSON report under the
 system temp directory and calls out the remaining human gates: live production health/backup verification
-when `--prod` is not used, plus the real mobile/two-person device matrix.
+when `--prod` is not used, plus the real mobile/two-person device matrix in
+[MOBILE_TEST_MATRIX.md](docs/MOBILE_TEST_MATRIX.md).
 
 ## Plugin updates
 
@@ -358,4 +359,4 @@ work (scale/HA, true account/login recovery semantics, object-store polish, and 
 test) is tracked in **[ROADMAP-v2-hardening.md](ROADMAP-v2-hardening.md)**.
 
 **Before trusting it with important notes:** exclude the shared folder from Obsidian Sync, confirm an
-off-box backup is configured, and run one deliberate two-person + mobile break-it session.
+off-box backup is configured, and run [MOBILE_TEST_MATRIX.md](docs/MOBILE_TEST_MATRIX.md).

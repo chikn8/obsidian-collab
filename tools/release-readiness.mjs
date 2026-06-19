@@ -49,7 +49,7 @@ const manualGates = [
   {
     id: "mobile-device-matrix",
     status: "manual",
-    detail: "Run one desktop + one phone peer on iOS/Android foreground/background, attachment sync, comments, and conflict recovery.",
+    detail: "Run docs/MOBILE_TEST_MATRIX.md with one desktop + one phone peer, covering foreground/background, attachment sync, comments, and conflict recovery.",
   },
   {
     id: "railway-volume",

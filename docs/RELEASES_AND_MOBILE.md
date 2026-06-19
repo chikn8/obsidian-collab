@@ -88,7 +88,8 @@ Known mobile differences:
 - OS-level push notifications are not provided by Obsidian plugins. The existing ntfy path is external.
 
 The practical mobile test matrix is still human: iOS and Android, one desktop peer, one phone peer,
-foreground/background transitions, attachment sync, comments, and conflict recovery.
+foreground/background transitions, attachment sync, comments, and conflict recovery. Use
+[MOBILE_TEST_MATRIX.md](MOBILE_TEST_MATRIX.md) as the release checklist.
 
 ## References
 

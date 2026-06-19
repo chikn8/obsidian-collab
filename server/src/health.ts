@@ -1,6 +1,7 @@
 import { getBackupHealth } from "./backups.js";
 import { getBlobStorageHealth } from "./blobs.js";
 import { getLogDrainHealth } from "./logging.js";
+import { getOpsAlertHealth } from "./notify.js";
 import { getPersistenceHealth } from "./persistence.js";
 import { getRuntimeHealth } from "./runtime.js";
 import { getShareStateHealth } from "./shareState.js";
@@ -16,6 +17,7 @@ export async function collectServerHealth() {
   const backups = getBackupHealth();
   const blobs = getBlobStorageHealth();
   const logDrain = getLogDrainHealth();
+  const opsAlerts = getOpsAlertHealth();
   const ok =
     persistence.ok &&
     snapshots.ok &&
@@ -23,6 +25,7 @@ export async function collectServerHealth() {
     backups.ok &&
     runtime.ok &&
     blobs.ok &&
+    opsAlerts.ok &&
     logDrain.ok !== false;
 
   return {
@@ -36,5 +39,6 @@ export async function collectServerHealth() {
     blobs,
     runtime,
     logDrain,
+    opsAlerts,
   };
 }

@@ -213,7 +213,9 @@ legacy `/admin/revoke` raises it and disconnects live revoked clients with close
   disabled.
 - **`healthMonitor.ts`** — optional in-process `/health` monitor. In production it checks the same
   aggregate health object on a cadence and sends deduped `OPS_NTFY_TOPIC` alerts when any component is
-  degraded, so deployments do not depend solely on platform-level health alerts.
+  degraded, so deployments do not depend solely on platform-level health alerts. `/health` also exposes
+  an `opsAlerts` component and, by default in production, degrades when ops alerting is required but no
+  topic is configured.
 - **`notify.ts`** — `@mention` pushes via ntfy. The topic registry is **namespaced per authed share**
   (no cross-share hijack), the sender's share comes from the connection (not the client frame), viewers
   can't send, and ntfy `Click` links are derived only from sanitized vault-relative Markdown/Canvas paths.

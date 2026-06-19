@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
 import { atomicWriteFile } from "./storage.js";
+import { envFlag, productionDefault } from "./env.js";
 
 /**
  * Server-side @mention push fan-out via ntfy.sh (ports Scripts/notify.sh to fetch).
@@ -15,6 +16,7 @@ const PERSIST_DIR = process.env.PERSIST_DIR || "./collab-data";
 const REG_FILE = path.join(PERSIST_DIR, "notify-registry.json");
 const NTFY_SERVER = process.env.NTFY_SERVER || "https://ntfy.sh";
 const OPS_NTFY_TOPIC = process.env.OPS_NTFY_TOPIC || "";
+const REQUIRE_OPS_ALERTS = envFlag("REQUIRE_OPS_ALERTS", productionDefault());
 const OPS_ALERT_DEDUP_MS = Number(process.env.OPS_ALERT_DEDUP_MS || 15 * 60_000);
 
 type Registry = Record<string, string | string[]>; // uid -> topic(s), string kept for old files
@@ -111,6 +113,15 @@ export async function alertOps(key: string, title: string, body: string): Promis
   } catch (e) {
     console.error("[notify] ops alert failed:", e);
   }
+}
+
+export function getOpsAlertHealth() {
+  return {
+    ok: !REQUIRE_OPS_ALERTS || !!OPS_NTFY_TOPIC,
+    configured: !!OPS_NTFY_TOPIC,
+    required: REQUIRE_OPS_ALERTS,
+    dedupMs: OPS_ALERT_DEDUP_MS,
+  };
 }
 
 export interface NotifyPayload {

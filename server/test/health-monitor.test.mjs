@@ -21,13 +21,14 @@ const degradedHealth = {
   blobs: { ok: true },
   runtime: { ok: true },
   logDrain: { ok: true },
+  opsAlerts: { ok: false, configured: false, required: true },
 };
 
 const components = degradedHealthComponents(degradedHealth);
-check("finds degraded health components", components.join(",") === "snapshots,backups", components.join(","));
+check("finds degraded health components", components.join(",") === "snapshots,backups,opsAlerts", components.join(","));
 const body = healthAlertBody(degradedHealth, components);
-check("alert body summarizes status", body.includes("status=degraded") && body.includes("degraded=snapshots,backups"), body);
-check("alert body includes component reasons", body.includes("remote missing") && body.includes("rclone failed"), body);
+check("alert body summarizes status", body.includes("status=degraded") && body.includes("degraded=snapshots,backups,opsAlerts"), body);
+check("alert body includes component reasons", body.includes("remote missing") && body.includes("rclone failed") && body.includes("required but not configured"), body);
 
 {
   const sent = [];

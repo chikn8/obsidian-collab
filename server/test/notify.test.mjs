@@ -20,9 +20,12 @@ globalThis.fetch = async (url, init) => {
   return { ok: true, status: 200 };
 };
 
-const { handleNotify, registerTopic } = await import("../src/notify.ts");
+const { getOpsAlertHealth, handleNotify, registerTopic } = await import("../src/notify.ts");
 
 try {
+  const opsHealth = getOpsAlertHealth();
+  check("ops alerts health exposes configuration", opsHealth.configured === false && opsHealth.required === false && opsHealth.ok === true, JSON.stringify(opsHealth));
+
   await registerTopic("share-1", "target", "topic_target");
   await handleNotify("share-1", {
     fromUid: "sender-a",

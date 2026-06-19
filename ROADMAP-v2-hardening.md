@@ -285,8 +285,9 @@ counters for save/snapshot failures, disconnects, revocations, rejected writes/p
 rate limiting, backpressure closes, send failures, client errors, and mux room rejections, alongside live
 room/runtime state. An in-process health monitor can also check the same aggregate health object on a
 cadence and send deduped `OPS_NTFY_TOPIC` alerts when any component is degraded, so alerting does not depend
-only on the hosted platform.
-**Remaining.** Production must still set/verify `OPS_NTFY_TOPIC` if relying on the internal alert path.
+only on the hosted platform. `/health` now exposes `opsAlerts` status and, by default in production,
+degrades when ops alerting is required but not configured.
+**Remaining.** Production must still set `OPS_NTFY_TOPIC` or explicitly disable `REQUIRE_OPS_ALERTS`.
 **Verify.** Unit/e2e coverage checks metric counter behavior and `/metrics.counters` increments on real
 clientlog, blob rejection, and revocation paths.
 

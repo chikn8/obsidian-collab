@@ -65,7 +65,7 @@ export async function checkHealthOnce(
 
 export function degradedHealthComponents(health: Record<string, any>): string[] {
   const out: string[] = [];
-  for (const key of ["persistence", "snapshots", "shareState", "backups", "blobs", "runtime", "logDrain"]) {
+  for (const key of ["persistence", "snapshots", "shareState", "backups", "blobs", "runtime", "logDrain", "opsAlerts"]) {
     const component = health?.[key];
     if (component && component.ok === false) out.push(key);
   }
@@ -88,6 +88,7 @@ export function healthAlertBody(health: Record<string, any>, degraded = degraded
       component.lastBackupError ||
       component.lastCommitError ||
       component.lastPushError ||
+      (component.required && !component.configured ? "required but not configured" : "") ||
       JSON.stringify(component).slice(0, 180);
     lines.push(`${key}: ${reason}`);
   }

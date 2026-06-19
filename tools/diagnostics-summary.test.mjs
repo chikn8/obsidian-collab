@@ -28,6 +28,7 @@ const bundle = {
         renderedFilePresenceHosts: 1,
         renderedTabPresenceHosts: 0,
         lastPresenceHadMissingAnchors: true,
+        presenceAnchorRetryCount: 3,
       }],
     },
     diagnostics: {
@@ -67,6 +68,7 @@ if (result.status !== 0) {
 const out = result.stdout;
 check(out.includes("Active Editor / Lifecycle Signals"), "prints lifecycle section");
 check(out.includes("Manager share-1:"), "prints manager snapshot");
+check(out.includes("anchorRetries=3"), "prints presence anchor retry count");
 check(out.includes("Presence anchors missing:"), "prints missing presence details");
 check(out.includes("Latest Warnings/Errors"), "prints error section");
 

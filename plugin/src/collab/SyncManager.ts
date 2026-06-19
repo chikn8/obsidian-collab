@@ -90,6 +90,8 @@ export class SyncManager {
   private renderedTabPresence: Map<string, HTMLElement[]> = new Map();
   private lastPresenceSig = "";
   private lastPresenceHadMissingAnchors = false;
+  private presenceAnchorRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private presenceAnchorRetryCount = 0;
   private linkRewriteRenames: Set<string> = new Set();
   private debouncedPresence: () => void;
   private debouncedStatus: () => void;
@@ -196,6 +198,8 @@ export class SyncManager {
   /** Re-render presence UI after Obsidian changes tab/file-explorer layout. */
   refreshPresenceUi(): void {
     trace("presence", "refresh-requested", { shareId: this.histShareId, providers: this.fileProviders.size });
+    this.clearPresenceAnchorRetry();
+    this.presenceAnchorRetryCount = 0;
     this.lastPresenceSig = "";
     this.debouncedPresence();
   }
@@ -236,6 +240,7 @@ export class SyncManager {
       renderedFilePresenceHosts: this.renderedPresence.size,
       renderedTabPresenceHosts: this.renderedTabPresence.size,
       lastPresenceHadMissingAnchors: this.lastPresenceHadMissingAnchors,
+      presenceAnchorRetryCount: this.presenceAnchorRetryCount,
     };
   }
 
@@ -1624,10 +1629,15 @@ export class SyncManager {
         .map(([path, users]) => [path, users.map((u) => [u.presenceKey, u.typing, u.hasCaret, u.color])])
         .sort()
     );
+    const presenceChanged = sig !== this.lastPresenceSig;
     const detachedHosts =
       !renderedPresenceConnected(this.renderedPresence) ||
       !renderedPresenceConnected(this.renderedTabPresence);
     if (sig === this.lastPresenceSig && !detachedHosts && !this.lastPresenceHadMissingAnchors) return;
+    if (presenceChanged) {
+      this.clearPresenceAnchorRetry();
+      this.presenceAnchorRetryCount = 0;
+    }
     this.lastPresenceSig = sig;
     if (detachedHosts) {
       trace("presence", "host-detached-redraw", {
@@ -1639,7 +1649,9 @@ export class SyncManager {
 
     const fileRendered = this.renderFileTreePresence(fileUsers);
     const tabRendered = this.renderTabPresence(fileUsers);
-    this.lastPresenceHadMissingAnchors = fileRendered.missing > 0 || tabRendered.missing > 0;
+    const missingAnchors = fileRendered.missing + tabRendered.missing;
+    this.lastPresenceHadMissingAnchors = missingAnchors > 0;
+    this.schedulePresenceAnchorRetry(missingAnchors, fileUsers.size);
     trace("presence", "rendered", {
       shareId: this.histShareId,
       activeFiles: fileUsers.size,
@@ -1648,6 +1660,34 @@ export class SyncManager {
       tabBadges: tabRendered.rendered,
       tabMissing: tabRendered.missing,
     });
+  }
+
+  private schedulePresenceAnchorRetry(missingAnchors: number, activeFiles: number): void {
+    if (missingAnchors <= 0 || activeFiles <= 0) {
+      this.clearPresenceAnchorRetry();
+      this.presenceAnchorRetryCount = 0;
+      return;
+    }
+    if (this.presenceAnchorRetryTimer || this.presenceAnchorRetryCount >= 10) return;
+    const attempt = ++this.presenceAnchorRetryCount;
+    const delay = Math.min(2000, 250 + attempt * 150);
+    this.presenceAnchorRetryTimer = setTimeout(() => {
+      this.presenceAnchorRetryTimer = null;
+      trace("presence", "anchor-retry", {
+        shareId: this.histShareId,
+        attempt,
+        missingAnchors,
+        activeFiles,
+      });
+      this.lastPresenceSig = "";
+      this.debouncedPresence();
+    }, delay);
+  }
+
+  private clearPresenceAnchorRetry(): void {
+    if (!this.presenceAnchorRetryTimer) return;
+    clearTimeout(this.presenceAnchorRetryTimer);
+    this.presenceAnchorRetryTimer = null;
   }
 
   private collectFilePresence(): Map<string, PresenceDevice[]> {
@@ -1739,10 +1779,12 @@ export class SyncManager {
   }
 
   private clearPresenceUi(): void {
+    this.clearPresenceAnchorRetry();
     clearRenderedPresence(this.renderedPresence);
     clearRenderedPresence(this.renderedTabPresence);
     this.lastPresenceSig = "";
     this.lastPresenceHadMissingAnchors = false;
+    this.presenceAnchorRetryCount = 0;
   }
 
   /** Stop syncing this share */

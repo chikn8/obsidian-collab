@@ -12189,6 +12189,8 @@ var SyncManager = class {
     this.renderedTabPresence = /* @__PURE__ */ new Map();
     this.lastPresenceSig = "";
     this.lastPresenceHadMissingAnchors = false;
+    this.presenceAnchorRetryTimer = null;
+    this.presenceAnchorRetryCount = 0;
     this.linkRewriteRenames = /* @__PURE__ */ new Set();
     // last-edited-by stamping (debounced per file to bound manifest churn). Written
     // to the SEPARATE `edits` map, never the files map, so it cannot LWW-clobber a
@@ -12286,6 +12288,8 @@ var SyncManager = class {
   /** Re-render presence UI after Obsidian changes tab/file-explorer layout. */
   refreshPresenceUi() {
     trace("presence", "refresh-requested", { shareId: this.histShareId, providers: this.fileProviders.size });
+    this.clearPresenceAnchorRetry();
+    this.presenceAnchorRetryCount = 0;
     this.lastPresenceSig = "";
     this.debouncedPresence();
   }
@@ -12329,7 +12333,8 @@ var SyncManager = class {
       pendingOffline: this.pendingOfflineCount(),
       renderedFilePresenceHosts: this.renderedPresence.size,
       renderedTabPresenceHosts: this.renderedTabPresence.size,
-      lastPresenceHadMissingAnchors: this.lastPresenceHadMissingAnchors
+      lastPresenceHadMissingAnchors: this.lastPresenceHadMissingAnchors,
+      presenceAnchorRetryCount: this.presenceAnchorRetryCount
     };
   }
   manifestMutation(action) {
@@ -13584,8 +13589,13 @@ var SyncManager = class {
     const sig = JSON.stringify(
       Array.from(fileUsers.entries()).map(([path, users]) => [path, users.map((u) => [u.presenceKey, u.typing, u.hasCaret, u.color])]).sort()
     );
+    const presenceChanged = sig !== this.lastPresenceSig;
     const detachedHosts = !renderedPresenceConnected(this.renderedPresence) || !renderedPresenceConnected(this.renderedTabPresence);
     if (sig === this.lastPresenceSig && !detachedHosts && !this.lastPresenceHadMissingAnchors) return;
+    if (presenceChanged) {
+      this.clearPresenceAnchorRetry();
+      this.presenceAnchorRetryCount = 0;
+    }
     this.lastPresenceSig = sig;
     if (detachedHosts) {
       trace("presence", "host-detached-redraw", {
@@ -13596,7 +13606,9 @@ var SyncManager = class {
     }
     const fileRendered = this.renderFileTreePresence(fileUsers);
     const tabRendered = this.renderTabPresence(fileUsers);
-    this.lastPresenceHadMissingAnchors = fileRendered.missing > 0 || tabRendered.missing > 0;
+    const missingAnchors = fileRendered.missing + tabRendered.missing;
+    this.lastPresenceHadMissingAnchors = missingAnchors > 0;
+    this.schedulePresenceAnchorRetry(missingAnchors, fileUsers.size);
     trace("presence", "rendered", {
       shareId: this.histShareId,
       activeFiles: fileUsers.size,
@@ -13605,6 +13617,32 @@ var SyncManager = class {
       tabBadges: tabRendered.rendered,
       tabMissing: tabRendered.missing
     });
+  }
+  schedulePresenceAnchorRetry(missingAnchors, activeFiles) {
+    if (missingAnchors <= 0 || activeFiles <= 0) {
+      this.clearPresenceAnchorRetry();
+      this.presenceAnchorRetryCount = 0;
+      return;
+    }
+    if (this.presenceAnchorRetryTimer || this.presenceAnchorRetryCount >= 10) return;
+    const attempt = ++this.presenceAnchorRetryCount;
+    const delay = Math.min(2e3, 250 + attempt * 150);
+    this.presenceAnchorRetryTimer = setTimeout(() => {
+      this.presenceAnchorRetryTimer = null;
+      trace("presence", "anchor-retry", {
+        shareId: this.histShareId,
+        attempt,
+        missingAnchors,
+        activeFiles
+      });
+      this.lastPresenceSig = "";
+      this.debouncedPresence();
+    }, delay);
+  }
+  clearPresenceAnchorRetry() {
+    if (!this.presenceAnchorRetryTimer) return;
+    clearTimeout(this.presenceAnchorRetryTimer);
+    this.presenceAnchorRetryTimer = null;
   }
   collectFilePresence() {
     const rels = /* @__PURE__ */ new Set();
@@ -13689,10 +13727,12 @@ var SyncManager = class {
     await this.app.workspace.getLeaf(false).openFile(file);
   }
   clearPresenceUi() {
+    this.clearPresenceAnchorRetry();
     clearRenderedPresence(this.renderedPresence);
     clearRenderedPresence(this.renderedTabPresence);
     this.lastPresenceSig = "";
     this.lastPresenceHadMissingAnchors = false;
+    this.presenceAnchorRetryCount = 0;
   }
   /** Stop syncing this share */
   async destroy() {

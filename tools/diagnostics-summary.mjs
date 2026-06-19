@@ -170,7 +170,7 @@ function printContext(context) {
     for (const manager of runtime.managers) {
       line(
         `Manager ${manager.shareId || manager.configuredShareId || "?"}`,
-        `status=${manager.status || "?"}, role=${manager.role || "?"}, files=${manager.fileProviders ?? "?"}, pending=${manager.pendingOffline ?? "?"}, fileHosts=${manager.renderedFilePresenceHosts ?? "?"}, tabHosts=${manager.renderedTabPresenceHosts ?? "?"}, missingAnchors=${bool(manager.lastPresenceHadMissingAnchors)}`
+        `status=${manager.status || "?"}, role=${manager.role || "?"}, files=${manager.fileProviders ?? "?"}, pending=${manager.pendingOffline ?? "?"}, fileHosts=${manager.renderedFilePresenceHosts ?? "?"}, tabHosts=${manager.renderedTabPresenceHosts ?? "?"}, missingAnchors=${bool(manager.lastPresenceHadMissingAnchors)}, anchorRetries=${manager.presenceAnchorRetryCount ?? 0}`
       );
     }
   }

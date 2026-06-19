@@ -84,6 +84,7 @@ for (const step of steps) {
 }
 for (const gate of manualGates) {
   console.log(`- ${gate.id}: ${gate.status}`);
+  console.log(`  ${gate.detail}`);
 }
 
 process.exit(automatedOk ? 0 : 1);

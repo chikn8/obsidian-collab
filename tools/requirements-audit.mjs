@@ -136,6 +136,9 @@ const requirements = [
     checks: [
       jsonEquals("plugin/manifest.json", "isDesktopOnly", false),
       exists("docs/MOBILE_TEST_MATRIX.md"),
+      exists("docs/mobile-test-result.example.json"),
+      exists("tools/mobile-matrix-check.mjs"),
+      contains("tools/release-readiness.mjs", "--mobile-result="),
       contains("docs/RELEASES_AND_MOBILE.md", "BRAT"),
       contains("docs/RELEASES_AND_MOBILE.md", "Community Plugin"),
       contains(".github/workflows/release-plugin.yml", "gh release create"),

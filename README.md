@@ -271,6 +271,7 @@ node tools/ai-regression.mjs --quick  # skips the real WebSocket e2e
 node tools/requirements-audit.mjs     # structural evidence map for the original feature requirements
 node tools/release-readiness.mjs      # regression + clean worktree + manual gate report
 node tools/release-readiness.mjs --prod  # also enforces live /health backup/durability gates
+node tools/release-readiness.mjs --mobile-result=docs/mobile-test-result.example.json
 
 # Plugin
 cd plugin
@@ -316,7 +317,9 @@ node tools/prod-health-check.mjs
 Before tagging a release, run `node tools/release-readiness.mjs`. It writes a JSON report under the
 system temp directory and calls out the remaining human gates: live production health/backup verification
 when `--prod` is not used, plus the real mobile/two-person device matrix in
-[MOBILE_TEST_MATRIX.md](docs/MOBILE_TEST_MATRIX.md).
+[MOBILE_TEST_MATRIX.md](docs/MOBILE_TEST_MATRIX.md). After running the mobile matrix, save a result JSON
+using [mobile-test-result.example.json](docs/mobile-test-result.example.json) and pass it with
+`--mobile-result=<path>`.
 
 ## Plugin updates
 

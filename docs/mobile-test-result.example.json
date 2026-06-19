@@ -1,0 +1,24 @@
+{
+  "pluginVersion": "0.1.1",
+  "serverDeployment": "commit-or-railway-deployment-id",
+  "desktop": {
+    "os": "macOS 15",
+    "obsidianVersion": "1.8.x"
+  },
+  "mobile": {
+    "os": "iOS 18 or Android 15",
+    "obsidianVersion": "1.8.x"
+  },
+  "checks": [
+    "setup",
+    "text-sync",
+    "presence",
+    "file-lifecycle",
+    "comments-mentions",
+    "attachments"
+  ],
+  "passed": true,
+  "failures": [],
+  "diagnosticBundles": [],
+  "completedAt": "2026-06-19T00:00:00.000Z"
+}

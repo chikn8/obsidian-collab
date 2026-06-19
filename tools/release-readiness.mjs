@@ -13,11 +13,13 @@ const runProd = argv.includes("--prod");
 const allowDirty = argv.includes("--allow-dirty");
 const reportArg = argv.find((arg) => arg.startsWith("--report="));
 const healthArg = argv.find((arg) => arg.startsWith("--health-url="));
+const mobileResultArg = argv.find((arg) => arg.startsWith("--mobile-result="));
 const reportPath = path.resolve(
   root,
   reportArg ? reportArg.slice("--report=".length) : path.join(os.tmpdir(), "obsidian-collab-release-readiness.json")
 );
 const healthUrl = healthArg ? healthArg.slice("--health-url=".length) : "https://obsidiansync-production.up.railway.app/health";
+const mobileResultPath = mobileResultArg ? mobileResultArg.slice("--mobile-result=".length) : "";
 
 const startedAt = new Date();
 const steps = [];
@@ -45,11 +47,22 @@ if (runProd) {
   }));
 }
 
+if (mobileResultPath) {
+  steps.push(await runStep({
+    id: "mobile-matrix",
+    cwd: ".",
+    cmd: process.execPath,
+    args: ["tools/mobile-matrix-check.mjs", mobileResultPath],
+  }));
+}
+
 const manualGates = [
   {
     id: "mobile-device-matrix",
-    status: "manual",
-    detail: "Run docs/MOBILE_TEST_MATRIX.md with one desktop + one phone peer, covering foreground/background, attachment sync, comments, and conflict recovery.",
+    status: mobileResultPath ? "covered-by-mobile-result" : "manual",
+    detail: mobileResultPath
+      ? `Validated ${mobileResultPath}.`
+      : "Run docs/MOBILE_TEST_MATRIX.md with one desktop + one phone peer, covering foreground/background, attachment sync, comments, and conflict recovery. Then pass --mobile-result=<result.json>.",
   },
   {
     id: "railway-volume",
@@ -66,6 +79,7 @@ const report = {
   ok: automatedOk,
   quick,
   prod: runProd,
+  mobileResult: mobileResultPath || null,
   startedAt: startedAt.toISOString(),
   endedAt: endedAt.toISOString(),
   durationMs: endedAt.getTime() - startedAt.getTime(),

@@ -57,11 +57,12 @@ If possible, repeat the mobile pass on both iOS and Android.
 
 ## Release Result
 
-Record:
+Save the result as JSON using [mobile-test-result.example.json](mobile-test-result.example.json) as the
+template, then validate it:
 
-- Plugin version:
-- Server commit/deployment:
-- Desktop OS/Obsidian version:
-- Mobile OS/Obsidian version:
-- Passed:
-- Failures with exported diagnostic bundle paths:
+```bash
+node tools/mobile-matrix-check.mjs docs/mobile-test-result.example.json
+node tools/release-readiness.mjs --mobile-result=<your-result.json>
+```
+
+Record failures with exported diagnostic bundle paths in the `failures` / `diagnosticBundles` fields.

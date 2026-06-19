@@ -2,6 +2,23 @@ import { RangeSetBuilder } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 
+export interface SelfSelectionOverlay {
+  selection: { from: number; to: number } | null;
+  caret: { pos: number; side: -1 | 1 };
+}
+
+export function selfSelectionOverlay(anchor: number, head: number): SelfSelectionOverlay {
+  const from = Math.min(anchor, head);
+  const to = Math.max(anchor, head);
+  return {
+    selection: to > from ? { from, to } : null,
+    caret: {
+      pos: head,
+      side: head >= anchor ? 1 : -1,
+    },
+  };
+}
+
 export function selfSelectionExtension(user: { name: string; color: string }): Extension {
   return [
     selfSelectionTheme,
@@ -58,17 +75,16 @@ class SelfSelectionPlugin {
   private rebuild(view: EditorView): void {
     const builder = new RangeSetBuilder<Decoration>();
     const sel = view.state.selection.main;
-    const from = Math.min(sel.from, sel.to);
-    const to = Math.max(sel.from, sel.to);
+    const overlay = selfSelectionOverlay(sel.anchor, sel.head);
     const color = this.user.color || "var(--interactive-accent)";
-    if (to > from) {
-      builder.add(from, to, Decoration.mark({
+    if (overlay.selection) {
+      builder.add(overlay.selection.from, overlay.selection.to, Decoration.mark({
         class: "cm-collab-self-selection",
         attributes: { style: `background-color: ${alphaColor(color, "44")}` },
       }));
     }
-    builder.add(sel.head, sel.head, Decoration.widget({
-      side: sel.head >= sel.anchor ? 1 : -1,
+    builder.add(overlay.caret.pos, overlay.caret.pos, Decoration.widget({
+      side: overlay.caret.side,
       widget: new SelfCaretWidget(this.user.name || "You", color),
     }));
     this.decorations = builder.finish();
@@ -81,15 +97,7 @@ class SelfCaretWidget extends WidgetType {
   }
 
   toDOM(): HTMLElement {
-    const el = document.createElement("span");
-    el.className = "cm-collab-self-caret";
-    el.style.borderColor = this.color;
-    const label = document.createElement("span");
-    label.className = "cm-collab-self-caret-label";
-    label.style.backgroundColor = this.color;
-    label.textContent = this.name;
-    el.appendChild(label);
-    return el;
+    return renderSelfCaret(document, this.name, this.color);
   }
 
   eq(other: SelfCaretWidget): boolean {
@@ -99,6 +107,18 @@ class SelfCaretWidget extends WidgetType {
   ignoreEvent(): boolean {
     return true;
   }
+}
+
+export function renderSelfCaret(doc: Document, name: string, color: string): HTMLElement {
+  const el = doc.createElement("span");
+  el.className = "cm-collab-self-caret";
+  el.style.borderColor = color;
+  const label = doc.createElement("span");
+  label.className = "cm-collab-self-caret-label";
+  label.style.backgroundColor = color;
+  label.textContent = name;
+  el.appendChild(label);
+  return el;
 }
 
 function alphaColor(color: string, alphaHex: string): string {

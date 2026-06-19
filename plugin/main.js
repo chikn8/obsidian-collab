@@ -15307,6 +15307,17 @@ function resolveAwarenessCursor(rel, doc2) {
 // src/collab/SelfSelection.ts
 var import_state4 = require("@codemirror/state");
 var import_view4 = require("@codemirror/view");
+function selfSelectionOverlay(anchor, head) {
+  const from2 = Math.min(anchor, head);
+  const to = Math.max(anchor, head);
+  return {
+    selection: to > from2 ? { from: from2, to } : null,
+    caret: {
+      pos: head,
+      side: head >= anchor ? 1 : -1
+    }
+  };
+}
 function selfSelectionExtension(user) {
   return [
     selfSelectionTheme,
@@ -15359,17 +15370,16 @@ var SelfSelectionPlugin = class {
   rebuild(view) {
     const builder = new import_state4.RangeSetBuilder();
     const sel = view.state.selection.main;
-    const from2 = Math.min(sel.from, sel.to);
-    const to = Math.max(sel.from, sel.to);
+    const overlay = selfSelectionOverlay(sel.anchor, sel.head);
     const color = this.user.color || "var(--interactive-accent)";
-    if (to > from2) {
-      builder.add(from2, to, import_view4.Decoration.mark({
+    if (overlay.selection) {
+      builder.add(overlay.selection.from, overlay.selection.to, import_view4.Decoration.mark({
         class: "cm-collab-self-selection",
         attributes: { style: `background-color: ${alphaColor(color, "44")}` }
       }));
     }
-    builder.add(sel.head, sel.head, import_view4.Decoration.widget({
-      side: sel.head >= sel.anchor ? 1 : -1,
+    builder.add(overlay.caret.pos, overlay.caret.pos, import_view4.Decoration.widget({
+      side: overlay.caret.side,
       widget: new SelfCaretWidget(this.user.name || "You", color)
     }));
     this.decorations = builder.finish();
@@ -15382,15 +15392,7 @@ var SelfCaretWidget = class extends import_view4.WidgetType {
     this.color = color;
   }
   toDOM() {
-    const el = document.createElement("span");
-    el.className = "cm-collab-self-caret";
-    el.style.borderColor = this.color;
-    const label = document.createElement("span");
-    label.className = "cm-collab-self-caret-label";
-    label.style.backgroundColor = this.color;
-    label.textContent = this.name;
-    el.appendChild(label);
-    return el;
+    return renderSelfCaret(document, this.name, this.color);
   }
   eq(other) {
     return this.name === other.name && this.color === other.color;
@@ -15399,6 +15401,17 @@ var SelfCaretWidget = class extends import_view4.WidgetType {
     return true;
   }
 };
+function renderSelfCaret(doc2, name, color) {
+  const el = doc2.createElement("span");
+  el.className = "cm-collab-self-caret";
+  el.style.borderColor = color;
+  const label = doc2.createElement("span");
+  label.className = "cm-collab-self-caret-label";
+  label.style.backgroundColor = color;
+  label.textContent = name;
+  el.appendChild(label);
+  return el;
+}
 function alphaColor(color, alphaHex) {
   if (/^#[0-9a-f]{6}$/i.test(color)) return `${color}${alphaHex}`;
   return color;

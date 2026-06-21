@@ -13,6 +13,7 @@ export interface CommentContext {
   fileName: string;
   me: { uid: string; name: string };
   now: () => number;
+  canComment: boolean;
   mentionUsers: () => MentionUser[];
   /** Scan text for @mentions of collaborators and push them a notification. */
   notifyFromText: (text: string) => Set<string>;
@@ -98,12 +99,20 @@ export class CommentsView extends ItemView {
 
       const react = row.createDiv({ cls: "collab-comment-reactions" });
       for (const [emoji, n] of Object.entries(r.reactions)) {
-        const chip = react.createEl("button", { cls: "collab-reaction", text: `${emoji} ${n}` });
-        chip.onclick = () => this.ctx!.store.react(t.id, r.id, emoji, +1);
+        if (this.ctx!.canComment) {
+          const chip = react.createEl("button", { cls: "collab-reaction", text: `${emoji} ${n}` });
+          chip.onclick = () => this.ctx!.store.react(t.id, r.id, emoji, +1);
+        } else {
+          react.createSpan({ cls: "collab-reaction", text: `${emoji} ${n}` });
+        }
       }
-      const addReact = react.createEl("button", { cls: "collab-reaction add", text: "＋" });
-      addReact.onclick = (e) => this.reactionMenu(e, t.id, r.id);
+      if (this.ctx!.canComment) {
+        const addReact = react.createEl("button", { cls: "collab-reaction add", text: "＋" });
+        addReact.onclick = (e) => this.reactionMenu(e, t.id, r.id);
+      }
     }
+
+    if (!this.ctx!.canComment) return;
 
     // actions
     const actions = card.createDiv({ cls: "collab-comment-actions" });

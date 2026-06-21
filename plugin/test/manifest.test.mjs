@@ -12,6 +12,7 @@ import {
   liveManifestEntry,
   manifestMutationFields,
   safeRelPath,
+  shouldApplyRenameSideEffects,
   shouldPublishLocalOnStartup,
   shouldResurrect,
   tombstoneLocalDecision,
@@ -152,6 +153,25 @@ console.log("Delete = retained tombstone");
   const deleted = [];
   files.forEach((e, k) => { if (e && e.exists === false) deleted.push(k); });
   check("deleted-files scan finds the tombstone", deleted.length === 1 && deleted[0] === "x.md");
+}
+
+// ── 4b. Rename link-repair side effects are single-writer ───────────────────
+console.log("Rename side-effect ownership");
+{
+  const entry = {
+    exists: true,
+    renamedFrom: "Old.md",
+    mutationByUid: "uid-a",
+    mutationDeviceId: "device-a",
+  };
+  check("rename author applies side effects",
+    shouldApplyRenameSideEffects(entry, "uid-a", "device-a") === true);
+  check("another device skips side effects",
+    shouldApplyRenameSideEffects(entry, "uid-a", "device-b") === false);
+  check("another user skips side effects",
+    shouldApplyRenameSideEffects(entry, "uid-b", "device-a") === false);
+  check("missing provenance skips side effects",
+    shouldApplyRenameSideEffects({ exists: true, renamedFrom: "Old.md" }, "uid-a", "device-a") === false);
 }
 
 // ── 5. Tombstone decision (delete-vs-edit) ────────────────────────────────────

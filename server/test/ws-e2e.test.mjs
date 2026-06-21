@@ -558,6 +558,44 @@ try {
     await reader.close();
   }
 
+  console.log("Commenter can write comments but not text");
+  {
+    const shareId = "e2e-commenter";
+    const room = roomName(shareId, "commenter.md");
+    const editor = new SyncClient(server.wsBase, room, authParams("editor", 1, shareId));
+    const commenter = new SyncClient(server.wsBase, room, authParams("commenter", 1, shareId));
+    await Promise.all([editor.ready, commenter.ready]);
+    editor.setText("comment target");
+    await commenter.waitForText("comment target");
+
+    const thread = new Y.Map();
+    thread.set("quote", "comment target");
+    thread.set("resolved", false);
+    const replies = new Y.Array();
+    const reply = new Y.Map();
+    reply.set("id", "r1");
+    reply.set("text", "commenter note");
+    replies.push([reply]);
+    thread.set("replies", replies);
+    commenter.doc.getMap("comments").set("c1", thread);
+    await waitFor(() => editor.doc.getMap("comments").has("c1"), 3000, "commenter comment relay");
+    check("commenter comment reached editor", editor.doc.getMap("comments").has("c1"));
+
+    commenter.setText("commenter tried text");
+    await sleep(500);
+    check("commenter text write did not reach editor", editor.text() === "comment target", editor.text());
+    await commenter.close();
+    await editor.close();
+    await waitForStateFile(persistDir, room);
+
+    const reader = new SyncClient(server.wsBase, room, authParams("editor", 1, shareId));
+    await reader.ready;
+    await reader.waitForText("comment target");
+    await waitFor(() => reader.doc.getMap("comments").has("c1"), 3000, "persisted commenter comment");
+    check("commenter comment persisted", reader.doc.getMap("comments").has("c1"));
+    await reader.close();
+  }
+
   console.log("Persisted room reloads after server restart");
   {
     const shareId = "e2e-restart";

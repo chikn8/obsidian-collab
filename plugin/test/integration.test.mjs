@@ -83,7 +83,22 @@ console.log("Joining with a matching local copy does not duplicate the note");
   A.fp.destroy(); B.fp.destroy();
 }
 
-// ── 1c. Canvas files use the same text-sync path ──────────────────────────────
+// ── 1c. Edits made during provider startup are captured ─────────────────────
+console.log("Startup edit is captured during initial sync");
+{
+  __resetIdb(); __resetHubs();
+  const room = "@test:file:startup-edit";
+  const A = await makeClient("A", room, "note.md", "base\n");
+  await sleep(900);
+  const B = await makeClient("B", room, "note.md", "base\n");
+  await B.edit("base\nB-startup\n");
+  await sleep(1000);
+  check("startup edit survived initial sync", A.disk().includes("B-startup"), `A="${A.disk()}" B="${B.disk()}"`);
+  check("startup edit converged", A.disk() === B.disk(), `A="${A.disk()}" B="${B.disk()}"`);
+  A.fp.destroy(); B.fp.destroy();
+}
+
+// ── 1d. Canvas files use the same text-sync path ──────────────────────────────
 console.log("Canvas JSON files sync over the text provider");
 {
   __resetIdb(); __resetHubs();

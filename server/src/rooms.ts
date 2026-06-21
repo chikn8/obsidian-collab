@@ -17,6 +17,7 @@ const MESSAGE_AWARENESS = 1;
 const MESSAGE_NOTIFY = 4; // {fromUid, fromName, toUid, title, body} — mention push
 const MESSAGE_TOPIC_REGISTER = 5; // {uid, topic} — register ntfy topic
 const MESSAGE_MUX = 6; // outer frame: roomName + inner y-websocket frame
+const MESSAGE_MUX_LEAVE = 7; // outer frame: roomName, unsubscribe one mux room
 
 const PING_INTERVAL = 30000;
 const SYNC_DEBUG_LOG = process.env.SYNC_DEBUG_LOG === "true";
@@ -293,6 +294,13 @@ function takeConnRooms(conn: WebSocket): string[] {
   if (!rooms) return [];
   connRooms.delete(conn);
   return Array.from(rooms);
+}
+
+function forgetConnRoom(conn: WebSocket, roomName: string): void {
+  const rooms = connRooms.get(conn);
+  if (!rooms) return;
+  rooms.delete(roomName);
+  if (rooms.size === 0) connRooms.delete(conn);
 }
 
 function closeRoomIfIdle(roomName: string, doc: WSSharedDoc): void {
@@ -613,18 +621,23 @@ function handleMessage(
         const role = (conn as any).collabRole || "editor";
         if (role !== "editor") {
           if (subtype === 1 || subtype === 2) {
-            incMetric("rejected_writes");
-            logEvent("warn", "sync.write_rejected", {
-              room: doc.name,
-              ...roomInfo(doc.name),
-              connId: (conn as any).collabConnId,
-              role,
-              subtype: syncSubtypeName(subtype),
-              messageBytes: message.byteLength,
-              uid: (conn as any).collabIdentity?.uid,
-              mux: !!(conn as any).collabMux,
-            });
-            return; // viewer/commenter write — ignore
+            const allowedCommentWrite =
+              role === "commenter" &&
+              commenterWritePreservesText(doc, decoding.clone(decoder));
+            if (!allowedCommentWrite) {
+              incMetric("rejected_writes");
+              logEvent("warn", "sync.write_rejected", {
+                room: doc.name,
+                ...roomInfo(doc.name),
+                connId: (conn as any).collabConnId,
+                role,
+                subtype: syncSubtypeName(subtype),
+                messageBytes: message.byteLength,
+                uid: (conn as any).collabIdentity?.uid,
+                mux: !!(conn as any).collabMux,
+              });
+              return; // viewer write or commenter text write — ignore
+            }
           }
         }
         const encoder = encoding.createEncoder();
@@ -777,9 +790,90 @@ function recordSyncMessage(
   });
 }
 
+function commenterWritePreservesText(doc: WSSharedDoc, decoder: decoding.Decoder): boolean {
+  if (roomInfo(doc.name).kind !== "file") return false;
+  const beforeText = doc.getText("codemirror").toString();
+  const testDoc = new Y.Doc({ gc: true });
+  try {
+    Y.applyUpdate(testDoc, Y.encodeStateAsUpdate(doc), "load");
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MESSAGE_SYNC);
+    syncProtocol.readSyncMessage(decoder, encoder, testDoc, "commenter-check");
+    return testDoc.getText("codemirror").toString() === beforeText;
+  } catch {
+    return false;
+  } finally {
+    testDoc.destroy();
+  }
+}
+
+export function commenterSyncMessagePreservesTextForTest(
+  roomName: string,
+  baseState: Uint8Array,
+  message: Uint8Array
+): boolean {
+  const doc = new WSSharedDoc(roomName);
+  try {
+    Y.applyUpdate(doc, baseState, "load");
+    const decoder = decoding.createDecoder(message);
+    if (decoding.readVarUint(decoder) !== MESSAGE_SYNC) return false;
+    const subtype = decoding.readVarUint(decoding.clone(decoder));
+    if (subtype !== 1 && subtype !== 2) return true;
+    return commenterWritePreservesText(doc, decoder);
+  } finally {
+    doc.destroy();
+  }
+}
+
 /**
  * Close a connection and clean up.
  */
+function leaveRoom(conn: WebSocket, roomName: string, reason: string): boolean {
+  const doc = docs.get(roomName);
+  if (!doc) {
+    forgetConnRoom(conn, roomName);
+    return false;
+  }
+  const controlledIds = doc.conns.get(conn);
+  if (!controlledIds) {
+    forgetConnRoom(conn, roomName);
+    return false;
+  }
+
+  doc.conns.delete(conn);
+  forgetConnRoom(conn, roomName);
+  incMetric("disconnects");
+
+  awarenessProtocol.removeAwarenessStates(
+    doc.awareness,
+    Array.from(controlledIds),
+    null
+  );
+
+  logEvent("info", "room.disconnect", {
+    room: roomName,
+    ...roomInfo(roomName),
+    connId: (conn as any).collabConnId,
+    conns: doc.conns.size,
+    reason,
+  });
+  void auditEvent("ws.leave", {
+    room: roomName,
+    ...roomInfo(roomName),
+    connId: (conn as any).collabConnId,
+    role: (conn as any).collabRole || "editor",
+    uid: (conn as any).collabIdentity?.uid,
+    name: (conn as any).collabIdentity?.name,
+    device: (conn as any).collabIdentity?.device,
+    deviceId: (conn as any).collabIdentity?.deviceId,
+    conns: doc.conns.size,
+    reason,
+  });
+
+  closeRoomIfIdle(roomName, doc);
+  return true;
+}
+
 function closeConn(conn: WebSocket): void {
   let closedAny = false;
   for (const roomName of takeConnRooms(conn)) {
@@ -953,6 +1047,23 @@ export async function setupMuxConnection(
         const message = rawDataToUint8Array(data);
         const decoder = decoding.createDecoder(message);
         const outerType = decoding.readVarUint(decoder);
+        if (outerType === MESSAGE_MUX_LEAVE) {
+          const roomName = decoding.readVarString(decoder);
+          if (!muxRoomAllowed(conn, roomName)) {
+            incMetric("mux_room_rejections");
+            logEvent("warn", "mux.room_rejected", {
+              room: roomName,
+              ...roomInfo(roomName),
+              shareId: (conn as any).collabShareId || undefined,
+              connId: (conn as any).collabConnId,
+              reason: "leave-share-mismatch",
+            });
+            conn.close(4403, "Room not in share");
+            return;
+          }
+          leaveRoom(conn, roomName, "mux-leave");
+          return;
+        }
         if (outerType !== MESSAGE_MUX) {
           logEvent("warn", "mux.unknown_outer_message_type", {
             connId: (conn as any).collabConnId,

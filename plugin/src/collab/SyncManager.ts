@@ -18,6 +18,7 @@ import {
   manifestMutationFields,
   safeRelPath,
   shouldPublishLocalOnStartup,
+  shouldApplyRenameSideEffects,
   tombstoneLocalDecision,
   type ConflictFile,
 } from "../utils/manifestLogic";
@@ -856,14 +857,20 @@ export class SyncManager {
         onPending: () => this.debouncedStatus(),
       });
 
-      await fp.start(content, { seedState: opts?.seedState ?? null });
       this.fileProviders.set(relPath, fp);
-      trace("file", "provider-create-done", {
-        shareId: this.histShareId,
-        relPath,
-        fullPath,
-        initialLen: content.length,
-      });
+      try {
+        await fp.start(content, { seedState: opts?.seedState ?? null });
+        trace("file", "provider-create-done", {
+          shareId: this.histShareId,
+          relPath,
+          fullPath,
+          initialLen: content.length,
+        });
+      } catch (e) {
+        if (this.fileProviders.get(relPath) === fp) this.fileProviders.delete(relPath);
+        fp.destroy();
+        throw e;
+      }
     })();
 
     this.creatingProviders.set(relPath, task);
@@ -1406,6 +1413,19 @@ export class SyncManager {
     const oldRel = this.safeManifestRelPath(oldRelCandidate, "link rewrite old");
     const newRel = this.safeManifestRelPath(newRelCandidate, "link rewrite new");
     if (!oldRel || !newRel || oldRel === newRel) return;
+    const renameEntry = this.manifestMap?.get(newRel) as ManifestEntry | undefined;
+    if (!shouldApplyRenameSideEffects(renameEntry, this.settings.uid, installDeviceId())) {
+      trace("manifest", "link-rewrite-skipped", {
+        shareId: this.histShareId,
+        oldRel,
+        newRel,
+        reason: "not-rename-author",
+        mutationId: renameEntry?.mutationId,
+        mutationByUid: renameEntry?.mutationByUid,
+        mutationDeviceId: renameEntry?.mutationDeviceId,
+      });
+      return;
+    }
 
     const key = `${fileId || ""}:${oldRel}->${newRel}`;
     if (this.linkRewriteRenames.has(key)) return;

@@ -81,9 +81,6 @@ export async function writeSnapshot(roomName: string, ydoc: Y.Doc): Promise<void
     const ytext = ydoc.getText("codemirror");
     const content = ytext.toString();
 
-    // Only write if content is non-empty
-    if (content.length === 0) return;
-
     try {
       const existing = await fs.readFile(filePath, "utf-8");
       if (existing === content) return; // No changes

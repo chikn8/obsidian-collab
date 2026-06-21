@@ -180,6 +180,26 @@ export function conflictFileFromManifest(relPath: string, entry: ManifestEntry |
 }
 
 /**
+ * Rename side effects such as wikilink repair must be single-writer. Applying
+ * the same text replacement concurrently from multiple clients duplicates the
+ * inserted link under CRDT merge, so only the device that authored the manifest
+ * rename should perform local side effects.
+ */
+export function shouldApplyRenameSideEffects(
+  entry: ManifestEntry | undefined,
+  localUid: string | undefined,
+  localDeviceId: string | undefined
+): boolean {
+  if (!entry?.renamedFrom) return false;
+  const byUid = entry.mutationByUid || "";
+  const byDevice = entry.mutationDeviceId || "";
+  if (!byUid && !byDevice) return false;
+  if (byUid && byUid !== (localUid || "")) return false;
+  if (byDevice && byDevice !== (localDeviceId || "")) return false;
+  return true;
+}
+
+/**
  * Convert a prior manifest entry into a clean live entry. This intentionally
  * strips stale delete/rename/restore metadata before the caller adds fresh
  * metadata, so a restored/recreated path cannot behave like an old tombstone.

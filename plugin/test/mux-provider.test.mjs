@@ -6,6 +6,7 @@ import { MuxProvider, reconnectDelayForAttempt } from "../src/collab/MuxProvider
 
 const MESSAGE_SYNC = 0;
 const MESSAGE_MUX = 6;
+const MESSAGE_MUX_LEAVE = 7;
 const stats = {
   received: 0,
   sent: 0,
@@ -83,6 +84,11 @@ class FakeMuxHub {
     const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data);
     const outer = decoding.createDecoder(bytes);
     const outerType = decoding.readVarUint(outer);
+    if (outerType === MESSAGE_MUX_LEAVE) {
+      const roomName = decoding.readVarString(outer);
+      this.room(roomName).clients.delete(client);
+      return;
+    }
     if (outerType !== MESSAGE_MUX) return;
     const roomName = decoding.readVarString(outer);
     const innerBytes = decoding.readVarUint8Array(outer);
@@ -223,8 +229,17 @@ try {
   setText(b1, "room A reply");
   await waitFor(() => a1.getText("codemirror").toString() === "room A reply", 1000, "reply text");
   check("updates flow back over the shared socket", a1.getText("codemirror").toString() === "room A reply");
+
+  providers[0].destroy();
+  providers[0] = null;
+  await sleep(20);
+  check("destroying one mux provider leaves only that room",
+    hubFor(FakeWebSocket.created[0].url).room(roomA).clients.size === 1,
+    `clients=${hubFor(FakeWebSocket.created[0].url).room(roomA).clients.size}`);
+  check("shared socket stays open for remaining rooms",
+    FakeWebSocket.created[0].readyState === FakeWebSocket.OPEN);
 } finally {
-  for (const provider of providers) provider.destroy();
+  for (const provider of providers) provider?.destroy();
   a1.destroy(); a2.destroy(); b1.destroy(); b2.destroy();
 }
 

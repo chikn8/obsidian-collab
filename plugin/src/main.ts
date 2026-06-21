@@ -91,9 +91,11 @@ export default class CollabPlugin extends Plugin {
       name: "Add comment to selection",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
+        const manager = file ? this.managerOwning(file.path) : null;
         const canComment =
           !!file &&
-          !!this.managerOwning(file.path) &&
+          !!manager &&
+          manager.role !== "viewer" &&
           this.boundPath === file.path &&
           !!this.boundView &&
           !this.boundView.state.selection.main.empty;
@@ -201,7 +203,8 @@ export default class CollabPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor, info) => {
         const file = (info as any)?.file as TFile | undefined;
-        if (!file || !this.managerOwning(file.path)) return;
+        const manager = file ? this.managerOwning(file.path) : null;
+        if (!file || !manager || manager.role === "viewer") return;
         if (!editor.getSelection()) return;
         menu.addItem((item) =>
           item.setTitle("Add comment").setIcon("message-square").onClick(() => this.addCommentForSelection(file, info))
@@ -535,6 +538,7 @@ export default class CollabPlugin extends Plugin {
         fileName,
         me: { uid: this.settings.uid, name: this.settings.displayName },
         now: () => Date.now(),
+        canComment: this.managerOwning(this.boundPath || "")?.role !== "viewer",
         mentionUsers: () => this.managerOwning(this.boundPath || "")?.roster() ?? [],
         notifyFromText: (text) => this.notifyMentionsInText(text, fileName, this.boundPath || ""),
         notifyThreadEvent: (thread, kind, text, alreadyNotified) =>
@@ -796,7 +800,7 @@ export default class CollabPlugin extends Plugin {
   private async addCommentForSelection(file: TFile, info: any): Promise<void> {
     const m = this.managerOwning(file.path);
     const fp = m?.getFileProvider(file.path);
-    if (m && m.role !== "editor") { new Notice("This share is read-only on this device."); return; }
+    if (m && m.role === "viewer") { new Notice("This share is view-only on this device."); return; }
     if (!fp || !fp.isReady()) { new Notice("This note is still syncing — try again in a moment."); return; }
 
     const ev = getEditorView(info) || (this.boundPath === file.path ? this.boundView : null);

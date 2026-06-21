@@ -9849,6 +9849,7 @@ var import_obsidian = require("obsidian");
 var MESSAGE_SYNC = 0;
 var MESSAGE_AWARENESS = 1;
 var MESSAGE_MUX = 6;
+var MESSAGE_MUX_LEAVE = 7;
 var MUX_RECONNECT_BASE_MS = 500;
 var MUX_RECONNECT_MAX_MS = 1e4;
 var MUX_RECONNECT_MIN_MS = 250;
@@ -9901,7 +9902,10 @@ var MuxConnection = class {
     var _a2;
     const set = this.providers.get(provider.roomName);
     set == null ? void 0 : set.delete(provider);
-    if (set && set.size === 0) this.providers.delete(provider.roomName);
+    if (set && set.size === 0) {
+      this.leave(provider.roomName);
+      this.providers.delete(provider.roomName);
+    }
     if (this.providers.size === 0) {
       this.shouldConnect = false;
       if (this.reconnectTimer) {
@@ -9957,6 +9961,13 @@ var MuxConnection = class {
     writeVarUint(encoder, MESSAGE_MUX);
     writeVarString(encoder, roomName);
     writeVarUint8Array(encoder, inner);
+    this.ws.send(toUint8Array(encoder));
+  }
+  leave(roomName) {
+    if (!this.connected || !this.ws) return;
+    const encoder = createEncoder();
+    writeVarUint(encoder, MESSAGE_MUX_LEAVE);
+    writeVarString(encoder, roomName);
     this.ws.send(toUint8Array(encoder));
   }
   handleClosed(ws) {
@@ -10063,8 +10074,8 @@ var MuxProvider = class {
   }
   destroy() {
     this.ydoc.off("update", this.updateHandler);
-    this.awareness.off("update", this.awarenessHandler);
     removeAwarenessStates(this.awareness, Array.from(this.awareness.getStates().keys()), this);
+    this.awareness.off("update", this.awarenessHandler);
     this.awareness.destroy();
     this.conn.unregister(this);
     this.listeners.clear();
@@ -11023,6 +11034,7 @@ var FileProvider = class _FileProvider {
     this.editorFlushTimer = null;
     this.writeQueue = Promise.resolve();
     this.writeSeq = 0;
+    this.pendingLocalContent = null;
     var _a2;
     this.app = params2.app;
     this.settings = params2.settings;
@@ -11094,6 +11106,11 @@ var FileProvider = class _FileProvider {
       this.editorFlushTimer = null;
     }
     await this.writeToFile(true, reason);
+  }
+  async readDiskContent(fallback) {
+    const file = this.app.vault.getAbstractFileByPath(this.filePath);
+    if (!(file instanceof import_obsidian2.TFile)) return fallback;
+    return this.app.vault.read(file).catch(() => fallback);
   }
   async start(initialContent, opts) {
     var _a2;
@@ -11178,28 +11195,7 @@ var FileProvider = class _FileProvider {
           }
           if (synced && !this.isInitialized && !this.destroyed) {
             setTimeout(() => {
-              if (this.destroyed || this.isInitialized) return;
-              this.isInitialized = true;
-              let mergedContent = this.ytext.toString();
-              if (mergedContent.length === 0 && diskContent.length > 0) {
-                this.ydoc.transact(() => {
-                  this.ytext.insert(0, diskContent);
-                }, "seed");
-                mergedContent = diskContent;
-              }
-              if (diskContent.length > 0 && mergedContent !== diskContent) {
-                this.saveSnapshot(diskContent).catch((e) => {
-                  console.error("[FileProvider] snapshot failed:", e);
-                });
-                const fileName = this.filePath.split("/").pop() || this.filePath;
-                new import_obsidian2.Notice(
-                  `Sync updated "${fileName}" \u2014 pre-sync backup saved`
-                );
-              }
-              if (this.ytext.length > 0) {
-                this.writeToFile(false, "initial-sync");
-              }
-              this.startObserver();
+              void this.finishInitialSync(diskContent);
             }, 500);
           }
         }
@@ -11209,6 +11205,63 @@ var FileProvider = class _FileProvider {
     this.provider.awareness.on("change", () => {
       this.updateUsers();
     });
+  }
+  async finishInitialSync(startupDiskContent) {
+    var _a2, _b2, _c;
+    try {
+      if (this.destroyed || this.isInitialized) return;
+      const latestDiskContent = (_a2 = this.pendingLocalContent) != null ? _a2 : await this.readDiskContent(startupDiskContent);
+      this.pendingLocalContent = null;
+      let mergedContent = this.ytext.toString();
+      if (mergedContent.length === 0 && latestDiskContent.length > 0) {
+        this.ydoc.transact(() => {
+          this.ytext.insert(0, latestDiskContent);
+        }, "seed");
+        mergedContent = latestDiskContent;
+      } else if (latestDiskContent !== startupDiskContent) {
+        this.applyDiff(startupDiskContent, latestDiskContent, "startup-local-change");
+        (_b2 = this.onLocalEdit) == null ? void 0 : _b2.call(this);
+        mergedContent = this.ytext.toString();
+        trace("file", "startup-local-change-applied", {
+          path: this.filePath,
+          room: this.roomName,
+          startupLen: startupDiskContent.length,
+          latestLen: latestDiskContent.length,
+          mergedLen: mergedContent.length
+        });
+      }
+      if (latestDiskContent.length > 0 && mergedContent !== latestDiskContent) {
+        this.saveSnapshot(latestDiskContent).catch((e) => {
+          console.error("[FileProvider] snapshot failed:", e);
+        });
+        const fileName = this.filePath.split("/").pop() || this.filePath;
+        new import_obsidian2.Notice(
+          `Sync updated "${fileName}" \u2014 pre-sync backup saved`
+        );
+      }
+      await this.writeToFile(false, "initial-sync");
+      if (this.pendingLocalContent != null && !this.destroyed) {
+        const queued = this.pendingLocalContent;
+        this.pendingLocalContent = null;
+        const old = this.ytext.toString();
+        if (old !== queued) {
+          this.applyDiff(old, queued, "startup-local-change-late");
+          (_c = this.onLocalEdit) == null ? void 0 : _c.call(this);
+          await this.writeToFile(false, "initial-sync-local-change");
+          trace("file", "startup-local-change-drained", {
+            path: this.filePath,
+            room: this.roomName,
+            oldLen: old.length,
+            queuedLen: queued.length,
+            mergedLen: this.ytext.length
+          });
+        }
+      }
+      this.startObserver();
+      this.isInitialized = true;
+    } catch (e) {
+      err("file", "initial sync finalization failed", { path: this.filePath, room: this.roomName }, e);
+    }
   }
   /** Watch ytext changes. Remote changes write to disk; editor-owned local
    *  transactions schedule a responsive disk projection so switching tabs can't
@@ -11340,13 +11393,23 @@ var FileProvider = class _FileProvider {
   }
   /** Apply a local file change to ytext (called from vault.on("modify")) */
   applyLocalChange(newContent) {
-    if (!this.isInitialized || this.destroyed) {
+    if (this.destroyed) {
       trace("file", "local-change-skipped", {
         path: this.filePath,
         room: this.roomName,
-        cause: this.destroyed ? "destroyed" : "not-initialized",
+        cause: "destroyed",
         initialized: this.isInitialized,
         destroyed: this.destroyed,
+        newLen: newContent.length
+      });
+      return;
+    }
+    if (!this.isInitialized) {
+      this.pendingLocalContent = newContent;
+      trace("file", "local-change-queued", {
+        path: this.filePath,
+        room: this.roomName,
+        cause: "not-initialized",
         newLen: newContent.length
       });
       return;
@@ -12011,6 +12074,15 @@ function conflictFileFromManifest(relPath, entry) {
     remoteHash: entry.conflictRemoteHash,
     localHash: entry.conflictLocalHash
   };
+}
+function shouldApplyRenameSideEffects(entry, localUid, localDeviceId) {
+  if (!(entry == null ? void 0 : entry.renamedFrom)) return false;
+  const byUid = entry.mutationByUid || "";
+  const byDevice = entry.mutationDeviceId || "";
+  if (!byUid && !byDevice) return false;
+  if (byUid && byUid !== (localUid || "")) return false;
+  if (byDevice && byDevice !== (localDeviceId || "")) return false;
+  return true;
 }
 function liveManifestEntry(previous, relPath, fileId, displayName, extra = {}) {
   const {
@@ -12869,14 +12941,20 @@ var SyncManager = class {
         onLocalEdit: () => this.stampEdit(relPath),
         onPending: () => this.debouncedStatus()
       });
-      await fp.start(content, { seedState: (_a2 = opts == null ? void 0 : opts.seedState) != null ? _a2 : null });
       this.fileProviders.set(relPath, fp);
-      trace("file", "provider-create-done", {
-        shareId: this.histShareId,
-        relPath,
-        fullPath,
-        initialLen: content.length
-      });
+      try {
+        await fp.start(content, { seedState: (_a2 = opts == null ? void 0 : opts.seedState) != null ? _a2 : null });
+        trace("file", "provider-create-done", {
+          shareId: this.histShareId,
+          relPath,
+          fullPath,
+          initialLen: content.length
+        });
+      } catch (e) {
+        if (this.fileProviders.get(relPath) === fp) this.fileProviders.delete(relPath);
+        fp.destroy();
+        throw e;
+      }
     })();
     this.creatingProviders.set(relPath, task);
     try {
@@ -13384,11 +13462,24 @@ var SyncManager = class {
     this.emitStatus();
   }
   async rewriteLinksForRemoteRename(oldRelCandidate, newRelCandidate, fileId) {
-    var _a2;
+    var _a2, _b2;
     if (this.role !== "editor" || !oldRelCandidate) return;
     const oldRel = this.safeManifestRelPath(oldRelCandidate, "link rewrite old");
     const newRel = this.safeManifestRelPath(newRelCandidate, "link rewrite new");
     if (!oldRel || !newRel || oldRel === newRel) return;
+    const renameEntry = (_a2 = this.manifestMap) == null ? void 0 : _a2.get(newRel);
+    if (!shouldApplyRenameSideEffects(renameEntry, this.settings.uid, installDeviceId())) {
+      trace("manifest", "link-rewrite-skipped", {
+        shareId: this.histShareId,
+        oldRel,
+        newRel,
+        reason: "not-rename-author",
+        mutationId: renameEntry == null ? void 0 : renameEntry.mutationId,
+        mutationByUid: renameEntry == null ? void 0 : renameEntry.mutationByUid,
+        mutationDeviceId: renameEntry == null ? void 0 : renameEntry.mutationDeviceId
+      });
+      return;
+    }
     const key = `${fileId || ""}:${oldRel}->${newRel}`;
     if (this.linkRewriteRenames.has(key)) return;
     this.linkRewriteRenames.add(key);
@@ -13402,7 +13493,7 @@ var SyncManager = class {
       if (!(file instanceof import_obsidian4.TFile)) continue;
       const sourceRel = this.toRelativePath(filePath);
       if (!this.safeManifestRelPath(sourceRel, "link rewrite source")) continue;
-      const sourceEntry = (_a2 = this.manifestMap) == null ? void 0 : _a2.get(sourceRel);
+      const sourceEntry = (_b2 = this.manifestMap) == null ? void 0 : _b2.get(sourceRel);
       if (!(sourceEntry == null ? void 0 : sourceEntry.exists) || this.entryKind(sourceRel, sourceEntry) !== "text") continue;
       scanned++;
       let existingProvider = this.fileProviders.get(sourceRel);
@@ -15552,12 +15643,19 @@ var CommentsView = class extends import_obsidian8.ItemView {
       row.createDiv({ cls: "collab-comment-text", text: r.text });
       const react = row.createDiv({ cls: "collab-comment-reactions" });
       for (const [emoji, n] of Object.entries(r.reactions)) {
-        const chip = react.createEl("button", { cls: "collab-reaction", text: `${emoji} ${n}` });
-        chip.onclick = () => this.ctx.store.react(t.id, r.id, emoji, 1);
+        if (this.ctx.canComment) {
+          const chip = react.createEl("button", { cls: "collab-reaction", text: `${emoji} ${n}` });
+          chip.onclick = () => this.ctx.store.react(t.id, r.id, emoji, 1);
+        } else {
+          react.createSpan({ cls: "collab-reaction", text: `${emoji} ${n}` });
+        }
       }
-      const addReact = react.createEl("button", { cls: "collab-reaction add", text: "\uFF0B" });
-      addReact.onclick = (e) => this.reactionMenu(e, t.id, r.id);
+      if (this.ctx.canComment) {
+        const addReact = react.createEl("button", { cls: "collab-reaction add", text: "\uFF0B" });
+        addReact.onclick = (e) => this.reactionMenu(e, t.id, r.id);
+      }
     }
+    if (!this.ctx.canComment) return;
     const actions = card.createDiv({ cls: "collab-comment-actions" });
     const replyInput = actions.createEl("input", { type: "text", placeholder: "Reply\u2026 (@name to notify)", cls: "collab-comment-input" });
     wireMentionAutocomplete(actions, replyInput, () => {
@@ -16368,7 +16466,8 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       checkCallback: (checking) => {
         var _a3;
         const file = this.app.workspace.getActiveFile();
-        const canComment = !!file && !!this.managerOwning(file.path) && this.boundPath === file.path && !!this.boundView && !this.boundView.state.selection.main.empty;
+        const manager = file ? this.managerOwning(file.path) : null;
+        const canComment = !!file && !!manager && manager.role !== "viewer" && this.boundPath === file.path && !!this.boundView && !this.boundView.state.selection.main.empty;
         if (checking) return canComment;
         if (!canComment || !file) return false;
         trace("comment", "add-command", { path: file.path });
@@ -16450,7 +16549,8 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor, info) => {
         const file = info == null ? void 0 : info.file;
-        if (!file || !this.managerOwning(file.path)) return;
+        const manager = file ? this.managerOwning(file.path) : null;
+        if (!file || !manager || manager.role === "viewer") return;
         if (!editor.getSelection()) return;
         menu.addItem(
           (item) => item.setTitle("Add comment").setIcon("message-square").onClick(() => this.addCommentForSelection(file, info))
@@ -16732,6 +16832,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     this.refreshCommentsContext();
   }
   refreshCommentsContext() {
+    var _a2;
     const view = this.getCommentsView();
     if (!view) return;
     if (this.boundStore && this.boundPath) {
@@ -16742,9 +16843,10 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
         fileName,
         me: { uid: this.settings.uid, name: this.settings.displayName },
         now: () => Date.now(),
+        canComment: ((_a2 = this.managerOwning(this.boundPath || "")) == null ? void 0 : _a2.role) !== "viewer",
         mentionUsers: () => {
-          var _a2, _b2;
-          return (_b2 = (_a2 = this.managerOwning(this.boundPath || "")) == null ? void 0 : _a2.roster()) != null ? _b2 : [];
+          var _a3, _b2;
+          return (_b2 = (_a3 = this.managerOwning(this.boundPath || "")) == null ? void 0 : _a3.roster()) != null ? _b2 : [];
         },
         notifyFromText: (text2) => this.notifyMentionsInText(text2, fileName, this.boundPath || ""),
         notifyThreadEvent: (thread, kind, text2, alreadyNotified) => this.notifyCommentThreadEvent(thread, kind, text2, fileName, this.boundPath || "", alreadyNotified),
@@ -16998,8 +17100,8 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     var _a2, _b2;
     const m = this.managerOwning(file.path);
     const fp = m == null ? void 0 : m.getFileProvider(file.path);
-    if (m && m.role !== "editor") {
-      new import_obsidian11.Notice("This share is read-only on this device.");
+    if (m && m.role === "viewer") {
+      new import_obsidian11.Notice("This share is view-only on this device.");
       return;
     }
     if (!fp || !fp.isReady()) {

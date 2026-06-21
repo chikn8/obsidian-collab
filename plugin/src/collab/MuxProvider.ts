@@ -7,6 +7,7 @@ import * as decoding from "lib0/decoding";
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
 const MESSAGE_MUX = 6;
+const MESSAGE_MUX_LEAVE = 7;
 const MUX_RECONNECT_BASE_MS = 500;
 const MUX_RECONNECT_MAX_MS = 10_000;
 const MUX_RECONNECT_MIN_MS = 250;
@@ -78,7 +79,10 @@ class MuxConnection {
   unregister(provider: MuxProvider): void {
     const set = this.providers.get(provider.roomName);
     set?.delete(provider);
-    if (set && set.size === 0) this.providers.delete(provider.roomName);
+    if (set && set.size === 0) {
+      this.leave(provider.roomName);
+      this.providers.delete(provider.roomName);
+    }
     if (this.providers.size === 0) {
       this.shouldConnect = false;
       if (this.reconnectTimer) {
@@ -136,6 +140,14 @@ class MuxConnection {
     encoding.writeVarUint(encoder, MESSAGE_MUX);
     encoding.writeVarString(encoder, roomName);
     encoding.writeVarUint8Array(encoder, inner);
+    this.ws.send(encoding.toUint8Array(encoder));
+  }
+
+  leave(roomName: string): void {
+    if (!this.connected || !this.ws) return;
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, MESSAGE_MUX_LEAVE);
+    encoding.writeVarString(encoder, roomName);
     this.ws.send(encoding.toUint8Array(encoder));
   }
 
@@ -271,8 +283,8 @@ export class MuxProvider {
 
   destroy(): void {
     this.ydoc.off("update", this.updateHandler);
-    this.awareness.off("update", this.awarenessHandler);
     awarenessProtocol.removeAwarenessStates(this.awareness, Array.from(this.awareness.getStates().keys()), this);
+    this.awareness.off("update", this.awarenessHandler);
     this.awareness.destroy();
     this.conn.unregister(this);
     this.listeners.clear();

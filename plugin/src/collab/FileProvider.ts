@@ -68,6 +68,7 @@ export class FileProvider {
   private editorFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
   private writeSeq = 0;
+  private pendingLocalContent: string | null = null;
   private token: string;
   private authParams: Record<string, string>;
 
@@ -151,6 +152,12 @@ export class FileProvider {
       this.editorFlushTimer = null;
     }
     await this.writeToFile(true, reason);
+  }
+
+  private async readDiskContent(fallback: string): Promise<string> {
+    const file = this.app.vault.getAbstractFileByPath(this.filePath);
+    if (!(file instanceof TFile)) return fallback;
+    return this.app.vault.read(file).catch(() => fallback);
   }
 
   async start(initialContent?: string, opts?: { seedState?: Uint8Array | null }): Promise<void> {
@@ -260,43 +267,7 @@ export class FileProvider {
           }
           if (synced && !this.isInitialized && !this.destroyed) {
             setTimeout(() => {
-              if (this.destroyed || this.isInitialized) return;
-              this.isInitialized = true;
-
-              let mergedContent = this.ytext.toString();
-
-              // First client ever: only seed local disk content after proving
-              // the server room is still empty. This avoids the whole-file
-              // duplicate that happens when a joining client with empty IDB
-              // inserts its local copy before receiving the server state.
-              if (mergedContent.length === 0 && diskContent.length > 0) {
-                this.ydoc.transact(() => {
-                  this.ytext.insert(0, diskContent);
-                }, "seed");
-                mergedContent = diskContent;
-              }
-
-              // ── LAYER 2: Pre-overwrite snapshot ─────────────────
-              // The CRDT merge is done. If the server already had content and
-              // it differs from this disk file, preserve the disk version first
-              // and adopt the CRDT state instead of merging a whole-file copy.
-              if (diskContent.length > 0 && mergedContent !== diskContent) {
-                this.saveSnapshot(diskContent).catch((e) => {
-                  console.error("[FileProvider] snapshot failed:", e);
-                });
-                const fileName = this.filePath.split("/").pop() || this.filePath;
-                new Notice(
-                  `Sync updated "${fileName}" — pre-sync backup saved`
-                );
-              }
-
-              // CRDT merge done → write merged result to disk
-              if (this.ytext.length > 0) {
-                this.writeToFile(false, "initial-sync");
-              }
-
-              // Start observing remote changes
-              this.startObserver();
+              void this.finishInitialSync(diskContent);
             }, 500);
           }
         },
@@ -307,6 +278,83 @@ export class FileProvider {
     this.provider.awareness.on("change", () => {
       this.updateUsers();
     });
+  }
+
+  private async finishInitialSync(startupDiskContent: string): Promise<void> {
+    try {
+      if (this.destroyed || this.isInitialized) return;
+
+      const latestDiskContent = this.pendingLocalContent ?? await this.readDiskContent(startupDiskContent);
+      this.pendingLocalContent = null;
+
+      let mergedContent = this.ytext.toString();
+
+      // First client ever: only seed local disk content after proving
+      // the server room is still empty. This avoids the whole-file
+      // duplicate that happens when a joining client with empty IDB
+      // inserts its local copy before receiving the server state.
+      if (mergedContent.length === 0 && latestDiskContent.length > 0) {
+        this.ydoc.transact(() => {
+          this.ytext.insert(0, latestDiskContent);
+        }, "seed");
+        mergedContent = latestDiskContent;
+      } else if (latestDiskContent !== startupDiskContent) {
+        // A vault modify arrived while the provider was still bootstrapping.
+        // Capture only the user's delta from the startup disk snapshot, then
+        // let it merge with the server state that has just arrived.
+        this.applyDiff(startupDiskContent, latestDiskContent, "startup-local-change");
+        this.onLocalEdit?.();
+        mergedContent = this.ytext.toString();
+        trace("file", "startup-local-change-applied", {
+          path: this.filePath,
+          room: this.roomName,
+          startupLen: startupDiskContent.length,
+          latestLen: latestDiskContent.length,
+          mergedLen: mergedContent.length,
+        });
+      }
+
+      // ── LAYER 2: Pre-overwrite snapshot ─────────────────
+      // The CRDT merge is done. If the server already had content and
+      // it differs from this disk file, preserve the disk version first
+      // and adopt the CRDT state instead of merging a whole-file copy.
+      if (latestDiskContent.length > 0 && mergedContent !== latestDiskContent) {
+        this.saveSnapshot(latestDiskContent).catch((e) => {
+          console.error("[FileProvider] snapshot failed:", e);
+        });
+        const fileName = this.filePath.split("/").pop() || this.filePath;
+        new Notice(
+          `Sync updated "${fileName}" — pre-sync backup saved`
+        );
+      }
+
+      // CRDT merge done → write merged result to disk, including empty notes.
+      await this.writeToFile(false, "initial-sync");
+
+      if (this.pendingLocalContent != null && !this.destroyed) {
+        const queued: string = this.pendingLocalContent;
+        this.pendingLocalContent = null;
+        const old = this.ytext.toString();
+        if (old !== queued) {
+          this.applyDiff(old, queued, "startup-local-change-late");
+          this.onLocalEdit?.();
+          await this.writeToFile(false, "initial-sync-local-change");
+          trace("file", "startup-local-change-drained", {
+            path: this.filePath,
+            room: this.roomName,
+            oldLen: old.length,
+            queuedLen: queued.length,
+            mergedLen: this.ytext.length,
+          });
+        }
+      }
+
+      // Start observing remote changes after the initial disk projection.
+      this.startObserver();
+      this.isInitialized = true;
+    } catch (e) {
+      err("file", "initial sync finalization failed", { path: this.filePath, room: this.roomName }, e);
+    }
   }
 
   /** Watch ytext changes. Remote changes write to disk; editor-owned local
@@ -451,13 +499,23 @@ export class FileProvider {
 
   /** Apply a local file change to ytext (called from vault.on("modify")) */
   applyLocalChange(newContent: string): void {
-    if (!this.isInitialized || this.destroyed) {
+    if (this.destroyed) {
       trace("file", "local-change-skipped", {
         path: this.filePath,
         room: this.roomName,
-        cause: this.destroyed ? "destroyed" : "not-initialized",
+        cause: "destroyed",
         initialized: this.isInitialized,
         destroyed: this.destroyed,
+        newLen: newContent.length,
+      });
+      return;
+    }
+    if (!this.isInitialized) {
+      this.pendingLocalContent = newContent;
+      trace("file", "local-change-queued", {
+        path: this.filePath,
+        room: this.roomName,
+        cause: "not-initialized",
         newLen: newContent.length,
       });
       return;

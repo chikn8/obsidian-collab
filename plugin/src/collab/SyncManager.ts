@@ -442,7 +442,13 @@ export class SyncManager {
 
     this.processingManifest = false;
 
-    // Create FileProviders for all existing files
+    // Create FileProviders for all existing files. Stagger startup so each file's
+    // initial seed doesn't all fire onto one mux socket at the same instant — a
+    // large, content-heavy share would otherwise burst past the server's
+    // per-connection payload/rate/backpressure limits and only partially publish
+    // (most rooms left empty). Legacy shares use one socket per file, so they
+    // don't have the shared-socket flood and don't need the stagger.
+    let providersStarted = 0;
     for (const [relPath, entry] of manifestEntries) {
       const safeRel = this.safeManifestRelPath(relPath, "startup provider");
       if (!safeRel) continue;
@@ -450,7 +456,13 @@ export class SyncManager {
       if (this.entryKind(safeRel, entry) !== "text") continue;
       const fullPath = this.toFullPath(safeRel);
       if (!this.fileProviders.has(safeRel)) {
+        if (providersStarted > 0 && !this.share.legacy) {
+          // 200ms between seeds → well under the server's 250 msg/s/connection
+          // limit, and lets each file's bytes drain before the next is sent.
+          await new Promise<void>((r) => setTimeout(r, 200));
+        }
         await this.createFileProvider(safeRel, fullPath);
+        providersStarted++;
       }
     }
 

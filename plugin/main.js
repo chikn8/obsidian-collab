@@ -12577,6 +12577,7 @@ var SyncManager = class {
       }
     }
     this.processingManifest = false;
+    let providersStarted = 0;
     for (const [relPath, entry] of manifestEntries) {
       const safeRel = this.safeManifestRelPath(relPath, "startup provider");
       if (!safeRel) continue;
@@ -12584,7 +12585,11 @@ var SyncManager = class {
       if (this.entryKind(safeRel, entry) !== "text") continue;
       const fullPath = this.toFullPath(safeRel);
       if (!this.fileProviders.has(safeRel)) {
+        if (providersStarted > 0 && !this.share.legacy) {
+          await new Promise((r) => setTimeout(r, 200));
+        }
         await this.createFileProvider(safeRel, fullPath);
+        providersStarted++;
       }
     }
     for (const [relPath, entry] of manifestEntries) {

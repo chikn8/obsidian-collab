@@ -24,6 +24,10 @@ const PING_INTERVAL = 30000;
 const SYNC_DEBUG_LOG = process.env.SYNC_DEBUG_LOG === "true";
 const LARGE_UPDATE_BYTES = Number(process.env.SYNC_LOG_LARGE_UPDATE_BYTES || 64 * 1024);
 const LARGE_TEXT_DELTA = Number(process.env.SYNC_LOG_LARGE_TEXT_DELTA || 20 * 1024);
+const BLOCKED_FILE_SEGMENTS = (process.env.SYNC_BLOCKED_FILE_SEGMENTS || "node_modules,.git")
+  .split(",")
+  .map((segment) => segment.trim())
+  .filter(Boolean);
 
 // ── Abuse caps (one authed client must not be able to OOM/bloat the box) ──────
 const MAX_MSGS_PER_SEC = 250;            // sustained inbound rate per connection
@@ -32,6 +36,7 @@ const RATE_LIMIT_CLOSE_CODE = 4408;
 const SEND_BUFFER_LIMIT = 8 * 1024 * 1024; // drop a hopelessly backed-up socket (slow-peer OOM guard)
 let rateLimitedCount = 0;
 let backpressureClosedCount = 0;
+let blockedRoomCount = 0;
 let nextConnId = 1;
 const activeMuxConnections = new Set<WebSocket>();
 
@@ -65,6 +70,16 @@ function roomInfo(room: string): { shareId: string; kind: string; relPath?: stri
   if (rest === "__manifest__") return { shareId, kind: "manifest" };
   if (rest.startsWith("file:")) return { shareId, kind: "file", relPath: decodeURIComponent(rest.slice(5)) };
   return { shareId, kind: "other" };
+}
+
+function blockedRoomReason(room: string): string | null {
+  const info = roomInfo(room);
+  if (info.kind !== "file" || !info.relPath) return null;
+  const parts = info.relPath.split("/").filter(Boolean);
+  for (const segment of BLOCKED_FILE_SEGMENTS) {
+    if (parts.includes(segment)) return `blocked-segment:${segment}`;
+  }
+  return null;
 }
 
 function syncSubtypeName(subtype: number): string {
@@ -364,6 +379,7 @@ export function getMetrics() {
     muxConnections: activeMuxConnections.size,
     rateLimited: rateLimitedCount,
     backpressureClosed: backpressureClosedCount,
+    blockedRooms: blockedRoomCount,
     counters: getMetricCounters(),
     detail: rooms.sort((a, b) => b.conns - a.conns).slice(0, 100),
   };
@@ -437,6 +453,22 @@ function muxRoomAllowed(conn: WebSocket, roomName: string): boolean {
 
 async function joinRoom(conn: WebSocket, req: IncomingMessage, roomName: string, url: URL): Promise<WSSharedDoc | null> {
   ensureConnectionIdentity(conn, req, url);
+  const blockedReason = blockedRoomReason(roomName);
+  if (blockedReason) {
+    incMetric("rejected_paths");
+    if (++blockedRoomCount % 100 === 1) {
+      logEvent("warn", "room.blocked", {
+        room: roomName,
+        ...roomInfo(roomName),
+        connId: (conn as any).collabConnId,
+        uid: (conn as any).collabIdentity?.uid,
+        mux: !!(conn as any).collabMux,
+        reason: blockedReason,
+        count: blockedRoomCount,
+      });
+    }
+    return null;
+  }
   const doc = await getOrCreateDoc(roomName);
   if (conn.readyState !== WebSocket.OPEN) {
     logEvent("info", "room.join_aborted_closed", {
@@ -857,6 +889,10 @@ export function commenterSyncMessagePreservesTextForTest(
   } finally {
     doc.destroy();
   }
+}
+
+export function roomBlockedReasonForTest(roomName: string): string | null {
+  return blockedRoomReason(roomName);
 }
 
 /**

@@ -1,7 +1,7 @@
 import * as Y from "yjs";
 import * as syncProtocol from "y-protocols/sync";
 import * as encoding from "lib0/encoding";
-import { commenterSyncMessagePreservesTextForTest } from "../src/rooms.ts";
+import { commenterSyncMessagePreservesTextForTest, roomBlockedReasonForTest } from "../src/rooms.ts";
 
 const MESSAGE_SYNC = 0;
 
@@ -59,6 +59,15 @@ const baseVector = Y.encodeStateVector(base);
   check("commenter updates are not allowed on non-file rooms",
     !commenterSyncMessagePreservesTextForTest("@share:__manifest__", baseState, msg));
 }
+
+check("node_modules file rooms are blocked",
+  roomBlockedReasonForTest("@share:file:repo%2Fnode_modules%2Fpkg%2FREADME.md") === "blocked-segment:node_modules");
+
+check(".git file rooms are blocked",
+  roomBlockedReasonForTest("@share:file:repo%2F.git%2Fconfig.md") === "blocked-segment:.git");
+
+check("ordinary note rooms are allowed",
+  roomBlockedReasonForTest("@share:file:Projects%2Fnote.md") === null);
 
 base.destroy();
 

@@ -15,11 +15,18 @@ const dirtySaves: Set<string> = new Set();
 const STALE_SAVE_MS = Number(process.env.STALE_SAVE_MS || 3 * 60_000);
 const MIN_FREE_BYTES = Number(process.env.MIN_FREE_BYTES || 100 * 1024 * 1024);
 const SAVE_SWEEP_INTERVAL = Number(process.env.SAVE_SWEEP_INTERVAL_MS || 60_000);
+const VERBOSE_PERSISTENCE_LOGS =
+  process.env.PERSISTENCE_VERBOSE_LOGS === "true" ||
+  (process.env.PERSISTENCE_VERBOSE_LOGS !== "false" && process.env.NODE_ENV !== "production");
 
 let lastSaveOk = true;
 let lastSaveTs = 0;
 let lastSaveError: string | null = null;
 let saveSweepInterval: ReturnType<typeof setInterval> | null = null;
+
+function logPersistenceRoom(message: string): void {
+  if (VERBOSE_PERSISTENCE_LOGS) console.log(message);
+}
 
 function statePath(roomName: string): string {
   return path.join(PERSIST_DIR, encodeURIComponent(roomName) + ".yjs");
@@ -62,7 +69,7 @@ export async function loadState(
       );
       return;
     }
-    console.log(`[persistence] loaded state for room: ${roomName}`);
+    logPersistenceRoom(`[persistence] loaded state for room: ${roomName}`);
   } catch (e: any) {
     if (e.code !== "ENOENT") throw e;
     // File doesn't exist yet — fresh room
@@ -103,7 +110,7 @@ export async function saveState(
 
     const currentDirty = dirtyRooms.get(roomName);
     if (dirtyVersion !== undefined && currentDirty?.version === dirtyVersion) dirtyRooms.delete(roomName);
-    console.log(`[persistence] saved state for room: ${roomName}`);
+    logPersistenceRoom(`[persistence] saved state for room: ${roomName}`);
   });
 }
 
@@ -158,7 +165,7 @@ export function startPeriodicSave(roomName: string, ydoc: Y.Doc): void {
   activeRooms.set(roomName, activeRooms.get(roomName) ?? Date.now());
   activeDocs.set(roomName, ydoc);
   ensureSaveSweep();
-  if (!alreadyActive) console.log(`[persistence] tracking dirty saves for room: ${roomName}`);
+  if (!alreadyActive) logPersistenceRoom(`[persistence] tracking dirty saves for room: ${roomName}`);
 }
 
 /**
@@ -170,7 +177,7 @@ export function stopPeriodicSave(roomName: string): void {
   activeRooms.delete(roomName);
   dirtyRooms.delete(roomName);
   dirtySaves.delete(roomName);
-  if (wasActive) console.log(`[persistence] stopped dirty save tracking for room: ${roomName}`);
+  if (wasActive) logPersistenceRoom(`[persistence] stopped dirty save tracking for room: ${roomName}`);
   stopSaveSweepIfIdle();
 }
 

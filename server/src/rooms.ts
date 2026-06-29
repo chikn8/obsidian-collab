@@ -22,6 +22,9 @@ const MESSAGE_MUX_LEAVE = 7; // outer frame: roomName, unsubscribe one mux room
 
 const PING_INTERVAL = 30000;
 const SYNC_DEBUG_LOG = process.env.SYNC_DEBUG_LOG === "true";
+const ROOM_LIFECYCLE_LOGS =
+  process.env.ROOM_LIFECYCLE_LOGS === "true" ||
+  (process.env.ROOM_LIFECYCLE_LOGS !== "false" && process.env.NODE_ENV !== "production");
 const LARGE_UPDATE_BYTES = Number(process.env.SYNC_LOG_LARGE_UPDATE_BYTES || 64 * 1024);
 const LARGE_TEXT_DELTA = Number(process.env.SYNC_LOG_LARGE_TEXT_DELTA || 20 * 1024);
 const BLOCKED_FILE_SEGMENTS = (process.env.SYNC_BLOCKED_FILE_SEGMENTS || "node_modules,.git")
@@ -307,6 +310,10 @@ const docs: Map<string, WSSharedDoc> = new Map();
 const docLoads: Map<string, Promise<WSSharedDoc>> = new Map();
 const connRooms: WeakMap<WebSocket, Set<string>> = new WeakMap();
 
+function logRoomLifecycle(event: string, fields: Record<string, unknown>): void {
+  if (ROOM_LIFECYCLE_LOGS) logEvent("info", event, fields);
+}
+
 function rememberConnRoom(conn: WebSocket, roomName: string): void {
   let rooms = connRooms.get(conn);
   if (!rooms) {
@@ -336,7 +343,7 @@ function closeRoomIfIdle(roomName: string, doc: WSSharedDoc): void {
   saveState(roomName, doc)
     .then(() => {
       if (docs.get(roomName) !== doc || doc.conns.size > 0) {
-        logEvent("info", "room.close_aborted", {
+        logRoomLifecycle("room.close_aborted", {
           room: roomName,
           ...roomInfo(roomName),
           conns: doc.conns.size,
@@ -345,7 +352,7 @@ function closeRoomIfIdle(roomName: string, doc: WSSharedDoc): void {
       }
       doc.destroy();
       docs.delete(roomName);
-      logEvent("info", "room.closed", {
+      logRoomLifecycle("room.closed", {
         room: roomName,
         ...roomInfo(roomName),
       });
@@ -471,7 +478,7 @@ async function joinRoom(conn: WebSocket, req: IncomingMessage, roomName: string,
   }
   const doc = await getOrCreateDoc(roomName);
   if (conn.readyState !== WebSocket.OPEN) {
-    logEvent("info", "room.join_aborted_closed", {
+    logRoomLifecycle("room.join_aborted_closed", {
       room: roomName,
       ...roomInfo(roomName),
       connId: (conn as any).collabConnId,
@@ -489,7 +496,7 @@ async function joinRoom(conn: WebSocket, req: IncomingMessage, roomName: string,
   doc.conns.set(conn, new Set());
   rememberConnRoom(conn, roomName);
 
-  logEvent("info", "room.connect", {
+  logRoomLifecycle("room.connect", {
     room: roomName,
     ...roomInfo(roomName),
     connId: (conn as any).collabConnId,
@@ -920,7 +927,7 @@ function leaveRoom(conn: WebSocket, roomName: string, reason: string): boolean {
     null
   );
 
-  logEvent("info", "room.disconnect", {
+  logRoomLifecycle("room.disconnect", {
     room: roomName,
     ...roomInfo(roomName),
     connId: (conn as any).collabConnId,
@@ -963,7 +970,7 @@ function closeConn(conn: WebSocket): void {
       null
     );
 
-    logEvent("info", "room.disconnect", {
+    logRoomLifecycle("room.disconnect", {
       room: roomName,
       ...roomInfo(roomName),
       connId: (conn as any).collabConnId,

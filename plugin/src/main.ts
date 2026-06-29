@@ -140,7 +140,10 @@ export default class CollabPlugin extends Plugin {
         trace("vault", "modify", { path: file.path, size: file.stat?.size, mtime: file.stat?.mtime });
         let fn = this.modifyDebounceMap.get(file.path);
         if (!fn) {
-          fn = debounce((f: TFile) => this.eachManager((m) => m.onFileModify(f)), 50, true);
+          fn = debounce((f: TFile) => {
+            this.modifyDebounceMap.delete(f.path);
+            this.eachManager((m) => m.onFileModify(f));
+          }, 50, true);
           this.modifyDebounceMap.set(file.path, fn);
         }
         fn(file);
@@ -177,6 +180,7 @@ export default class CollabPlugin extends Plugin {
     );
     this.registerDomEvent(document, "visibilitychange", () => {
       if (document.visibilityState === "hidden") void this.flushActiveEditorForLifecycle("visibility-hidden");
+      else if (document.visibilityState === "visible") this.reconnectAll("visibility-visible");
     });
     this.registerDomEvent(window, "pagehide", () => void this.flushActiveEditorForLifecycle("pagehide"));
     this.registerDomEvent(window, "beforeunload", () => void this.flushActiveEditorForLifecycle("beforeunload"));
@@ -682,6 +686,14 @@ export default class CollabPlugin extends Plugin {
     }
   }
 
+  private reconnectAll(reason: string): void {
+    let failed = 0;
+    this.eachManager((m) => {
+      if (!m.reconnect()) failed++;
+    });
+    trace("reconnect", "all-managers", { reason, managers: this.syncManagers.size, failed });
+  }
+
   /** Detect "@Name" mentions of collaborators in `text` and push them a notification. */
   private notifyMentionsInText(text: string, fileName: string, filePath: string): Set<string> {
     const notified = new Set<string>();
@@ -809,7 +821,7 @@ export default class CollabPlugin extends Plugin {
     const from = Math.min(sel.from, sel.to);
     const to = Math.max(sel.from, sel.to);
     if (to <= from) { new Notice("Select some text to comment on."); return; }
-    const quote = ev.state.doc.sliceString(from, to).slice(0, 200);
+    const quote = ev.state.doc.sliceString(from, to);
 
     const res = await promptModal(this.app, {
       title: "Add comment",
@@ -1239,6 +1251,12 @@ export default class CollabPlugin extends Plugin {
   }
 
   async onunload(): Promise<void> {
+    (this.debouncedRestart as any).cancel?.();
+    (this.debouncedPersistReadMarkers as any).cancel?.();
+    (this.debouncedPresenceDomRefresh as any).cancel?.();
+    (this.debouncedActiveEditorRefresh as any).cancel?.();
+    for (const fn of this.modifyDebounceMap.values()) (fn as any).cancel?.();
+    this.modifyDebounceMap.clear();
     this.presenceDomObserver?.disconnect();
     this.presenceDomObserver = null;
     trace("presence", "dom-observer-stopped");

@@ -228,6 +228,16 @@ export function liveManifestEntry(
     mutationByUid,
     mutationDeviceId,
     mutationDevice,
+    conflictOf,
+    conflictKind,
+    conflictReason,
+    conflictCreatedAt,
+    conflictBy,
+    conflictSourceMutationId,
+    conflictRemoteUpdatedAt,
+    conflictLocalModifiedAt,
+    conflictRemoteHash,
+    conflictLocalHash,
     ...rest
   } = previous || {};
 
@@ -247,6 +257,16 @@ export function liveManifestEntry(
   void mutationByUid;
   void mutationDeviceId;
   void mutationDevice;
+  void conflictOf;
+  void conflictKind;
+  void conflictReason;
+  void conflictCreatedAt;
+  void conflictBy;
+  void conflictSourceMutationId;
+  void conflictRemoteUpdatedAt;
+  void conflictLocalModifiedAt;
+  void conflictRemoteHash;
+  void conflictLocalHash;
 
   return {
     ...rest,

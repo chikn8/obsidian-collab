@@ -6,10 +6,11 @@ COPY . .
 RUN npm run build
 
 FROM node:20-alpine
-RUN apk add --no-cache git rclone
+RUN apk add --no-cache git openssh-client rclone
 WORKDIR /app
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/scripts ./scripts
 COPY package.json ./
 ENV HOST=0.0.0.0
 ENV NODE_OPTIONS=--max-old-space-size=384

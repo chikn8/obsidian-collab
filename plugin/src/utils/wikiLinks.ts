@@ -83,10 +83,11 @@ function rewriteRawLink(
   const split = splitSubpath(target);
   if (!split.path) return raw;
 
+  const hasResolver = typeof resolveLink === "function";
   const resolved = resolveLink?.(split.path, sourceRel);
-  const matches = resolved == null
-    ? directLinkMatch(split.path, oldRel)
-    : sameMarkdownTarget(resolved, oldRel);
+  const matches = hasResolver
+    ? resolved != null && sameMarkdownTarget(resolved, oldRel)
+    : directLinkMatch(split.path, oldRel);
   if (!matches) return raw;
 
   return `${replacementTarget(split.path, newRel)}${split.subpath}${alias}`;

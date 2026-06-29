@@ -149,6 +149,35 @@ console.log("No feedback loop on the receiver");
   A.fp.destroy(); B.fp.destroy();
 }
 
+// ── 3b. Remote updates that arrive during a disk write are projected after it ──
+console.log("Remote transaction during disk write is not dropped");
+{
+  __resetIdb(); __resetHubs();
+  const room = "@test:file:coalesced-write";
+  const A = await makeClient("A", room, "note.md", "base");
+  const B = await makeClient("B", room, "note.md", "");
+  await sleep(900);
+
+  let releaseWrite = null;
+  let paused = false;
+  B.app.vault.afterProcessCompute = async (_file, _current, next) => {
+    if (paused || next !== "first") return;
+    paused = true;
+    await new Promise((resolve) => { releaseWrite = resolve; });
+  };
+
+  await A.edit("first");
+  await sleep(250);
+  check("first write paused before disk update", B.disk() === "base", `B="${B.disk()}"`);
+  await A.edit("second");
+  await sleep(250);
+  check("second remote update reached CRDT while write paused", B.fp.getText() === "second", `y="${B.fp.getText()}"`);
+  releaseWrite?.();
+  await sleep(900);
+  check("coalesced follow-up projects latest remote text", B.disk() === "second", `B="${B.disk()}"`);
+  A.fp.destroy(); B.fp.destroy();
+}
+
 // ── 4. Offline edit reconciles on reconnect (no loss) ─────────────────────────
 console.log("Offline edit reconciles on reconnect");
 {

@@ -6,6 +6,7 @@ import * as Y from "yjs";
 import { alertOps } from "./notify.js";
 import { atomicWriteFile } from "./storage.js";
 import { envFlag, productionDefault } from "./env.js";
+import { gitCommandEnv } from "./gitSsh.js";
 
 const exec = promisify(execFile);
 
@@ -15,6 +16,10 @@ const SNAPSHOT_INTERVAL = 5 * 60_000; // 5 minutes
 const SNAPSHOT_GIT_REMOTE = process.env.SNAPSHOT_GIT_REMOTE || "";
 const SNAPSHOT_GIT_BRANCH = process.env.SNAPSHOT_GIT_BRANCH || "main";
 const REQUIRE_SNAPSHOT_REMOTE = envFlag("REQUIRE_SNAPSHOT_REMOTE", productionDefault());
+const SNAPSHOT_STARTUP_GRACE_MS = Number(
+  process.env.SNAPSHOT_STARTUP_GRACE_MS ||
+  (process.env.NODE_ENV === "production" ? 5 * 60_000 : 0)
+);
 
 let snapshotTimer: ReturnType<typeof setInterval> | null = null;
 let lastSnapshotWriteOk = true;
@@ -23,9 +28,14 @@ let lastSnapshotWriteError: string | null = null;
 let lastCommitOk = true;
 let lastCommitTs = 0;
 let lastCommitError: string | null = null;
-let lastPushOk = true;
+let lastPushOk = false;
 let lastPushTs = 0;
 let lastPushError: string | null = null;
+const snapshotStartedAt = Date.now();
+
+async function git(args: string[]) {
+  return exec("git", args, { cwd: SNAPSHOT_DIR, env: await gitCommandEnv() });
+}
 
 function safeShareId(shareId: string): boolean {
   return /^[A-Za-z0-9_.-]{1,128}$/.test(shareId);
@@ -108,16 +118,20 @@ export async function startSnapshots(): Promise<void> {
 
   // Init git repo if needed
   try {
-    await exec("git", ["status"], { cwd: SNAPSHOT_DIR });
+    await git(["status"]);
   } catch {
-    await exec("git", ["init"], { cwd: SNAPSHOT_DIR });
-    await exec("git", ["symbolic-ref", "HEAD", `refs/heads/${SNAPSHOT_GIT_BRANCH}`], { cwd: SNAPSHOT_DIR });
-    await exec("git", ["config", "user.name", "ObsidianSync"], { cwd: SNAPSHOT_DIR });
-    await exec("git", ["config", "user.email", "sync@obsidian.local"], { cwd: SNAPSHOT_DIR });
+    await git(["init"]);
+    await git(["symbolic-ref", "HEAD", `refs/heads/${SNAPSHOT_GIT_BRANCH}`]);
+    await git(["config", "user.name", "ObsidianSync"]);
+    await git(["config", "user.email", "sync@obsidian.local"]);
     console.log("[snapshots] initialized git repo at", SNAPSHOT_DIR);
   }
 
   if (SNAPSHOT_GIT_REMOTE) await configureRemote();
+
+  commitIfChanged().catch((e) => {
+    console.error("[snapshots] startup commit/push error:", e);
+  });
 
   // Commit timer
   snapshotTimer = setInterval(() => {
@@ -135,20 +149,21 @@ export async function startSnapshots(): Promise<void> {
 async function commitIfChanged(): Promise<void> {
   try {
     // Stage all changes
-    await exec("git", ["add", "-A"], { cwd: SNAPSHOT_DIR });
+    await git(["add", "-A"]);
 
     // Check if there's anything to commit
-    const { stdout } = await exec("git", ["status", "--porcelain"], { cwd: SNAPSHOT_DIR });
+    const { stdout } = await git(["status", "--porcelain"]);
     if (!stdout.trim()) {
       lastCommitOk = true;
       lastCommitError = null;
+      await pushSnapshots();
       return; // No changes
     }
 
     const now = new Date();
     const timestamp = now.toISOString().replace("T", " ").slice(0, 19);
-    await exec("git", ["commit", "-m", `Auto-snapshot ${timestamp}`], { cwd: SNAPSHOT_DIR });
-    await exec("git", ["gc", "--auto"], { cwd: SNAPSHOT_DIR }).catch((e) => {
+    await git(["commit", "-m", `Auto-snapshot ${timestamp}`]);
+    await git(["gc", "--auto"]).catch((e) => {
       console.error("[snapshots] git gc failed:", e);
     });
 
@@ -173,16 +188,16 @@ async function commitIfChanged(): Promise<void> {
 
 async function configureRemote(): Promise<void> {
   try {
-    await exec("git", ["remote", "get-url", "origin"], { cwd: SNAPSHOT_DIR });
-    await exec("git", ["remote", "set-url", "origin", SNAPSHOT_GIT_REMOTE], { cwd: SNAPSHOT_DIR });
+    await git(["remote", "get-url", "origin"]);
+    await git(["remote", "set-url", "origin", SNAPSHOT_GIT_REMOTE]);
   } catch {
-    await exec("git", ["remote", "add", "origin", SNAPSHOT_GIT_REMOTE], { cwd: SNAPSHOT_DIR });
+    await git(["remote", "add", "origin", SNAPSHOT_GIT_REMOTE]);
   }
 
   try {
-    const { stdout } = await exec("git", ["branch", "--show-current"], { cwd: SNAPSHOT_DIR });
+    const { stdout } = await git(["branch", "--show-current"]);
     if (stdout.trim() && stdout.trim() !== SNAPSHOT_GIT_BRANCH) {
-      await exec("git", ["branch", "-M", SNAPSHOT_GIT_BRANCH], { cwd: SNAPSHOT_DIR });
+      await git(["branch", "-M", SNAPSHOT_GIT_BRANCH]);
     }
   } catch {
     // Empty repos may not have a current branch yet; symbolic-ref on init covers new repos.
@@ -193,7 +208,7 @@ async function configureRemote(): Promise<void> {
 async function pushSnapshots(): Promise<void> {
   if (!SNAPSHOT_GIT_REMOTE) return;
   try {
-    await exec("git", ["push", "origin", `HEAD:${SNAPSHOT_GIT_BRANCH}`], { cwd: SNAPSHOT_DIR });
+    await git(["push", "origin", `HEAD:${SNAPSHOT_GIT_BRANCH}`]);
     lastPushOk = true;
     lastPushTs = Date.now();
     lastPushError = null;
@@ -217,7 +232,14 @@ export async function commitSnapshotsNow(): Promise<void> {
 }
 
 export function getSnapshotsHealth() {
-  const remoteOk = !REQUIRE_SNAPSHOT_REMOTE || (!!SNAPSHOT_GIT_REMOTE && lastPushOk);
+  const startupPending =
+    !!SNAPSHOT_GIT_REMOTE &&
+    lastPushTs === 0 &&
+    !lastPushError &&
+    Date.now() - snapshotStartedAt < SNAPSHOT_STARTUP_GRACE_MS;
+  const remoteOk =
+    !REQUIRE_SNAPSHOT_REMOTE ||
+    (!!SNAPSHOT_GIT_REMOTE && ((lastPushOk && lastPushTs > 0) || startupPending));
   return {
     ok: lastSnapshotWriteOk && lastCommitOk && remoteOk,
     lastSnapshotWriteOk,
@@ -231,5 +253,7 @@ export function getSnapshotsHealth() {
     lastPushOk,
     lastPushTs,
     lastPushError,
+    startupPending,
+    startupGraceMs: SNAPSHOT_STARTUP_GRACE_MS,
   };
 }

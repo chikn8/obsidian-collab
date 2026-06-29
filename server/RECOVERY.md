@@ -9,13 +9,28 @@ This service persists all durable state under `PERSIST_DIR` (default `./collab-d
 - `blobs/` content-addressed attachment files
 - `snapshots/` git repo with human-readable note history
 
+The bundled Git full-corpus backup excludes retained logs/audit JSONL files and `snapshots/`; snapshot
+history is pushed separately by `SNAPSHOT_GIT_REMOTE`.
+
 ## Off-box backup setup
 
 Set at least one off-box destination in Railway:
 
 - `SNAPSHOT_GIT_REMOTE`: private git remote for `collab-data/snapshots`
 - `SNAPSHOT_GIT_BRANCH`: branch to push, default `main`
+- `SNAPSHOT_GIT_SSH_KEY`: SSH deploy private key with write access to the git remote. It can be stored
+  as a real multiline Railway secret or with escaped `\n` newlines.
 - `PERSIST_BACKUP_COMMAND`: daily full-corpus backup command. The process exports `PERSIST_DIR`.
+
+Git-only full-corpus backup using the bundled script:
+
+```sh
+PERSIST_BACKUP_COMMAND='sh scripts/git-full-backup.sh'
+PERSIST_BACKUP_GIT_BRANCH=backups
+```
+
+`PERSIST_BACKUP_GIT_REMOTE` defaults to `SNAPSHOT_GIT_REMOTE`; set it only if the archive branch should
+live in another private repo.
 
 Example backup command:
 

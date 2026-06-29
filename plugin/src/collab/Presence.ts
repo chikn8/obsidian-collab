@@ -118,7 +118,8 @@ export class PresenceController {
 
   stop(): void {
     if (this.typingTimer) { clearTimeout(this.typingTimer); this.typingTimer = null; }
-    this.setTyping(false);
+    const cur = this.manifestAwareness.getLocalState()?.presence || {};
+    this.manifestAwareness.setLocalStateField("presence", { ...cur, typing: false, activeFile: null });
     for (const c of this.cleanup) c();
     this.cleanup = [];
   }

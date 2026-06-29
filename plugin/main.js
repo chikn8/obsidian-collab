@@ -10963,6 +10963,168 @@ function diffRange(oldStr, newStr) {
   }
   return { start, delCount: endOld - start, insert: newStr.substring(start, endNew) };
 }
+function opsToSplices(ops, startOffset) {
+  const splices = [];
+  let oldIndex = startOffset;
+  let runStart = null;
+  let delCount = 0;
+  let insert = "";
+  const flush = () => {
+    if (runStart == null) return;
+    splices.push({ start: runStart, delCount, insert });
+    runStart = null;
+    delCount = 0;
+    insert = "";
+  };
+  for (const [kind, ch] of ops) {
+    if (kind === "equal") {
+      flush();
+      oldIndex++;
+    } else if (kind === "remove") {
+      if (runStart == null) runStart = oldIndex;
+      delCount++;
+      oldIndex++;
+    } else {
+      if (runStart == null) runStart = oldIndex;
+      insert += ch;
+    }
+  }
+  flush();
+  return splices;
+}
+function myersDiffOps(oldMid, newMid, maxEdits) {
+  var _a2, _b2;
+  const m = oldMid.length;
+  const n = newMid.length;
+  const max2 = m + n;
+  const limit = Math.min(max2, maxEdits);
+  let frontier = /* @__PURE__ */ new Map([[1, 0]]);
+  const trace2 = [];
+  for (let d = 0; d <= limit; d++) {
+    const next = /* @__PURE__ */ new Map();
+    for (let k = -d; k <= d; k += 2) {
+      const down = (_a2 = frontier.get(k + 1)) != null ? _a2 : -1;
+      const right = (_b2 = frontier.get(k - 1)) != null ? _b2 : -1;
+      let x = k === -d || k !== d && right < down ? down : right + 1;
+      if (x < 0) x = 0;
+      let y = x - k;
+      while (x < m && y < n && oldMid[x] === newMid[y]) {
+        x++;
+        y++;
+      }
+      next.set(k, x);
+      if (x >= m && y >= n) {
+        trace2.push(next);
+        return backtrackMyers(oldMid, newMid, trace2);
+      }
+    }
+    trace2.push(next);
+    frontier = next;
+  }
+  return null;
+}
+function backtrackMyers(oldMid, newMid, trace2) {
+  var _a2, _b2, _c;
+  const ops = [];
+  let x = oldMid.length;
+  let y = newMid.length;
+  for (let d = trace2.length - 1; d > 0; d--) {
+    const k = x - y;
+    const prev = trace2[d - 1];
+    const down = (_a2 = prev.get(k + 1)) != null ? _a2 : -1;
+    const right = (_b2 = prev.get(k - 1)) != null ? _b2 : -1;
+    const prevK = k === -d || k !== d && right < down ? k + 1 : k - 1;
+    const prevX = (_c = prev.get(prevK)) != null ? _c : 0;
+    const prevY = prevX - prevK;
+    while (x > prevX && y > prevY) {
+      ops.push(["equal", oldMid[x - 1]]);
+      x--;
+      y--;
+    }
+    if (x === prevX) {
+      ops.push(["add", newMid[y - 1]]);
+      y--;
+    } else {
+      ops.push(["remove", oldMid[x - 1]]);
+      x--;
+    }
+  }
+  while (x > 0 && y > 0) {
+    ops.push(["equal", oldMid[x - 1]]);
+    x--;
+    y--;
+  }
+  ops.reverse();
+  return ops;
+}
+function diffRanges(oldStr, newStr, maxCells = 25e4) {
+  if (oldStr === newStr) return [];
+  let prefix = 0;
+  const maxPrefix = Math.min(oldStr.length, newStr.length);
+  while (prefix < maxPrefix && oldStr[prefix] === newStr[prefix]) prefix++;
+  let suffix = 0;
+  const maxSuffix = Math.min(oldStr.length, newStr.length) - prefix;
+  while (suffix < maxSuffix && oldStr[oldStr.length - 1 - suffix] === newStr[newStr.length - 1 - suffix]) {
+    suffix++;
+  }
+  const oldMid = oldStr.slice(prefix, oldStr.length - suffix);
+  const newMid = newStr.slice(prefix, newStr.length - suffix);
+  const m = oldMid.length;
+  const n = newMid.length;
+  if (m === 0 || n === 0) return [diffRange(oldStr, newStr)];
+  if (m * n > maxCells) {
+    const maxEdits = m + n > 2e5 ? 256 : 1024;
+    const myersOps = myersDiffOps(oldMid, newMid, maxEdits);
+    if (myersOps) {
+      const splices2 = opsToSplices(myersOps, prefix);
+      if (splices2.length) return splices2;
+    }
+    return [diffRange(oldStr, newStr)];
+  }
+  const width = n + 1;
+  const dirs = new Uint8Array((m + 1) * (n + 1));
+  let prev = new Uint16Array(width);
+  let curr = new Uint16Array(width);
+  for (let i2 = 1; i2 <= m; i2++) {
+    curr.fill(0);
+    for (let j2 = 1; j2 <= n; j2++) {
+      const idx = i2 * width + j2;
+      if (oldMid[i2 - 1] === newMid[j2 - 1]) {
+        curr[j2] = prev[j2 - 1] + 1;
+        dirs[idx] = 3;
+      } else if (prev[j2] >= curr[j2 - 1]) {
+        curr[j2] = prev[j2];
+        dirs[idx] = 1;
+      } else {
+        curr[j2] = curr[j2 - 1];
+        dirs[idx] = 2;
+      }
+    }
+    const tmp = prev;
+    prev = curr;
+    curr = tmp;
+  }
+  const ops = [];
+  let i = m;
+  let j = n;
+  while (i > 0 || j > 0) {
+    const dir = i > 0 && j > 0 ? dirs[i * width + j] : i > 0 ? 1 : 2;
+    if (dir === 3) {
+      ops.push(["equal", oldMid[i - 1]]);
+      i--;
+      j--;
+    } else if (dir === 1) {
+      ops.push(["remove", oldMid[i - 1]]);
+      i--;
+    } else {
+      ops.push(["add", newMid[j - 1]]);
+      j--;
+    }
+  }
+  ops.reverse();
+  const splices = opsToSplices(ops, prefix);
+  return splices.length ? splices : [diffRange(oldStr, newStr)];
+}
 
 // src/types.ts
 var MANIFEST_SCHEMA_VERSION = 2;
@@ -11032,6 +11194,7 @@ var FileProvider = class _FileProvider {
      *  headless disk round-trip is suppressed to avoid double-apply/flicker. */
     this.editorBound = false;
     this.editorFlushTimer = null;
+    this.needsWriteAfterCurrent = false;
     this.writeQueue = Promise.resolve();
     this.writeSeq = 0;
     this.pendingLocalContent = null;
@@ -11297,7 +11460,16 @@ var FileProvider = class _FileProvider {
         }
         return;
       }
-      if (this.writing) return;
+      if (this.writing) {
+        this.needsWriteAfterCurrent = true;
+        trace("file", "remote-transaction-deferred-during-write", {
+          path: this.filePath,
+          room: this.roomName,
+          editorBound: this.editorBound,
+          len: this.ytext.length
+        });
+        return;
+      }
       if (this.editorBound) {
         trace("yjs", "remote-transaction-rendered-by-editor", {
           path: this.filePath,
@@ -11389,6 +11561,11 @@ var FileProvider = class _FileProvider {
       console.error("FileProvider: writeToFile failed", this.filePath, e);
     } finally {
       this.writing = false;
+      if (this.needsWriteAfterCurrent && !this.destroyed) {
+        this.needsWriteAfterCurrent = false;
+        if (this.editorBound) void this.flushToDisk("coalesced-remote-transaction");
+        else void this.writeToFile(false, "coalesced-remote-transaction");
+      }
     }
   }
   /** Apply a local file change to ytext (called from vault.on("modify")) */
@@ -11439,19 +11616,21 @@ var FileProvider = class _FileProvider {
       trace("loop", "stale-echo-ignored", { path: this.filePath, room: this.roomName, len: newContent.length });
       return;
     }
-    const { start, delCount, insert } = diffRange(old, newContent);
+    const splices = diffRanges(old, newContent);
     trace("file", "local-disk-diff", {
       path: this.filePath,
       room: this.roomName,
       oldLen: old.length,
       newLen: newContent.length,
-      start,
-      delCount,
-      insertLen: insert.length
+      splices: splices.length,
+      changedChars: splices.reduce((n, s) => n + s.delCount + s.insert.length, 0)
     });
     this.ydoc.transact(() => {
-      if (delCount > 0) this.ytext.delete(start, delCount);
-      if (insert.length > 0) this.ytext.insert(start, insert);
+      for (let i = splices.length - 1; i >= 0; i--) {
+        const { start, delCount, insert } = splices[i];
+        if (delCount > 0) this.ytext.delete(start, delCount);
+        if (insert.length > 0) this.ytext.insert(start, insert);
+      }
     });
   }
   /**
@@ -11516,11 +11695,14 @@ var FileProvider = class _FileProvider {
   }
   /** Apply a diff between two strings as Yjs operations */
   applyDiff(oldContent, newContent, origin) {
-    const { start, delCount, insert } = diffRange(oldContent, newContent);
-    if (delCount > 0 || insert.length > 0) {
+    const splices = diffRanges(oldContent, newContent);
+    if (splices.length > 0) {
       this.ydoc.transact(() => {
-        if (delCount > 0) this.ytext.delete(start, delCount);
-        if (insert.length > 0) this.ytext.insert(start, insert);
+        for (let i = splices.length - 1; i >= 0; i--) {
+          const { start, delCount, insert } = splices[i];
+          if (delCount > 0) this.ytext.delete(start, delCount);
+          if (insert.length > 0) this.ytext.insert(start, insert);
+        }
       }, origin);
     }
   }
@@ -11935,8 +12117,9 @@ function rewriteRawLink(raw, oldRel, newRel, sourceRel, resolveLink) {
   const alias = pipe >= 0 ? raw.slice(pipe) : "";
   const split = splitSubpath(target);
   if (!split.path) return raw;
+  const hasResolver = typeof resolveLink === "function";
   const resolved = resolveLink == null ? void 0 : resolveLink(split.path, sourceRel);
-  const matches = resolved == null ? directLinkMatch(split.path, oldRel) : sameMarkdownTarget(resolved, oldRel);
+  const matches = hasResolver ? resolved != null && sameMarkdownTarget(resolved, oldRel) : directLinkMatch(split.path, oldRel);
   if (!matches) return raw;
   return `${replacementTarget(split.path, newRel)}${split.subpath}${alias}`;
 }
@@ -12102,6 +12285,16 @@ function liveManifestEntry(previous, relPath, fileId, displayName, extra = {}) {
     mutationByUid,
     mutationDeviceId,
     mutationDevice,
+    conflictOf,
+    conflictKind,
+    conflictReason,
+    conflictCreatedAt,
+    conflictBy,
+    conflictSourceMutationId,
+    conflictRemoteUpdatedAt,
+    conflictLocalModifiedAt,
+    conflictRemoteHash,
+    conflictLocalHash,
     ...rest
   } = previous || {};
   void deleted;
@@ -12120,6 +12313,16 @@ function liveManifestEntry(previous, relPath, fileId, displayName, extra = {}) {
   void mutationByUid;
   void mutationDeviceId;
   void mutationDevice;
+  void conflictOf;
+  void conflictKind;
+  void conflictReason;
+  void conflictCreatedAt;
+  void conflictBy;
+  void conflictSourceMutationId;
+  void conflictRemoteUpdatedAt;
+  void conflictLocalModifiedAt;
+  void conflictRemoteHash;
+  void conflictLocalHash;
   return {
     ...rest,
     fileId,
@@ -15393,11 +15596,13 @@ var PresenceController = class {
     this.refresh();
   }
   stop() {
+    var _a2;
     if (this.typingTimer) {
       clearTimeout(this.typingTimer);
       this.typingTimer = null;
     }
-    this.setTyping(false);
+    const cur = ((_a2 = this.manifestAwareness.getLocalState()) == null ? void 0 : _a2.presence) || {};
+    this.manifestAwareness.setLocalStateField("presence", { ...cur, typing: false, activeFile: null });
     for (const c of this.cleanup) c();
     this.cleanup = [];
   }
@@ -16502,7 +16707,10 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
         trace("vault", "modify", { path: file.path, size: (_a3 = file.stat) == null ? void 0 : _a3.size, mtime: (_b2 = file.stat) == null ? void 0 : _b2.mtime });
         let fn = this.modifyDebounceMap.get(file.path);
         if (!fn) {
-          fn = (0, import_obsidian11.debounce)((f) => this.eachManager((m) => m.onFileModify(f)), 50, true);
+          fn = (0, import_obsidian11.debounce)((f) => {
+            this.modifyDebounceMap.delete(f.path);
+            this.eachManager((m) => m.onFileModify(f));
+          }, 50, true);
           this.modifyDebounceMap.set(file.path, fn);
         }
         fn(file);
@@ -16535,6 +16743,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     );
     this.registerDomEvent(document, "visibilitychange", () => {
       if (document.visibilityState === "hidden") void this.flushActiveEditorForLifecycle("visibility-hidden");
+      else if (document.visibilityState === "visible") this.reconnectAll("visibility-visible");
     });
     this.registerDomEvent(window, "pagehide", () => void this.flushActiveEditorForLifecycle("pagehide"));
     this.registerDomEvent(window, "beforeunload", () => void this.flushActiveEditorForLifecycle("beforeunload"));
@@ -16992,6 +17201,13 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       err("bind", "lifecycle flush failed", path, reason, e);
     }
   }
+  reconnectAll(reason) {
+    let failed = 0;
+    this.eachManager((m) => {
+      if (!m.reconnect()) failed++;
+    });
+    trace("reconnect", "all-managers", { reason, managers: this.syncManagers.size, failed });
+  }
   /** Detect "@Name" mentions of collaborators in `text` and push them a notification. */
   notifyMentionsInText(text2, fileName, filePath) {
     const notified = /* @__PURE__ */ new Set();
@@ -17125,7 +17341,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       new import_obsidian11.Notice("Select some text to comment on.");
       return;
     }
-    const quote = ev.state.doc.sliceString(from2, to).slice(0, 200);
+    const quote = ev.state.doc.sliceString(from2, to);
     const res = await promptModal(this.app, {
       title: "Add comment",
       cta: "Comment",
@@ -17524,12 +17740,18 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     }
   }
   async onunload() {
-    var _a2, _b2;
-    (_a2 = this.presenceDomObserver) == null ? void 0 : _a2.disconnect();
+    var _a2, _b2, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+    (_b2 = (_a2 = this.debouncedRestart).cancel) == null ? void 0 : _b2.call(_a2);
+    (_d = (_c = this.debouncedPersistReadMarkers).cancel) == null ? void 0 : _d.call(_c);
+    (_f = (_e = this.debouncedPresenceDomRefresh).cancel) == null ? void 0 : _f.call(_e);
+    (_h = (_g = this.debouncedActiveEditorRefresh).cancel) == null ? void 0 : _h.call(_g);
+    for (const fn of this.modifyDebounceMap.values()) (_i = fn.cancel) == null ? void 0 : _i.call(fn);
+    this.modifyDebounceMap.clear();
+    (_j = this.presenceDomObserver) == null ? void 0 : _j.disconnect();
     this.presenceDomObserver = null;
     trace("presence", "dom-observer-stopped");
     await this.unbindActiveEditor("plugin-unload");
-    await ((_b2 = this.instanceWatch) == null ? void 0 : _b2.stop());
+    await ((_k = this.instanceWatch) == null ? void 0 : _k.stop());
     await this.stopAllShares();
     console.log("Obsidian Collab plugin unloaded");
   }

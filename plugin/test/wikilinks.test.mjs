@@ -31,6 +31,18 @@ console.log("wikilink rewrite\n");
 
 {
   const result = rewriteObsidianLinks(
+    "[[Old]] should stay when Obsidian resolves it outside the share.",
+    {
+      oldRelPath: "Notes/Old.md",
+      newRelPath: "Notes/New.md",
+      resolveLink: () => null,
+    }
+  );
+  check("resolver miss disables basename fallback", result.content === "[[Old]] should stay when Obsidian resolves it outside the share.", result.content);
+}
+
+{
+  const result = rewriteObsidianLinks(
     "Inline `[[Old]]` stays.\n```\n[[Old]]\n```\nOutside [[Old]].",
     { oldRelPath: "Old.md", newRelPath: "New.md" }
   );

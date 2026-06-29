@@ -214,10 +214,13 @@ Settings → Real-Time Collaboration:
 | `MEMORY_HEALTH_MAX_HEAP_USED_BYTES` | `0` | Optional `/health` heap-used ceiling; `0` disables |
 | `MEMORY_HEALTH_CGROUP_RATIO` | `0.92` | RSS health threshold ratio when a container memory limit is detectable |
 | `SNAPSHOT_GIT_REMOTE` / `SNAPSHOT_GIT_BRANCH` | — / `main` | Push note-history snapshots off-box |
+| `SNAPSHOT_GIT_SSH_KEY` | — | Optional SSH deploy private key for git snapshot/backup remotes; accepts real or escaped newlines |
 | `REQUIRE_SNAPSHOT_REMOTE` | `true` in production, otherwise `false` | Make `/health` fail until snapshot git push is configured |
-| `PERSIST_BACKUP_COMMAND` | — | Shell command for periodic full-corpus backup (gets `$PERSIST_DIR`) |
+| `PERSIST_BACKUP_COMMAND` | — | Shell command for periodic full-corpus backup (gets `$PERSIST_DIR`); use `sh scripts/git-full-backup.sh` for git-only backups |
+| `PERSIST_BACKUP_GIT_REMOTE` / `PERSIST_BACKUP_GIT_BRANCH` | = `SNAPSHOT_GIT_REMOTE` / `backups` | Destination used by the bundled git full-corpus backup script |
 | `REQUIRE_PERSIST_BACKUP` | `true` in production, otherwise `false` | Make `/health` fail until full-corpus backups are configured |
 | `PERSIST_BACKUP_INTERVAL_MS` | `86400000` | Backup cadence |
+| `PERSIST_BACKUP_STARTUP_GRACE_MS` | `1800000` in production, otherwise `0` | Grace period for the first backup to finish before required-backup health fails |
 | `OPS_NTFY_TOPIC` | — | ntfy topic for save/backup/corruption alerts |
 | `REQUIRE_OPS_ALERTS` | `true` in production, otherwise `false` | Make `/health` fail until ops alerting is configured |
 | `HEALTH_ALERT_INTERVAL_MS` | `60000` in production, otherwise `0` | Internal `/health` degradation alert cadence; set `0` if the host alerts externally |

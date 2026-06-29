@@ -10,6 +10,7 @@ import { handleNotify, registerTopic } from "./notify.js";
 import { logEvent } from "./logging.js";
 import { auditEvent } from "./audit.js";
 import { getMetricCounters, incMetric } from "./metrics.js";
+import { getMinEpoch } from "./shareState.js";
 
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
@@ -27,6 +28,7 @@ const LARGE_TEXT_DELTA = Number(process.env.SYNC_LOG_LARGE_TEXT_DELTA || 20 * 10
 // ── Abuse caps (one authed client must not be able to OOM/bloat the box) ──────
 const MAX_MSGS_PER_SEC = 250;            // sustained inbound rate per connection
 const RATE_BURST = 600;                  // bucket capacity (covers a big paste)
+const RATE_LIMIT_CLOSE_CODE = 4408;
 const SEND_BUFFER_LIMIT = 8 * 1024 * 1024; // drop a hopelessly backed-up socket (slow-peer OOM guard)
 let rateLimitedCount = 0;
 let backpressureClosedCount = 0;
@@ -103,6 +105,16 @@ function allowMessage(conn: any): boolean {
   if (b.tokens < 1) return false;
   b.tokens -= 1;
   return true;
+}
+
+function closeRateLimitedConnection(conn: WebSocket, event: string, fields: Record<string, unknown>): void {
+  incMetric("rate_limited");
+  if (++rateLimitedCount % 100 === 1) {
+    logEvent("warn", event, { ...fields, count: rateLimitedCount });
+  }
+  if (conn.readyState === WebSocket.OPEN || conn.readyState === WebSocket.CONNECTING) {
+    conn.close(RATE_LIMIT_CLOSE_CODE, "Rate limit exceeded");
+  }
 }
 
 function cleanParam(value: string | null, fallback: string, max: number, pattern?: RegExp): string {
@@ -501,20 +513,22 @@ async function joinRoom(conn: WebSocket, req: IncomingMessage, roomName: string,
 export function closeRevokedConnections(shareId: string, minEpoch: number): number {
   let closed = 0;
   const seen = new Set<WebSocket>();
+  const closeIfRevoked = (conn: WebSocket): void => {
+    if (seen.has(conn)) return;
+    const connShareId = (conn as any).collabShareId;
+    const connEpoch = Number((conn as any).collabEpoch ?? 0);
+    if (connShareId === shareId && connEpoch < minEpoch) {
+      seen.add(conn);
+      closed++;
+      conn.close(4003, "Share access revoked");
+    }
+  };
   const prefix = `@${shareId}:`;
   for (const [roomName, doc] of docs) {
     if (!roomName.startsWith(prefix)) continue;
-    for (const conn of doc.conns.keys()) {
-      if (seen.has(conn)) continue;
-      const connShareId = (conn as any).collabShareId;
-      const connEpoch = Number((conn as any).collabEpoch ?? 0);
-      if (connShareId === shareId && connEpoch < minEpoch) {
-        seen.add(conn);
-        closed++;
-        conn.close(4003, "Share access revoked");
-      }
-    }
+    for (const conn of doc.conns.keys()) closeIfRevoked(conn);
   }
+  for (const conn of activeMuxConnections) closeIfRevoked(conn);
   if (closed > 0) logEvent("warn", "share.revoked_connections_closed", { shareId, minEpoch, closed });
   return closed;
 }
@@ -522,20 +536,40 @@ export function closeRevokedConnections(shareId: string, minEpoch: number): numb
 export function closeInviteConnections(shareId: string, inviteId: string): number {
   let closed = 0;
   const seen = new Set<WebSocket>();
+  const closeIfInvite = (conn: WebSocket): void => {
+    if (seen.has(conn)) return;
+    if ((conn as any).collabShareId === shareId && (conn as any).collabInviteId === inviteId) {
+      seen.add(conn);
+      closed++;
+      conn.close(4003, "Invite access revoked");
+    }
+  };
   const prefix = `@${shareId}:`;
   for (const [roomName, doc] of docs) {
     if (!roomName.startsWith(prefix)) continue;
-    for (const conn of doc.conns.keys()) {
-      if (seen.has(conn)) continue;
-      if ((conn as any).collabShareId === shareId && (conn as any).collabInviteId === inviteId) {
-        seen.add(conn);
-        closed++;
-        conn.close(4003, "Invite access revoked");
-      }
-    }
+    for (const conn of doc.conns.keys()) closeIfInvite(conn);
   }
+  for (const conn of activeMuxConnections) closeIfInvite(conn);
   if (closed > 0) logEvent("warn", "share.invite_connections_closed", { shareId, inviteId, closed });
   return closed;
+}
+
+async function muxConnectionStillAuthorized(conn: WebSocket): Promise<boolean> {
+  const shareId = (conn as any).collabShareId;
+  if (!shareId) return false;
+  const epoch = Number((conn as any).collabEpoch ?? 0);
+  const minEpoch = await getMinEpoch(shareId);
+  if (epoch >= minEpoch) return true;
+  incMetric("revocations");
+  logEvent("warn", "mux.revoked_connection_rejected", {
+    shareId,
+    epoch,
+    minEpoch,
+    connId: (conn as any).collabConnId,
+    uid: (conn as any).collabIdentity?.uid,
+  });
+  conn.close(4003, "Share access revoked");
+  return false;
 }
 
 /**
@@ -948,17 +982,13 @@ export async function setupWSConnection(
 
   // Handle incoming messages
   conn.on("message", (data: RawData) => {
-    // Drop messages from a connection exceeding its rate budget (flood guard).
+    // Close instead of dropping a protocol frame; a reconnect resyncs cleanly.
     if (!allowMessage(conn)) {
-      incMetric("rate_limited");
-      if (++rateLimitedCount % 100 === 1) {
-        logEvent("warn", "ws.rate_limited", {
-          room: roomName,
-          ...roomInfo(roomName),
-          connId: (conn as any).collabConnId,
-          count: rateLimitedCount,
-        });
-      }
+      closeRateLimitedConnection(conn, "ws.rate_limited", {
+        room: roomName,
+        ...roomInfo(roomName),
+        connId: (conn as any).collabConnId,
+      });
       return;
     }
     const message = rawDataToUint8Array(data);
@@ -1032,18 +1062,15 @@ export async function setupMuxConnection(
 
   conn.on("message", (data: RawData) => {
     if (!allowMessage(conn)) {
-      incMetric("rate_limited");
-      if (++rateLimitedCount % 100 === 1) {
-        logEvent("warn", "mux.rate_limited", {
-          connId: (conn as any).collabConnId,
-          shareId: (conn as any).collabShareId || undefined,
-          count: rateLimitedCount,
-        });
-      }
+      closeRateLimitedConnection(conn, "mux.rate_limited", {
+        connId: (conn as any).collabConnId,
+        shareId: (conn as any).collabShareId || undefined,
+      });
       return;
     }
     void (async () => {
       try {
+        if (!(await muxConnectionStillAuthorized(conn))) return;
         const message = rawDataToUint8Array(data);
         const decoder = decoding.createDecoder(message);
         const outerType = decoding.readVarUint(decoder);

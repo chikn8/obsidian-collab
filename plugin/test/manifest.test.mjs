@@ -355,6 +355,16 @@ console.log("Live entry cleanup");
     mutationByUid: "uid-a",
     mutationDeviceId: "device-a",
     mutationDevice: "desktop",
+    conflictOf: "source.md",
+    conflictKind: "delete",
+    conflictReason: "remote-delete",
+    conflictCreatedAt: 12,
+    conflictBy: "A",
+    conflictSourceMutationId: "delete-op",
+    conflictRemoteUpdatedAt: 10,
+    conflictLocalModifiedAt: 11,
+    conflictRemoteHash: "remote",
+    conflictLocalHash: "local",
     lastModified: 10,
     createdBy: "Orig",
   };
@@ -374,6 +384,7 @@ console.log("Live entry cleanup");
   check("live entry strips stale rename target", live.renamedTo === undefined && live.renamedFrom === undefined);
   check("live entry strips stale delete metadata", live.deletedAt === undefined && live.deletedBy === undefined);
   check("live entry strips stale mutation metadata", unstamped.mutationId === undefined && unstamped.mutationByUid === undefined);
+  check("live entry strips stale conflict metadata", live.conflictOf === undefined && live.conflictKind === undefined && live.conflictLocalHash === undefined);
   check("live entry applies fresh restore metadata", live.restoredBy === "Me" && live.restoredAt === 20);
   check("live entry applies fresh mutation metadata",
     live.mutationId === "uid-me:device-me:2:20" &&

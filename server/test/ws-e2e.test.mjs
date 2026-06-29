@@ -408,6 +408,18 @@ function queryParams(params) {
   return q.toString();
 }
 
+function syncStep1Frame() {
+  const doc = new Y.Doc();
+  try {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, 0);
+    syncProtocol.writeSyncStep1(encoder, doc);
+    return encoding.toUint8Array(encoder);
+  } finally {
+    doc.destroy();
+  }
+}
+
 console.log("real server WebSocket e2e\n");
 
 const persistDir = await fs.mkdtemp(path.join(os.tmpdir(), "obsidian-collab-ws-e2e-"));
@@ -427,6 +439,48 @@ try {
     check("B received A's edit", B.text() === "hello from editor A");
     await A.close();
     await B.close();
+  }
+
+  console.log("Rate-limited sockets close instead of dropping sync frames");
+  {
+    const shareId = "e2e-rate-limit";
+    const room = roomName(shareId, "flood.md");
+    const url = new URL(`${server.wsBase}/${encodeURIComponent(room)}`);
+    for (const [key, value] of Object.entries(authParams("editor", 1, shareId))) {
+      url.searchParams.set(key, String(value));
+    }
+    const ws = new WebSocket(url);
+    const closed = new Promise((resolve) => {
+      ws.on("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+    });
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("rate-limit socket connect timeout")), 5000);
+      ws.on("open", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      ws.on("error", reject);
+    });
+    const frame = syncStep1Frame();
+    for (let i = 0; i < 900; i++) {
+      if (ws.readyState !== WebSocket.OPEN) break;
+      try {
+        ws.send(frame);
+      } catch {
+        break;
+      }
+    }
+    const result = await Promise.race([
+      closed,
+      sleep(5000).then(() => null),
+    ]);
+    check("rate-limited socket closed with 4408", result?.code === 4408, `code=${result?.code}`);
+    const metricsRes = await fetch(`${server.httpBase}/metrics`, {
+      headers: { Authorization: `Bearer ${ADMIN_SECRET}` },
+    });
+    const metrics = await metricsRes.json();
+    check("rate-limit metric increments", metrics.counters?.rate_limited >= 1, JSON.stringify(metrics.counters));
+    try { ws.terminate(); } catch {}
   }
 
   console.log("Previous rotation secrets remain valid during grace window");
@@ -636,6 +690,27 @@ try {
     ]);
     check("old epoch socket closed with 4003", closed?.code === 4003, `code=${closed?.code}`);
     client.doc.destroy();
+  }
+
+  console.log("Revocation closes idle mux sockets before they can rejoin");
+  {
+    const shareId = "e2e-revoke-idle-mux";
+    const client = new MuxClient(server.wsBase, shareId, [], authParams("editor", 1, shareId));
+    await client.ready;
+    const token = adminToken(shareId, 2);
+    const res = await fetch(`${server.httpBase}/admin/revoke?share=${encodeURIComponent(shareId)}&epoch=2`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    check("admin revoke for idle mux HTTP succeeds", res.status === 200, `status=${res.status}`);
+    const body = await res.json();
+    check("idle mux counted as closed", body.closedConnections === 1, JSON.stringify(body));
+    const closed = await Promise.race([
+      client.closed,
+      sleep(5000).then(() => null),
+    ]);
+    check("idle mux old epoch socket closed with 4003", closed?.code === 4003, `code=${closed?.code}`);
+    await client.close();
   }
 
   console.log("Blob API syncs content-addressed attachments");

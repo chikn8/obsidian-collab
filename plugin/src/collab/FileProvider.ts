@@ -3,7 +3,7 @@ import * as Y from "yjs";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { createProvider } from "./YjsProvider";
 import { EchoGuard, beginRemoteApply, endRemoteApply } from "./EchoGuard";
-import { diffRange } from "../utils/textDiff";
+import { diffRanges } from "../utils/textDiff";
 import { err, log, trace } from "../utils/log";
 import { pluginDataPath } from "../utils/pluginPaths";
 import { colorFor } from "../types";
@@ -66,6 +66,7 @@ export class FileProvider {
    *  headless disk round-trip is suppressed to avoid double-apply/flicker. */
   private editorBound = false;
   private editorFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private needsWriteAfterCurrent = false;
   private writeQueue: Promise<void> = Promise.resolve();
   private writeSeq = 0;
   private pendingLocalContent: string | null = null;
@@ -395,7 +396,16 @@ export class FileProvider {
         }
         return;
       }
-      if (this.writing) return;
+      if (this.writing) {
+        this.needsWriteAfterCurrent = true;
+        trace("file", "remote-transaction-deferred-during-write", {
+          path: this.filePath,
+          room: this.roomName,
+          editorBound: this.editorBound,
+          len: this.ytext.length,
+        });
+        return;
+      }
       // While the editor owns this doc (yCollab), it renders remote changes
       // itself and Obsidian persists them — skip the headless disk write.
       if (this.editorBound) {
@@ -494,6 +504,11 @@ export class FileProvider {
       console.error("FileProvider: writeToFile failed", this.filePath, e);
     } finally {
       this.writing = false;
+      if (this.needsWriteAfterCurrent && !this.destroyed) {
+        this.needsWriteAfterCurrent = false;
+        if (this.editorBound) void this.flushToDisk("coalesced-remote-transaction");
+        else void this.writeToFile(false, "coalesced-remote-transaction");
+      }
     }
   }
 
@@ -551,19 +566,21 @@ export class FileProvider {
       return;
     }
 
-    const { start, delCount, insert } = diffRange(old, newContent);
+    const splices = diffRanges(old, newContent);
     trace("file", "local-disk-diff", {
       path: this.filePath,
       room: this.roomName,
       oldLen: old.length,
       newLen: newContent.length,
-      start,
-      delCount,
-      insertLen: insert.length,
+      splices: splices.length,
+      changedChars: splices.reduce((n, s) => n + s.delCount + s.insert.length, 0),
     });
     this.ydoc.transact(() => {
-      if (delCount > 0) this.ytext.delete(start, delCount);
-      if (insert.length > 0) this.ytext.insert(start, insert);
+      for (let i = splices.length - 1; i >= 0; i--) {
+        const { start, delCount, insert } = splices[i];
+        if (delCount > 0) this.ytext.delete(start, delCount);
+        if (insert.length > 0) this.ytext.insert(start, insert);
+      }
     });
   }
 
@@ -633,11 +650,14 @@ export class FileProvider {
 
   /** Apply a diff between two strings as Yjs operations */
   private applyDiff(oldContent: string, newContent: string, origin?: unknown): void {
-    const { start, delCount, insert } = diffRange(oldContent, newContent);
-    if (delCount > 0 || insert.length > 0) {
+    const splices = diffRanges(oldContent, newContent);
+    if (splices.length > 0) {
       this.ydoc.transact(() => {
-        if (delCount > 0) this.ytext.delete(start, delCount);
-        if (insert.length > 0) this.ytext.insert(start, insert);
+        for (let i = splices.length - 1; i >= 0; i--) {
+          const { start, delCount, insert } = splices[i];
+          if (delCount > 0) this.ytext.delete(start, delCount);
+          if (insert.length > 0) this.ytext.insert(start, insert);
+        }
       }, origin);
     }
   }

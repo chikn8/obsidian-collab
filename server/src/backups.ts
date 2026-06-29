@@ -3,6 +3,7 @@ import { promisify } from "util";
 import { alertOps } from "./notify.js";
 import { PERSIST_DIR } from "./persistence.js";
 import { envFlag, productionDefault } from "./env.js";
+import { gitCommandEnv } from "./gitSsh.js";
 
 const execShell = promisify(exec);
 
@@ -11,15 +12,20 @@ const REQUIRE_PERSIST_BACKUP = envFlag("REQUIRE_PERSIST_BACKUP", productionDefau
 const BACKUP_INTERVAL_MS = Number(process.env.PERSIST_BACKUP_INTERVAL_MS || 24 * 60 * 60_000);
 const BACKUP_JITTER_MS = Number(process.env.PERSIST_BACKUP_JITTER_MS || 5 * 60_000);
 const BACKUP_TIMEOUT_MS = Number(process.env.PERSIST_BACKUP_TIMEOUT_MS || 30 * 60_000);
+const BACKUP_STARTUP_GRACE_MS = Number(
+  process.env.PERSIST_BACKUP_STARTUP_GRACE_MS ||
+  (process.env.NODE_ENV === "production" ? 30 * 60_000 : 0)
+);
 
 let backupTimer: ReturnType<typeof setTimeout> | null = null;
-let lastBackupOk = true;
+let lastBackupOk = false;
 let lastBackupTs = 0;
 let lastBackupError: string | null = null;
+const backupStartedAt = Date.now();
 
 export function startBackups(): void {
   if (!BACKUP_COMMAND) return;
-  const firstDelay = Math.floor(Math.random() * BACKUP_JITTER_MS);
+  const firstDelay = REQUIRE_PERSIST_BACKUP ? 0 : Math.floor(Math.random() * BACKUP_JITTER_MS);
   backupTimer = setTimeout(runAndSchedule, firstDelay);
   console.log("[backups] scheduled PERSIST_DIR backups");
 }
@@ -39,7 +45,7 @@ async function runAndSchedule(): Promise<void> {
 async function runBackup(): Promise<void> {
   try {
     await execShell(BACKUP_COMMAND, {
-      env: { ...process.env, PERSIST_DIR },
+      env: await gitCommandEnv({ ...process.env, PERSIST_DIR }),
       timeout: BACKUP_TIMEOUT_MS,
       maxBuffer: 1024 * 1024,
     });
@@ -60,14 +66,28 @@ export function getBackupHealth() {
     !!BACKUP_COMMAND &&
     lastBackupTs > 0 &&
     Date.now() - lastBackupTs > BACKUP_INTERVAL_MS * 2;
+  const startupPending =
+    !!BACKUP_COMMAND &&
+    lastBackupTs === 0 &&
+    !lastBackupError &&
+    Date.now() - backupStartedAt < BACKUP_STARTUP_GRACE_MS;
+  const requiredBackupOk =
+    !REQUIRE_PERSIST_BACKUP ||
+    (!!BACKUP_COMMAND && ((lastBackupOk && lastBackupTs > 0 && !stale) || startupPending));
+  const optionalBackupOk =
+    !BACKUP_COMMAND ||
+    startupPending ||
+    (lastBackupOk && (lastBackupTs === 0 || !stale));
   return {
-    ok: (!REQUIRE_PERSIST_BACKUP || !!BACKUP_COMMAND) && (!BACKUP_COMMAND || (lastBackupOk && !stale)),
+    ok: requiredBackupOk && optionalBackupOk,
     configured: !!BACKUP_COMMAND,
     required: REQUIRE_PERSIST_BACKUP,
     lastBackupOk,
     lastBackupTs,
     lastBackupError,
     stale,
+    startupPending,
+    startupGraceMs: BACKUP_STARTUP_GRACE_MS,
     intervalMs: BACKUP_INTERVAL_MS,
   };
 }

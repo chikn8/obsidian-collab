@@ -87,6 +87,7 @@ export class Vault {
   async process(file, fn) {
     const current = await this.read(file);
     const next = fn(current);
+    if (this.afterProcessCompute) await this.afterProcessCompute(file, current, next);
     await this.modify(file, next);
     return next;
   }

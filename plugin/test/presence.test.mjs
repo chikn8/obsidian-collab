@@ -117,6 +117,8 @@ console.log("presence model\n");
   check("presence controller starts non-typing", presence?.typing === false, JSON.stringify(presence));
   check("presence controller refreshes roster on start", dispatches.length > 0);
   controller.stop();
+  const stoppedPresence = manifestAwareness.getLocalState()?.presence;
+  check("presence controller clears active file on stop", stoppedPresence?.activeFile === null && stoppedPresence?.typing === false, JSON.stringify(stoppedPresence));
 }
 
 console.log("");

@@ -713,7 +713,7 @@ try {
     await client.close();
   }
 
-  console.log("Blob API syncs content-addressed attachments");
+  console.log("Blob API refuses attachment uploads");
   {
     const shareId = "e2e-blob";
     const epoch = 1;
@@ -730,15 +730,7 @@ try {
       headers: { "Content-Type": "application/octet-stream" },
       body,
     });
-    check("editor blob upload succeeds", putRes.status === 200, `status=${putRes.status}`);
-
-    const getRes = await fetch(`${server.httpBase}/blob?${queryParams({
-      ...authParams("viewer", epoch, shareId),
-      share: shareId,
-      hash,
-    })}`);
-    const downloaded = Buffer.from(await getRes.arrayBuffer());
-    check("viewer blob download succeeds", getRes.status === 200 && downloaded.equals(body), `status=${getRes.status}`);
+    check("editor blob upload is rejected", putRes.status === 400, `status=${putRes.status}`);
 
     const viewerPutRes = await fetch(`${server.httpBase}/blob?${queryParams({
       ...authParams("viewer", epoch, shareId),
@@ -750,7 +742,7 @@ try {
       headers: { "Content-Type": "application/octet-stream" },
       body,
     });
-    check("viewer blob upload is rejected", viewerPutRes.status === 403, `status=${viewerPutRes.status}`);
+    check("viewer blob upload is rejected", viewerPutRes.status === 400, `status=${viewerPutRes.status}`);
 
     const badPathRes = await fetch(`${server.httpBase}/blob?${queryParams({
       ...authParams("editor", epoch, shareId),
@@ -769,8 +761,8 @@ try {
     });
     const metrics = await metricsRes.json();
     check(
-      "blob rejections increment metrics counters",
-      metrics.counters?.rejected_writes >= 1 && metrics.counters?.rejected_paths >= 1,
+      "blob path rejections increment metrics counters",
+      metrics.counters?.rejected_paths >= 3,
       JSON.stringify(metrics.counters)
     );
   }

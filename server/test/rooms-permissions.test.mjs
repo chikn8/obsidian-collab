@@ -66,6 +66,12 @@ check("node_modules file rooms are blocked",
 check(".git file rooms are blocked",
   roomBlockedReasonForTest("@share:file:repo%2F.git%2Fconfig.md") === "blocked-segment:.git");
 
+check("non-markdown file rooms are blocked",
+  roomBlockedReasonForTest("@share:file:assets%2Fphoto.png") === "unsupported-extension:md-only");
+
+check("canvas file rooms are blocked",
+  roomBlockedReasonForTest("@share:file:boards%2Fplan.canvas") === "unsupported-extension:md-only");
+
 check("ordinary note rooms are allowed",
   roomBlockedReasonForTest("@share:file:Projects%2Fnote.md") === null);
 

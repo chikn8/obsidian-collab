@@ -23,8 +23,8 @@ const {
 const body = Buffer.from("blob bytes");
 const hash = createHash("sha256").update(body).digest("hex");
 
-check("accepts image path", safeBlobRelPath("assets/photo.png") === "assets/photo.png");
-check("accepts pdf path", safeBlobRelPath("docs/spec.pdf") === "docs/spec.pdf");
+check("rejects image path", safeBlobRelPath("assets/photo.png") === null);
+check("rejects pdf path", safeBlobRelPath("docs/spec.pdf") === null);
 check("rejects traversal", safeBlobRelPath("../photo.png") === null);
 check("rejects unsupported extension", safeBlobRelPath("scripts/run.js") === null);
 check("validates hash shape", safeBlobHash(hash) && !safeBlobHash("nope"));

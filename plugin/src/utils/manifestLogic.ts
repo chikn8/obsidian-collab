@@ -3,11 +3,10 @@
  * can be unit-tested headlessly (no Obsidian/Yjs/network).
  */
 import type { ManifestEntry } from "../types";
-import { isSyncableBinaryPath } from "./binary";
 
 /** Grace window (ms) for clock skew between the deleter's clock and our mtime. */
 export const RESURRECT_GRACE_MS = 2000;
-export const SYNCABLE_TEXT_EXTENSIONS = ["md", "canvas"] as const;
+export const SYNCABLE_TEXT_EXTENSIONS = ["md"] as const;
 export type TombstoneLocalDecision = "delete" | "resurrect" | "conflict-copy";
 export type ConflictKind = "delete" | "binary-update";
 
@@ -61,7 +60,7 @@ export function isSyncableTextPath(path: string): boolean {
 }
 
 export function isSyncablePath(path: string): boolean {
-  return isSyncableTextPath(path) || isSyncableBinaryPath(path);
+  return isSyncableTextPath(path);
 }
 
 /**

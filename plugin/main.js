@@ -12166,7 +12166,7 @@ function countRun(line, start, ch) {
 
 // src/utils/manifestLogic.ts
 var RESURRECT_GRACE_MS = 2e3;
-var SYNCABLE_TEXT_EXTENSIONS = ["md", "canvas"];
+var SYNCABLE_TEXT_EXTENSIONS = ["md"];
 function mutationPart(value, fallback) {
   const clean2 = (value || "").trim().replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 80);
   return clean2 || fallback;
@@ -12193,7 +12193,7 @@ function isSyncableTextPath(path) {
   return SYNCABLE_TEXT_EXTENSIONS.includes(ext);
 }
 function isSyncablePath(path) {
-  return isSyncableTextPath(path) || isSyncableBinaryPath(path);
+  return isSyncableTextPath(path);
 }
 function tombstoneLocalDecision(args2) {
   if (args2.renamedTo) return "delete";

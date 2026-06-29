@@ -436,12 +436,12 @@ console.log("Safe manifest paths");
 {
   check("accepts nested markdown path",
     safeRelPath("a/b/note.md", "Shared") === "a/b/note.md");
-  check("accepts canvas path",
-    safeRelPath("boards/plan.canvas", "Shared") === "boards/plan.canvas");
-  check("accepts image attachment path",
-    safeRelPath("images/photo.png", "Shared") === "images/photo.png");
-  check("accepts pdf attachment path",
-    safeRelPath("docs/file.pdf", "Shared") === "docs/file.pdf");
+  check("rejects canvas path",
+    safeRelPath("boards/plan.canvas", "Shared") === null);
+  check("rejects image attachment path",
+    safeRelPath("images/photo.png", "Shared") === null);
+  check("rejects pdf attachment path",
+    safeRelPath("docs/file.pdf", "Shared") === null);
   check("rejects parent traversal",
     safeRelPath("../x.md", "Shared") === null);
   check("rejects normalized traversal",

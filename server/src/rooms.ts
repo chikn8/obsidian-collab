@@ -34,6 +34,8 @@ const BLOCKED_FILE_SEGMENTS = (process.env.SYNC_BLOCKED_FILE_SEGMENTS || "node_m
 const MAX_MSGS_PER_SEC = 250;            // sustained inbound rate per connection
 const RATE_BURST = 600;                  // bucket capacity (covers a big paste)
 const RATE_LIMIT_CLOSE_CODE = 4408;
+const RATE_LIMIT_LOG_SAMPLE = Number(process.env.RATE_LIMIT_LOG_SAMPLE || 5000);
+const BLOCKED_ROOM_LOG_SAMPLE = Number(process.env.BLOCKED_ROOM_LOG_SAMPLE || 5000);
 const SEND_BUFFER_LIMIT = 8 * 1024 * 1024; // drop a hopelessly backed-up socket (slow-peer OOM guard)
 let rateLimitedCount = 0;
 let backpressureClosedCount = 0;
@@ -80,6 +82,8 @@ function blockedRoomReason(room: string): string | null {
   for (const segment of BLOCKED_FILE_SEGMENTS) {
     if (parts.includes(segment)) return `blocked-segment:${segment}`;
   }
+  const fileName = parts.at(-1) || "";
+  if (!/\.md$/i.test(fileName)) return "unsupported-extension:md-only";
   return null;
 }
 
@@ -125,11 +129,26 @@ function allowMessage(conn: any): boolean {
 
 function closeRateLimitedConnection(conn: WebSocket, event: string, fields: Record<string, unknown>): void {
   incMetric("rate_limited");
-  if (++rateLimitedCount % 100 === 1) {
+  if (++rateLimitedCount % RATE_LIMIT_LOG_SAMPLE === 1) {
     logEvent("warn", event, { ...fields, count: rateLimitedCount });
   }
   if (conn.readyState === WebSocket.OPEN || conn.readyState === WebSocket.CONNECTING) {
     conn.close(RATE_LIMIT_CLOSE_CODE, "Rate limit exceeded");
+  }
+}
+
+function recordBlockedRoom(conn: WebSocket, roomName: string, reason: string): void {
+  incMetric("rejected_paths");
+  if (++blockedRoomCount % BLOCKED_ROOM_LOG_SAMPLE === 1) {
+    logEvent("warn", "room.blocked", {
+      room: roomName,
+      ...roomInfo(roomName),
+      connId: (conn as any).collabConnId,
+      uid: (conn as any).collabIdentity?.uid,
+      mux: !!(conn as any).collabMux,
+      reason,
+      count: blockedRoomCount,
+    });
   }
 }
 
@@ -460,18 +479,7 @@ async function joinRoom(conn: WebSocket, req: IncomingMessage, roomName: string,
   ensureConnectionIdentity(conn, req, url);
   const blockedReason = blockedRoomReason(roomName);
   if (blockedReason) {
-    incMetric("rejected_paths");
-    if (++blockedRoomCount % 100 === 1) {
-      logEvent("warn", "room.blocked", {
-        room: roomName,
-        ...roomInfo(roomName),
-        connId: (conn as any).collabConnId,
-        uid: (conn as any).collabIdentity?.uid,
-        mux: !!(conn as any).collabMux,
-        reason: blockedReason,
-        count: blockedRoomCount,
-      });
-    }
+    recordBlockedRoom(conn, roomName, blockedReason);
     return null;
   }
   const doc = await getOrCreateDoc(roomName);
@@ -1086,7 +1094,7 @@ export async function setupMuxConnection(
   ensureConnectionIdentity(conn, req, url);
   activeMuxConnections.add(conn);
 
-  logEvent("info", "mux.connect", {
+  logRoomLifecycle("mux.connect", {
     connId: (conn as any).collabConnId,
     shareId: (conn as any).collabShareId || undefined,
     role: (conn as any).collabRole || "editor",
@@ -1102,16 +1110,8 @@ export async function setupMuxConnection(
   });
 
   conn.on("message", (data: RawData) => {
-    if (!allowMessage(conn)) {
-      closeRateLimitedConnection(conn, "mux.rate_limited", {
-        connId: (conn as any).collabConnId,
-        shareId: (conn as any).collabShareId || undefined,
-      });
-      return;
-    }
     void (async () => {
       try {
-        if (!(await muxConnectionStillAuthorized(conn))) return;
         const message = rawDataToUint8Array(data);
         const decoder = decoding.createDecoder(message);
         const outerType = decoding.readVarUint(decoder);
@@ -1129,10 +1129,26 @@ export async function setupMuxConnection(
             conn.close(4403, "Room not in share");
             return;
           }
+          if (!(await muxConnectionStillAuthorized(conn))) return;
+          if (!allowMessage(conn)) {
+            closeRateLimitedConnection(conn, "mux.rate_limited", {
+              connId: (conn as any).collabConnId,
+              shareId: (conn as any).collabShareId || undefined,
+            });
+            return;
+          }
           leaveRoom(conn, roomName, "mux-leave");
           return;
         }
         if (outerType !== MESSAGE_MUX) {
+          if (!(await muxConnectionStillAuthorized(conn))) return;
+          if (!allowMessage(conn)) {
+            closeRateLimitedConnection(conn, "mux.rate_limited", {
+              connId: (conn as any).collabConnId,
+              shareId: (conn as any).collabShareId || undefined,
+            });
+            return;
+          }
           logEvent("warn", "mux.unknown_outer_message_type", {
             connId: (conn as any).collabConnId,
             shareId: (conn as any).collabShareId || undefined,
@@ -1158,6 +1174,19 @@ export async function setupMuxConnection(
             reason: "share-mismatch",
           });
           conn.close(4403, "Room not in share");
+          return;
+        }
+        if (!(await muxConnectionStillAuthorized(conn))) return;
+        const blockedReason = blockedRoomReason(roomName);
+        if (blockedReason) {
+          recordBlockedRoom(conn, roomName, blockedReason);
+          return;
+        }
+        if (!allowMessage(conn)) {
+          closeRateLimitedConnection(conn, "mux.rate_limited", {
+            connId: (conn as any).collabConnId,
+            shareId: (conn as any).collabShareId || undefined,
+          });
           return;
         }
         const inner = decoding.readVarUint8Array(decoder);

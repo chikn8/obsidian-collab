@@ -4,13 +4,6 @@ import { getBlobStore, type StoredBlob } from "./blobStore.js";
 
 export const BLOB_MAX_BYTES = Number(process.env.BLOB_MAX_BYTES || 25 * 1024 * 1024);
 
-const BINARY_EXTENSIONS = new Set([
-  "avif", "bmp", "gif", "heic", "jpeg", "jpg", "png", "svg", "webp",
-  "pdf",
-  "aac", "flac", "m4a", "mp3", "ogg", "opus", "wav",
-  "m4v", "mov", "mp4", "mpeg", "webm",
-]);
-
 export function safeBlobShareId(shareId: string): boolean {
   return /^[A-Za-z0-9_.-]{1,128}$/.test(shareId);
 }
@@ -24,9 +17,8 @@ export function safeBlobRelPath(relPath: string): string | null {
   if (/[\x00-\x1F\x7F]/.test(relPath)) return null;
   const parts = relPath.split("/");
   if (parts.some((part) => !part || part === "." || part === "..")) return null;
-  const ext = parts.at(-1)?.split(".").pop()?.toLowerCase() || "";
-  if (!BINARY_EXTENSIONS.has(ext)) return null;
-  return parts.join("/");
+  // Sync is markdown-only; keep blob storage readable for old data, but reject new uploads.
+  return null;
 }
 
 export function sha256Hex(data: Uint8Array): string {

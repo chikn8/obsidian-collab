@@ -13,6 +13,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/scripts ./scripts
 COPY package.json ./
 ENV HOST=0.0.0.0
+ENV NODE_ENV=production
 ENV NODE_OPTIONS=--max-old-space-size=768
 EXPOSE 8080
 CMD ["node", "dist/index.js"]

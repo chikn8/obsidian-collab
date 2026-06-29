@@ -15,9 +15,7 @@ const dirtySaves: Set<string> = new Set();
 const STALE_SAVE_MS = Number(process.env.STALE_SAVE_MS || 3 * 60_000);
 const MIN_FREE_BYTES = Number(process.env.MIN_FREE_BYTES || 100 * 1024 * 1024);
 const SAVE_SWEEP_INTERVAL = Number(process.env.SAVE_SWEEP_INTERVAL_MS || 60_000);
-const VERBOSE_PERSISTENCE_LOGS =
-  process.env.PERSISTENCE_VERBOSE_LOGS === "true" ||
-  (process.env.PERSISTENCE_VERBOSE_LOGS !== "false" && process.env.NODE_ENV !== "production");
+const VERBOSE_PERSISTENCE_LOGS = process.env.PERSISTENCE_VERBOSE_LOGS === "true";
 
 let lastSaveOk = true;
 let lastSaveTs = 0;

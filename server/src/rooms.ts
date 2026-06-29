@@ -22,9 +22,7 @@ const MESSAGE_MUX_LEAVE = 7; // outer frame: roomName, unsubscribe one mux room
 
 const PING_INTERVAL = 30000;
 const SYNC_DEBUG_LOG = process.env.SYNC_DEBUG_LOG === "true";
-const ROOM_LIFECYCLE_LOGS =
-  process.env.ROOM_LIFECYCLE_LOGS === "true" ||
-  (process.env.ROOM_LIFECYCLE_LOGS !== "false" && process.env.NODE_ENV !== "production");
+const ROOM_LIFECYCLE_LOGS = process.env.ROOM_LIFECYCLE_LOGS === "true";
 const LARGE_UPDATE_BYTES = Number(process.env.SYNC_LOG_LARGE_UPDATE_BYTES || 64 * 1024);
 const LARGE_TEXT_DELTA = Number(process.env.SYNC_LOG_LARGE_TEXT_DELTA || 20 * 1024);
 const BLOCKED_FILE_SEGMENTS = (process.env.SYNC_BLOCKED_FILE_SEGMENTS || "node_modules,.git")

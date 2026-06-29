@@ -16880,6 +16880,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
   }
   async startShare(share) {
     if (this.syncManagers.has(share.id)) return;
+    await this.ensureLocalIdentity();
     const m = new SyncManager(
       this.app,
       this.settings,
@@ -17786,15 +17787,31 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       this.settings.uid = ((_p = (_o = globalThis.crypto) == null ? void 0 : _o.randomUUID) == null ? void 0 : _p.call(_o)) || generateShareId(24);
       await this.persist();
     }
-    const identity = await ensureIdentityKeys({
+    await this.ensureLocalIdentity({
       publicKey: this.settings.identityPublicKey || raw.identityPublicKey,
       privateKey: this.settings.identityPrivateKey || raw.identityPrivateKey,
       signature: this.settings.identitySignature || raw.identitySignature
+    });
+  }
+  async ensureLocalIdentity(existing) {
+    var _a2, _b2;
+    let changed = false;
+    if (!this.settings.uid) {
+      this.settings.uid = ((_b2 = (_a2 = globalThis.crypto) == null ? void 0 : _a2.randomUUID) == null ? void 0 : _b2.call(_a2)) || generateShareId(24);
+      changed = true;
+    }
+    const identity = await ensureIdentityKeys({
+      publicKey: (existing == null ? void 0 : existing.publicKey) || this.settings.identityPublicKey,
+      privateKey: (existing == null ? void 0 : existing.privateKey) || this.settings.identityPrivateKey,
+      signature: (existing == null ? void 0 : existing.signature) || this.settings.identitySignature
     }, this.settings.uid);
-    this.settings.identityPublicKey = identity.publicKey;
-    this.settings.identityPrivateKey = identity.privateKey;
-    this.settings.identitySignature = identity.signature;
-    await this.persist();
+    if (this.settings.identityPublicKey !== identity.publicKey || this.settings.identityPrivateKey !== identity.privateKey || this.settings.identitySignature !== identity.signature) {
+      this.settings.identityPublicKey = identity.publicKey;
+      this.settings.identityPrivateKey = identity.privateKey;
+      this.settings.identitySignature = identity.signature;
+      changed = true;
+    }
+    if (changed) await this.persist();
   }
   async loadCurrentOrLegacyData() {
     const current = await this.loadData() || {};

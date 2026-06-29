@@ -334,6 +334,7 @@ export default class CollabPlugin extends Plugin {
 
   private async startShare(share: Share): Promise<void> {
     if (this.syncManagers.has(share.id)) return;
+    await this.ensureLocalIdentity();
     const m = new SyncManager(
       this.app,
       this.settings,
@@ -1302,15 +1303,42 @@ export default class CollabPlugin extends Plugin {
         (globalThis.crypto?.randomUUID?.() as string) || generateShareId(24);
       await this.persist();
     }
-    const identity = await ensureIdentityKeys({
+    await this.ensureLocalIdentity({
       publicKey: this.settings.identityPublicKey || raw.identityPublicKey,
       privateKey: this.settings.identityPrivateKey || raw.identityPrivateKey,
       signature: this.settings.identitySignature || raw.identitySignature,
+    });
+  }
+
+  private async ensureLocalIdentity(existing?: {
+    publicKey?: string;
+    privateKey?: string;
+    signature?: string;
+  }): Promise<void> {
+    let changed = false;
+    if (!this.settings.uid) {
+      this.settings.uid =
+        (globalThis.crypto?.randomUUID?.() as string) || generateShareId(24);
+      changed = true;
+    }
+
+    const identity = await ensureIdentityKeys({
+      publicKey: existing?.publicKey || this.settings.identityPublicKey,
+      privateKey: existing?.privateKey || this.settings.identityPrivateKey,
+      signature: existing?.signature || this.settings.identitySignature,
     }, this.settings.uid);
-    this.settings.identityPublicKey = identity.publicKey;
-    this.settings.identityPrivateKey = identity.privateKey;
-    this.settings.identitySignature = identity.signature;
-    await this.persist();
+
+    if (
+      this.settings.identityPublicKey !== identity.publicKey ||
+      this.settings.identityPrivateKey !== identity.privateKey ||
+      this.settings.identitySignature !== identity.signature
+    ) {
+      this.settings.identityPublicKey = identity.publicKey;
+      this.settings.identityPrivateKey = identity.privateKey;
+      this.settings.identitySignature = identity.signature;
+      changed = true;
+    }
+    if (changed) await this.persist();
   }
 
   private async loadCurrentOrLegacyData(): Promise<any> {

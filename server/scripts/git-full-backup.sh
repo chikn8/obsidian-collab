@@ -30,12 +30,23 @@ git config user.email "${PERSIST_BACKUP_GIT_USER_EMAIL:-sync@obsidian.local}"
 git checkout --orphan backup-next
 git rm -rf . >/dev/null 2>&1 || true
 find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-cp -a "$PERSIST_DIR"/. .
+
+tar -C "$PERSIST_DIR" \
+  --exclude="./snapshots" \
+  --exclude="./snapshots/*" \
+  --exclude="*.jsonl" \
+  --exclude="*.jsonl.*" \
+  --exclude="*.log" \
+  --exclude="*.log.*" \
+  --exclude="*.tmp" \
+  --exclude=".*.tmp" \
+  -cf - . | tar -xf -
+
 # Snapshot note history is pushed separately to SNAPSHOT_GIT_BRANCH. Retained
 # logs/audit can exceed GitHub's single-file limit and are not required to
 # restore the sync corpus.
 rm -rf snapshots
-find . -type f \( -name "*.jsonl" -o -name "*.jsonl.*" -o -name "*.log" -o -name "*.log.*" \) -delete
+find . -type f \( -name "*.jsonl" -o -name "*.jsonl.*" -o -name "*.log" -o -name "*.log.*" -o -name "*.tmp" \) -delete
 mkdir -p .backup-meta
 date -u "+%Y-%m-%dT%H:%M:%SZ" > .backup-meta/latest.txt
 

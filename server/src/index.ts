@@ -245,6 +245,10 @@ const server = http.createServer(async (req, res) => {
       return json(200, { status: "ok", service: "obsidian-collab-server", version: "0.2.0" });
     }
 
+    if (p === "/live") {
+      return json(200, { status: "ok", service: "obsidian-collab-server", version: "0.2.0" });
+    }
+
     if (p === "/health") {
       const health = await collectServerHealth();
       return json(health.status === "ok" ? 200 : 503, health);

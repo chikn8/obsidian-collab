@@ -11330,7 +11330,9 @@ var FileProvider = class _FileProvider {
       {
         uid: this.settings.uid,
         name: this.settings.displayName,
-        color: this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName)
+        color: this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName),
+        identityPublicKey: this.settings.identityPublicKey,
+        identitySignature: this.settings.identitySignature
       },
       {
         onStatus: (status) => {

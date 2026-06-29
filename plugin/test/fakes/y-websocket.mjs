@@ -12,7 +12,8 @@ function hub(room) {
   if (!h) { h = { doc: new Y.Doc(), conns: new Set() }; hubs.set(room, h); }
   return h;
 }
-export function __resetHubs() { hubs.clear(); }
+export const __createdProviders = [];
+export function __resetHubs() { hubs.clear(); __createdProviders.length = 0; }
 
 let nextClientId = 1;
 
@@ -35,6 +36,7 @@ export class WebsocketProvider {
   constructor(_url, room, doc, opts = {}) {
     this.room = room;
     this.doc = doc;
+    __createdProviders.push({ url: _url, room, params: opts.params || {} });
     this.awareness = new FakeAwareness();
     this.synced = false;
     this.wsconnected = false;

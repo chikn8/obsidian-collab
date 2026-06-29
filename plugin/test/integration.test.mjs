@@ -12,7 +12,7 @@ import { FileProvider } from "../src/collab/FileProvider";
 import { EchoGuard } from "../src/collab/EchoGuard";
 import { App } from "obsidian";
 import { __resetIdb } from "y-indexeddb";
-import { __resetHubs } from "y-websocket";
+import { __createdProviders, __resetHubs } from "y-websocket";
 import { getRecentDiagnostics } from "../src/utils/log";
 
 let failures = 0;
@@ -21,7 +21,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const SETTINGS = (uid) => ({
   serverUrl: "ws://fake", serverPassword: "", serverSecret: "",
-  displayName: uid, cursorColor: "", uid, ntfyTopic: "", debugLogging: false, diagnosticLogging: false, clientTelemetry: false, shares: [],
+  displayName: uid, cursorColor: "", uid,
+  identityPublicKey: `public-${uid}`,
+  identityPrivateKey: `private-${uid}`,
+  identitySignature: `signature-${uid}`,
+  ntfyTopic: "", debugLogging: false, diagnosticLogging: false, clientTelemetry: false, shares: [],
 });
 
 /** A "client": a fake App + an EchoGuard + a FileProvider for one file, with the
@@ -54,6 +58,19 @@ async function makeClient(uid, room, filePath, initialDisk) {
 }
 
 console.log("integration test (real FileProvider over fake transport)\n");
+
+// ── 0. File providers carry signed invite identity into transport params ──────
+console.log("File provider sends signed identity params");
+{
+  __resetIdb(); __resetHubs();
+  const A = await makeClient("A", "@test:file:identity.md", "identity.md", "base");
+  await sleep(0);
+  const params = __createdProviders[0]?.params || {};
+  check("transport params include uid", params.uid === "A", JSON.stringify(params));
+  check("transport params include identity key", params.identityKey === "public-A", JSON.stringify(params));
+  check("transport params include identity signature", params.identitySig === "signature-A", JSON.stringify(params));
+  A.fp.destroy();
+}
 
 // ── 1. Two clients converge on content ────────────────────────────────────────
 console.log("Two clients: remote content reaches the peer's disk");

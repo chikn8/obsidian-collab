@@ -63,7 +63,7 @@ export function renderFacepileRoster(
     const canJump = u.hasCaret && !u.isSelf;
     const av = doc.createElement(canJump ? "button" : "span");
     av.className = "collab-facepile-avatar"
-      + (u.hasCaret ? " live" : "") + (u.typing ? " typing" : "") + (u.isSelf ? " self" : "");
+      + (u.hasCaret ? " live" : "") + (u.typing ? " typing" : "") + (u.isSelf ? " self" : "") + (u.dimmed ? " dimmed" : "");
     av.style.backgroundColor = u.color;
     av.textContent = presenceInitial(u.name);
     av.title = presenceLabel(u) + (canJump ? " - click to jump" : "");

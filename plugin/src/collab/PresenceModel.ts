@@ -10,6 +10,7 @@ export interface PresenceDevice {
   typing: boolean;
   hasCaret: boolean;
   isSelf: boolean;
+  dimmed?: boolean;
 }
 
 export function presenceKeyFromState(state: any, clientId: number): string {
@@ -23,7 +24,7 @@ export function deviceIdFromState(state: any, clientId: number): string {
 
 export function presenceLabel(user: PresenceDevice): string {
   const device = user.device ? ` (${user.device})` : "";
-  const status = user.typing ? "typing" : user.hasCaret ? "editing" : "viewing";
+  const status = user.dimmed ? "open" : user.typing ? "typing" : user.hasCaret ? "editing" : "viewing";
   return user.isSelf
     ? `${user.name}${device} (you) - ${status}`
     : `${user.name}${device} - ${status}`;

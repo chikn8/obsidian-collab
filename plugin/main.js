@@ -10128,7 +10128,7 @@ function deviceIdFromState(state, clientId) {
 }
 function presenceLabel(user) {
   const device = user.device ? ` (${user.device})` : "";
-  const status = user.typing ? "typing" : user.hasCaret ? "editing" : "viewing";
+  const status = user.dimmed ? "open" : user.typing ? "typing" : user.hasCaret ? "editing" : "viewing";
   return user.isSelf ? `${user.name}${device} (you) - ${status}` : `${user.name}${device} - ${status}`;
 }
 function presenceInitial(name) {
@@ -12364,9 +12364,17 @@ function renderedPresenceConnected(rendered) {
   return true;
 }
 function findFileTreeTitle(doc2, fullPath) {
-  return doc2.querySelector(
-    `.nav-file-title[data-path="${cssAttributeValue(fullPath)}"]`
-  );
+  var _a2;
+  const pathSelector = `[data-path="${cssAttributeValue(fullPath)}"]`;
+  const direct = doc2.querySelector(`.nav-file-title${pathSelector}`);
+  if (direct) return direct;
+  const carrier = doc2.querySelector(pathSelector);
+  if (!carrier) return null;
+  if (hasClass(carrier, "nav-file-title")) return carrier;
+  const nested = (_a2 = carrier.querySelector) == null ? void 0 : _a2.call(carrier, ".nav-file-title");
+  if (nested) return nested;
+  const parentTitle = closestByClass(carrier, "nav-file-title");
+  return parentTitle || carrier;
 }
 function appendPresenceHost(target, className, users, surface, onFollow) {
   const doc2 = target.ownerDocument || document;
@@ -12380,7 +12388,7 @@ function renderPresenceAvatars(parent, users, surface, onFollow) {
   const doc2 = parent.ownerDocument || document;
   users.forEach((user, i) => {
     const av = doc2.createElement("span");
-    av.className = `collab-presence-avatar ${surface}` + (i > 0 ? " stacked" : "") + (user.isSelf ? " self" : "") + (user.hasCaret ? " live" : "") + (user.typing ? " typing" : "");
+    av.className = `collab-presence-avatar ${surface}` + (i > 0 ? " stacked" : "") + (user.isSelf ? " self" : "") + (user.hasCaret ? " live" : "") + (user.typing ? " typing" : "") + (user.dimmed ? " dimmed" : "");
     av.style.backgroundColor = user.color;
     av.textContent = presenceInitial(user.name);
     const label = presenceLabel(user);
@@ -12428,6 +12436,20 @@ function tabPresenceTarget(header) {
 }
 function cssAttributeValue(value) {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\a ");
+}
+function hasClass(el, className) {
+  var _a2;
+  const classList = el.classList;
+  if ((_a2 = classList == null ? void 0 : classList.contains) == null ? void 0 : _a2.call(classList, className)) return true;
+  return (el.className || "").split(/\s+/).includes(className);
+}
+function closestByClass(el, className) {
+  let cur = el.parentElement;
+  while (cur) {
+    if (hasClass(cur, className)) return cur;
+    cur = cur.parentElement;
+  }
+  return null;
 }
 function isElementLike(value) {
   return !!value && typeof value === "object" && "querySelector" in value && "appendChild" in value;
@@ -13969,17 +13991,73 @@ var SyncManager = class {
     const localCandidate = (_d = (_c = (_b2 = (_a2 = this.manifestProvider.awareness).getLocalState) == null ? void 0 : _b2.call(_a2)) == null ? void 0 : _c.presence) == null ? void 0 : _d.activeFile;
     const localRel = localCandidate ? this.safeManifestRelPath(localCandidate, "local presence render") : null;
     if (localRel) rels.add(localRel);
+    const localOpen = this.collectLocalOpenFiles();
+    for (const relPath of localOpen.keys()) rels.add(relPath);
     const caretByRel = this.collectCaretKeysByRel();
     const out = /* @__PURE__ */ new Map();
     for (const relPath of rels) {
-      const users = collectPresenceDevices({
+      let users = collectPresenceDevices({
         manifestAwareness: this.manifestProvider.awareness,
         relPath,
         caretKeys: caretByRel.get(relPath)
       });
+      const open = localOpen.get(relPath);
+      if (open) users = this.withLocalOpenPresence(users, relPath, open.focused, caretByRel.get(relPath));
       if (users.length > 0) out.set(this.toFullPath(relPath), users);
     }
     return out;
+  }
+  collectLocalOpenFiles() {
+    var _a2, _b2, _c;
+    const out = /* @__PURE__ */ new Map();
+    const activePath = (_c = (_b2 = (_a2 = this.app.workspace.activeLeaf) == null ? void 0 : _a2.view) == null ? void 0 : _b2.file) == null ? void 0 : _c.path;
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      var _a3;
+      const file = (_a3 = leaf == null ? void 0 : leaf.view) == null ? void 0 : _a3.file;
+      if (!(file instanceof import_obsidian4.TFile)) return;
+      if (!this.isInLinkedFolder(file.path)) return;
+      const relPath = this.safeManifestRelPath(this.toRelativePath(file.path), "local open presence");
+      if (!relPath || !isSyncableTextPath(relPath)) return;
+      const previous = out.get(relPath);
+      out.set(relPath, { focused: !!(previous == null ? void 0 : previous.focused) || file.path === activePath });
+    });
+    return out;
+  }
+  withLocalOpenPresence(users, relPath, focused, caretKeys) {
+    const local = this.localOpenPresenceDevice(relPath, focused, caretKeys);
+    if (!local) return users;
+    const idx = users.findIndex((u) => u.isSelf || u.uid === local.uid && u.deviceId === local.deviceId);
+    if (idx >= 0) {
+      const next = users.slice();
+      next[idx] = { ...next[idx], dimmed: !focused, activeFile: relPath };
+      return next;
+    }
+    return [local, ...users];
+  }
+  localOpenPresenceDevice(relPath, focused, caretKeys) {
+    var _a2, _b2, _c;
+    const localState = ((_c = (_b2 = (_a2 = this.manifestProvider) == null ? void 0 : _a2.awareness) == null ? void 0 : _b2.getLocalState) == null ? void 0 : _c.call(_b2)) || {};
+    const user = localState.user || {};
+    const uid = user.uid || this.settings.uid;
+    if (!uid) return null;
+    const deviceId = user.deviceId || installDeviceId();
+    const baseColor = user.baseColor || this.settings.cursorColor || this.userColor();
+    const color = user.color || baseColor;
+    const key = `${uid}:${deviceId}`;
+    return {
+      presenceKey: key,
+      uid,
+      deviceId,
+      name: user.displayName || this.settings.displayName || user.name || "You",
+      color,
+      baseColor,
+      device: user.device || detectDevice(),
+      activeFile: relPath,
+      typing: false,
+      hasCaret: !!(caretKeys == null ? void 0 : caretKeys.has(key)),
+      isSelf: true,
+      dimmed: !focused
+    };
   }
   collectCaretKeysByRel() {
     const out = /* @__PURE__ */ new Map();
@@ -15565,7 +15643,7 @@ function renderFacepileRoster(dom, roster, onJump) {
   for (const u of roster) {
     const canJump = u.hasCaret && !u.isSelf;
     const av = doc2.createElement(canJump ? "button" : "span");
-    av.className = "collab-facepile-avatar" + (u.hasCaret ? " live" : "") + (u.typing ? " typing" : "") + (u.isSelf ? " self" : "");
+    av.className = "collab-facepile-avatar" + (u.hasCaret ? " live" : "") + (u.typing ? " typing" : "") + (u.isSelf ? " self" : "") + (u.dimmed ? " dimmed" : "");
     av.style.backgroundColor = u.color;
     av.textContent = presenceInitial(u.name);
     av.title = presenceLabel(u) + (canJump ? " - click to jump" : "");

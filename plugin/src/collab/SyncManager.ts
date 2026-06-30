@@ -1738,18 +1738,79 @@ export class SyncManager {
     const localCandidate = this.manifestProvider.awareness.getLocalState?.()?.presence?.activeFile;
     const localRel = localCandidate ? this.safeManifestRelPath(localCandidate, "local presence render") : null;
     if (localRel) rels.add(localRel);
+    const localOpen = this.collectLocalOpenFiles();
+    for (const relPath of localOpen.keys()) rels.add(relPath);
 
     const caretByRel = this.collectCaretKeysByRel();
     const out = new Map<string, PresenceDevice[]>();
     for (const relPath of rels) {
-      const users = collectPresenceDevices({
+      let users = collectPresenceDevices({
         manifestAwareness: this.manifestProvider.awareness,
         relPath,
         caretKeys: caretByRel.get(relPath),
       });
+      const open = localOpen.get(relPath);
+      if (open) users = this.withLocalOpenPresence(users, relPath, open.focused, caretByRel.get(relPath));
       if (users.length > 0) out.set(this.toFullPath(relPath), users);
     }
     return out;
+  }
+
+  private collectLocalOpenFiles(): Map<string, { focused: boolean }> {
+    const out = new Map<string, { focused: boolean }>();
+    const activePath = ((this.app.workspace as any).activeLeaf?.view as any)?.file?.path;
+    this.app.workspace.iterateAllLeaves((leaf: any) => {
+      const file = leaf?.view?.file;
+      if (!(file instanceof TFile)) return;
+      if (!this.isInLinkedFolder(file.path)) return;
+      const relPath = this.safeManifestRelPath(this.toRelativePath(file.path), "local open presence");
+      if (!relPath || !isSyncableTextPath(relPath)) return;
+      const previous = out.get(relPath);
+      out.set(relPath, { focused: !!previous?.focused || file.path === activePath });
+    });
+    return out;
+  }
+
+  private withLocalOpenPresence(
+    users: PresenceDevice[],
+    relPath: string,
+    focused: boolean,
+    caretKeys?: Set<string>
+  ): PresenceDevice[] {
+    const local = this.localOpenPresenceDevice(relPath, focused, caretKeys);
+    if (!local) return users;
+    const idx = users.findIndex((u) => u.isSelf || (u.uid === local.uid && u.deviceId === local.deviceId));
+    if (idx >= 0) {
+      const next = users.slice();
+      next[idx] = { ...next[idx], dimmed: !focused, activeFile: relPath };
+      return next;
+    }
+    return [local, ...users];
+  }
+
+  private localOpenPresenceDevice(relPath: string, focused: boolean, caretKeys?: Set<string>): PresenceDevice | null {
+    const localState = this.manifestProvider?.awareness?.getLocalState?.() || {};
+    const user = localState.user || {};
+    const uid = user.uid || this.settings.uid;
+    if (!uid) return null;
+    const deviceId = user.deviceId || installDeviceId();
+    const baseColor = user.baseColor || this.settings.cursorColor || this.userColor();
+    const color = user.color || baseColor;
+    const key = `${uid}:${deviceId}`;
+    return {
+      presenceKey: key,
+      uid,
+      deviceId,
+      name: user.displayName || this.settings.displayName || user.name || "You",
+      color,
+      baseColor,
+      device: user.device || detectDevice(),
+      activeFile: relPath,
+      typing: false,
+      hasCaret: !!caretKeys?.has(key),
+      isSelf: true,
+      dimmed: !focused,
+    };
   }
 
   private collectCaretKeysByRel(): Map<string, Set<string>> {

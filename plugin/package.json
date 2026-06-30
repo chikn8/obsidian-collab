@@ -1,6 +1,6 @@
 {
   "name": "live-collab-plugin",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "private": true,
   "scripts": {
     "dev": "node esbuild.config.mjs",

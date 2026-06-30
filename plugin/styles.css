@@ -166,6 +166,19 @@
   box-shadow: 0 0 0 2px var(--interactive-accent);
   opacity: 0.95;
 }
+.collab-presence-avatar.dimmed,
+.collab-facepile-avatar.dimmed {
+  background-color: var(--text-muted) !important;
+  color: var(--background-primary);
+  opacity: 0.58;
+  filter: grayscale(1);
+}
+.collab-presence-avatar.self.dimmed {
+  box-shadow: 0 0 0 1.5px var(--background-secondary), 0 0 0 3px var(--text-muted);
+}
+.collab-facepile-avatar.self.dimmed {
+  box-shadow: 0 0 0 2px var(--text-muted);
+}
 
 .collab-typing-pill {
   position: absolute;

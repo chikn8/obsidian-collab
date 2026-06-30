@@ -29,9 +29,16 @@ export function renderedPresenceConnected(rendered: Map<string, HTMLElement[]>):
 }
 
 export function findFileTreeTitle(doc: Document, fullPath: string): HTMLElement | null {
-  return doc.querySelector(
-    `.nav-file-title[data-path="${cssAttributeValue(fullPath)}"]`
-  ) as HTMLElement | null;
+  const pathSelector = `[data-path="${cssAttributeValue(fullPath)}"]`;
+  const direct = doc.querySelector(`.nav-file-title${pathSelector}`) as HTMLElement | null;
+  if (direct) return direct;
+  const carrier = doc.querySelector(pathSelector) as HTMLElement | null;
+  if (!carrier) return null;
+  if (hasClass(carrier, "nav-file-title")) return carrier;
+  const nested = carrier.querySelector?.(".nav-file-title") as HTMLElement | null;
+  if (nested) return nested;
+  const parentTitle = closestByClass(carrier, "nav-file-title");
+  return parentTitle || carrier;
 }
 
 export function appendPresenceHost(
@@ -62,7 +69,8 @@ export function renderPresenceAvatars(
       (i > 0 ? " stacked" : "") +
       (user.isSelf ? " self" : "") +
       (user.hasCaret ? " live" : "") +
-      (user.typing ? " typing" : "");
+      (user.typing ? " typing" : "") +
+      (user.dimmed ? " dimmed" : "");
     av.style.backgroundColor = user.color;
     av.textContent = presenceInitial(user.name);
     const label = presenceLabel(user);
@@ -120,6 +128,21 @@ function cssAttributeValue(value: string): string {
     .replace(/\\/g, "\\\\")
     .replace(/"/g, "\\\"")
     .replace(/\n/g, "\\a ");
+}
+
+function hasClass(el: HTMLElement, className: string): boolean {
+  const classList = (el as any).classList;
+  if (classList?.contains?.(className)) return true;
+  return (el.className || "").split(/\s+/).includes(className);
+}
+
+function closestByClass(el: HTMLElement, className: string): HTMLElement | null {
+  let cur: HTMLElement | null = el.parentElement;
+  while (cur) {
+    if (hasClass(cur, className)) return cur;
+    cur = cur.parentElement;
+  }
+  return null;
 }
 
 function isElementLike(value: unknown): value is HTMLElement {

@@ -99,10 +99,12 @@ class FakeDocument extends FakeElement {
 
 function matches(el, selector) {
   const classMatch = selector.match(/^\.([A-Za-z0-9_-]+)/);
-  if (!classMatch) return false;
-  const cls = classMatch[1];
-  if (!el.className.split(/\s+/).includes(cls)) return false;
+  if (classMatch) {
+    const cls = classMatch[1];
+    if (!el.className.split(/\s+/).includes(cls)) return false;
+  }
   const pathMatch = selector.match(/\[data-path="((?:\\.|[^"])*)"\]/);
+  if (!classMatch && !pathMatch) return false;
   if (!pathMatch) return true;
   return el.getAttribute("data-path") === unescapeCssAttribute(pathMatch[1]);
 }
@@ -201,6 +203,16 @@ console.log("presence dom\n");
 
 {
   const doc = new FakeDocument();
+  const parent = doc.createElement("span");
+  const openOnly = { ...users[0], typing: false, hasCaret: false, dimmed: true };
+  renderPresenceAvatars(parent, [openOnly], "tab");
+  const first = parent.children[0];
+  check("open-but-unfocused avatar is dimmed", first.classList.contains("dimmed"), first.className);
+  check("open-but-unfocused label says open", first.title === "Elijah (desktop) (you) - open", first.title);
+}
+
+{
+  const doc = new FakeDocument();
   const title = doc.createElement("div");
   const host = appendPresenceHost(title, "collab-file-presence-host", users, "file");
   const rendered = new Map([["Shared/Note.md", [host]]]);
@@ -226,6 +238,18 @@ console.log("presence dom\n");
   row.setAttribute("data-path", path);
   doc.appendChild(row);
   check("file-tree lookup handles quoted paths", findFileTreeTitle(doc, path) === row);
+}
+
+{
+  const doc = new FakeDocument();
+  const wrapper = doc.createElement("div");
+  const row = doc.createElement("div");
+  const path = "Shared/wrapped.md";
+  wrapper.setAttribute("data-path", path);
+  row.className = "nav-file-title";
+  wrapper.appendChild(row);
+  doc.appendChild(wrapper);
+  check("file-tree lookup handles data-path wrappers", findFileTreeTitle(doc, path) === row);
 }
 
 {

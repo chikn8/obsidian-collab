@@ -41,7 +41,7 @@ export function collectPresenceDevices(args: {
   const out: PresenceDevice[] = [];
   const seen = new Set<string>();
   const myClientId = args.manifestAwareness?.clientID;
-  args.manifestAwareness?.getStates?.().forEach((state: any, clientId: number) => {
+  const visit = (state: any, clientId: number): void => {
     const user = state?.user;
     const presence = state?.presence;
     if (!user?.uid) return;
@@ -67,7 +67,10 @@ export function collectPresenceDevices(args: {
       hasCaret: !!args.caretKeys?.has(key),
       isSelf: clientId === myClientId,
     });
-  });
+  };
+  args.manifestAwareness?.getStates?.().forEach((state: any, clientId: number) => visit(state, clientId));
+  const localState = args.manifestAwareness?.getLocalState?.();
+  if (localState && myClientId != null) visit(localState, myClientId);
   return sortPresence(out);
 }
 

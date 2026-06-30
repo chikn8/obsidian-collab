@@ -19,6 +19,9 @@ class FakeAwareness {
   getStates() {
     return this.states;
   }
+  getLocalState() {
+    return this.states.get(this.clientID) || null;
+  }
 }
 
 class MutableAwareness extends FakeAwareness {
@@ -93,6 +96,19 @@ console.log("presence model\n");
   const users = collectPresenceDevices({ manifestAwareness: awareness, relPath: "note.md" });
   check("device-scoped awareness color is not jittered twice", users[0].color === scoped, `${users[0].color} vs ${scoped}`);
   check("base color remains available for grouping", users[0].baseColor === base, users[0].baseColor);
+}
+
+{
+  const awareness = new FakeAwareness(9, [[
+    9,
+    {
+      user: { uid: "same-user", deviceId: "desktop-1", name: "Elijah", color: "#54a0ff", device: "desktop" },
+      presence: { activeFile: "note.md", typing: false },
+    },
+  ]]);
+  awareness.getStates = () => new Map();
+  const users = collectPresenceDevices({ manifestAwareness: awareness, relPath: "note.md" });
+  check("local awareness fallback keeps self visible", users.length === 1 && users[0].isSelf, JSON.stringify(users));
 }
 
 {

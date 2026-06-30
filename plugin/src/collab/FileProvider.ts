@@ -86,6 +86,7 @@ export class FileProvider {
     onUsersChange: (users: ConnectedUser[]) => void;
     onLocalEdit?: () => void;
     onPending?: () => void;
+    onReady?: () => void;
   }) {
     this.app = params.app;
     this.settings = params.settings;
@@ -99,6 +100,7 @@ export class FileProvider {
     this.onUsersChange = params.onUsersChange;
     this.onLocalEdit = params.onLocalEdit;
     this.onPending = params.onPending;
+    this.onReady = params.onReady;
   }
 
   /** Local edits made while offline that haven't synced yet. */
@@ -108,6 +110,7 @@ export class FileProvider {
 
   private onLocalEdit?: () => void;
   private onPending?: () => void;
+  private onReady?: () => void;
 
   /** Force a reconnect of this file's socket (used by "Reconnect all"). */
   reconnect(): boolean {
@@ -355,6 +358,7 @@ export class FileProvider {
       // Start observing remote changes after the initial disk projection.
       this.startObserver();
       this.isInitialized = true;
+      this.onReady?.();
     } catch (e) {
       err("file", "initial sync finalization failed", { path: this.filePath, room: this.roomName }, e);
     }

@@ -85,6 +85,7 @@ export class SyncManager {
   private syncStatus: SyncStatus = "disconnected";
   private onStatusChange: (status: SyncStatus, fileCount: number, pending: number) => void;
   private onUsersChange: (users: ConnectedUser[]) => void;
+  private onProviderReady?: (fullPath: string) => void;
 
   // Presence indicators (file explorer) — full-path → rendered elements
   private renderedPresence: Map<string, HTMLElement[]> = new Map();
@@ -102,13 +103,15 @@ export class SyncManager {
     settings: CollabPluginSettings,
     share: Share,
     onStatusChange: (status: SyncStatus, fileCount: number, pending: number) => void,
-    onUsersChange: (users: ConnectedUser[]) => void
+    onUsersChange: (users: ConnectedUser[]) => void,
+    onProviderReady?: (fullPath: string) => void
   ) {
     this.app = app;
     this.settings = settings;
     this.share = share;
     this.onStatusChange = onStatusChange;
     this.onUsersChange = onUsersChange;
+    this.onProviderReady = onProviderReady;
     this.debouncedPresence = debounce(() => this.renderPresence(), 120, false);
     this.debouncedStatus = debounce(() => this.emitStatus(), 400, false);
   }
@@ -867,6 +870,7 @@ export class SyncManager {
         onUsersChange: (users) => this.onUsersChange(users),
         onLocalEdit: () => this.stampEdit(relPath),
         onPending: () => this.debouncedStatus(),
+        onReady: () => this.onProviderReady?.(fullPath),
       });
 
       this.fileProviders.set(relPath, fp);
@@ -1535,6 +1539,7 @@ export class SyncManager {
     });
     const cur = this.manifestProvider.awareness.getLocalState()?.presence || {};
     this.manifestProvider.awareness.setLocalStateField("presence", { ...cur, activeFile: relPath });
+    this.refreshPresenceUi();
   }
 
   /** The FileProvider owning a vault path (for the editor yCollab binding). */
@@ -1730,6 +1735,9 @@ export class SyncManager {
       const safeRel = this.safeManifestRelPath(candidate, "remote presence");
       if (safeRel) rels.add(safeRel);
     });
+    const localCandidate = this.manifestProvider.awareness.getLocalState?.()?.presence?.activeFile;
+    const localRel = localCandidate ? this.safeManifestRelPath(localCandidate, "local presence render") : null;
+    if (localRel) rels.add(localRel);
 
     const caretByRel = this.collectCaretKeysByRel();
     const out = new Map<string, PresenceDevice[]>();

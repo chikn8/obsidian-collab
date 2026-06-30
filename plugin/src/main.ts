@@ -341,7 +341,8 @@ export default class CollabPlugin extends Plugin {
       share,
       (status: SyncStatus, fileCount: number, pending: number) =>
         this.statusBar.setShare(share.id, { label: share.label, status, fileCount, pending }),
-      (_users: ConnectedUser[]) => {}
+      (_users: ConnectedUser[]) => {},
+      () => this.debouncedActiveEditorRefresh("file-provider-ready")
     );
     this.syncManagers.set(share.id, m);
     try {

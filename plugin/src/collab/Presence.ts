@@ -118,10 +118,10 @@ export class PresenceController {
 
   stop(): void {
     if (this.typingTimer) { clearTimeout(this.typingTimer); this.typingTimer = null; }
-    const cur = this.manifestAwareness.getLocalState()?.presence || {};
-    this.manifestAwareness.setLocalStateField("presence", { ...cur, typing: false, activeFile: null });
     for (const c of this.cleanup) c();
     this.cleanup = [];
+    const cur = this.manifestAwareness.getLocalState()?.presence || {};
+    this.manifestAwareness.setLocalStateField("presence", { ...cur, typing: false, activeFile: null });
   }
 
   /** Broadcast our own typing state on the manifest awareness. */
@@ -131,6 +131,7 @@ export class PresenceController {
   }
 
   private refresh(): void {
+    this.ensureLocalPresence();
     // Who has this file open (manifest awareness presence.activeFile === relPath)
     const caretKeys = new Set<string>();
     this.fileAwareness.getStates().forEach((s: any, clientId: number) => {
@@ -143,6 +144,12 @@ export class PresenceController {
       caretKeys,
     });
     this.view.dispatch({ effects: setRoster.of(roster) });
+  }
+
+  private ensureLocalPresence(): void {
+    const cur = this.manifestAwareness.getLocalState()?.presence || {};
+    if (cur.activeFile === this.relPath) return;
+    this.manifestAwareness.setLocalStateField("presence", { ...cur, activeFile: this.relPath });
   }
 
   /** Jump to a collaborator's caret on this file (focused peers only). */

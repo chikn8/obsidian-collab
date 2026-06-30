@@ -10136,11 +10136,11 @@ function presenceInitial(name) {
   return (((_a2 = name == null ? void 0 : name.trim()) == null ? void 0 : _a2[0]) || "?").toUpperCase();
 }
 function collectPresenceDevices(args2) {
-  var _a2, _b2, _c;
+  var _a2, _b2, _c, _d, _e;
   const out = [];
   const seen = /* @__PURE__ */ new Set();
   const myClientId = (_a2 = args2.manifestAwareness) == null ? void 0 : _a2.clientID;
-  (_c = (_b2 = args2.manifestAwareness) == null ? void 0 : _b2.getStates) == null ? void 0 : _c.call(_b2).forEach((state, clientId) => {
+  const visit = (state, clientId) => {
     var _a3, _b3;
     const user = state == null ? void 0 : state.user;
     const presence = state == null ? void 0 : state.presence;
@@ -10167,7 +10167,10 @@ function collectPresenceDevices(args2) {
       hasCaret: !!((_b3 = args2.caretKeys) == null ? void 0 : _b3.has(key)),
       isSelf: clientId === myClientId
     });
-  });
+  };
+  (_c = (_b2 = args2.manifestAwareness) == null ? void 0 : _b2.getStates) == null ? void 0 : _c.call(_b2).forEach((state, clientId) => visit(state, clientId));
+  const localState = (_e = (_d = args2.manifestAwareness) == null ? void 0 : _d.getLocalState) == null ? void 0 : _e.call(_d);
+  if (localState && myClientId != null) visit(localState, myClientId);
   return sortPresence(out);
 }
 function sortPresence(users) {
@@ -11211,6 +11214,7 @@ var FileProvider = class _FileProvider {
     this.onUsersChange = params2.onUsersChange;
     this.onLocalEdit = params2.onLocalEdit;
     this.onPending = params2.onPending;
+    this.onReady = params2.onReady;
   }
   /** Local edits made while offline that haven't synced yet. */
   pendingOffline() {
@@ -11372,7 +11376,7 @@ var FileProvider = class _FileProvider {
     });
   }
   async finishInitialSync(startupDiskContent) {
-    var _a2, _b2, _c;
+    var _a2, _b2, _c, _d;
     try {
       if (this.destroyed || this.isInitialized) return;
       const latestDiskContent = (_a2 = this.pendingLocalContent) != null ? _a2 : await this.readDiskContent(startupDiskContent);
@@ -11424,6 +11428,7 @@ var FileProvider = class _FileProvider {
       }
       this.startObserver();
       this.isInitialized = true;
+      (_d = this.onReady) == null ? void 0 : _d.call(this);
     } catch (e) {
       err("file", "initial sync finalization failed", { path: this.filePath, room: this.roomName }, e);
     }
@@ -12437,7 +12442,7 @@ function sleepMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 var SyncManager = class {
-  constructor(app, settings, share, onStatusChange, onUsersChange) {
+  constructor(app, settings, share, onStatusChange, onUsersChange, onProviderReady) {
     // Manifest
     this.manifestDoc = null;
     this.manifestProvider = null;
@@ -12481,6 +12486,7 @@ var SyncManager = class {
     this.share = share;
     this.onStatusChange = onStatusChange;
     this.onUsersChange = onUsersChange;
+    this.onProviderReady = onProviderReady;
     this.debouncedPresence = (0, import_obsidian4.debounce)(() => this.renderPresence(), 120, false);
     this.debouncedStatus = (0, import_obsidian4.debounce)(() => this.emitStatus(), 400, false);
   }
@@ -13149,7 +13155,11 @@ var SyncManager = class {
         // Individual file status not shown
         onUsersChange: (users) => this.onUsersChange(users),
         onLocalEdit: () => this.stampEdit(relPath),
-        onPending: () => this.debouncedStatus()
+        onPending: () => this.debouncedStatus(),
+        onReady: () => {
+          var _a3;
+          return (_a3 = this.onProviderReady) == null ? void 0 : _a3.call(this, fullPath);
+        }
       });
       this.fileProviders.set(relPath, fp);
       try {
@@ -13780,6 +13790,7 @@ var SyncManager = class {
     });
     const cur = ((_b2 = this.manifestProvider.awareness.getLocalState()) == null ? void 0 : _b2.presence) || {};
     this.manifestProvider.awareness.setLocalStateField("presence", { ...cur, activeFile: relPath });
+    this.refreshPresenceUi();
   }
   /** The FileProvider owning a vault path (for the editor yCollab binding). */
   getFileProvider(fullPath) {
@@ -13946,14 +13957,18 @@ var SyncManager = class {
     this.presenceAnchorRetryTimer = null;
   }
   collectFilePresence() {
+    var _a2, _b2, _c, _d;
     const rels = /* @__PURE__ */ new Set();
     this.manifestProvider.awareness.getStates().forEach((state) => {
-      var _a2;
-      const candidate = (_a2 = state == null ? void 0 : state.presence) == null ? void 0 : _a2.activeFile;
+      var _a3;
+      const candidate = (_a3 = state == null ? void 0 : state.presence) == null ? void 0 : _a3.activeFile;
       if (!candidate) return;
       const safeRel = this.safeManifestRelPath(candidate, "remote presence");
       if (safeRel) rels.add(safeRel);
     });
+    const localCandidate = (_d = (_c = (_b2 = (_a2 = this.manifestProvider.awareness).getLocalState) == null ? void 0 : _b2.call(_a2)) == null ? void 0 : _c.presence) == null ? void 0 : _d.activeFile;
+    const localRel = localCandidate ? this.safeManifestRelPath(localCandidate, "local presence render") : null;
+    if (localRel) rels.add(localRel);
     const caretByRel = this.collectCaretKeysByRel();
     const out = /* @__PURE__ */ new Map();
     for (const relPath of rels) {
@@ -15603,10 +15618,10 @@ var PresenceController = class {
       clearTimeout(this.typingTimer);
       this.typingTimer = null;
     }
-    const cur = ((_a2 = this.manifestAwareness.getLocalState()) == null ? void 0 : _a2.presence) || {};
-    this.manifestAwareness.setLocalStateField("presence", { ...cur, typing: false, activeFile: null });
     for (const c of this.cleanup) c();
     this.cleanup = [];
+    const cur = ((_a2 = this.manifestAwareness.getLocalState()) == null ? void 0 : _a2.presence) || {};
+    this.manifestAwareness.setLocalStateField("presence", { ...cur, typing: false, activeFile: null });
   }
   /** Broadcast our own typing state on the manifest awareness. */
   setTyping(typing) {
@@ -15615,6 +15630,7 @@ var PresenceController = class {
     this.manifestAwareness.setLocalStateField("presence", { ...cur, typing, activeFile: this.relPath });
   }
   refresh() {
+    this.ensureLocalPresence();
     const caretKeys = /* @__PURE__ */ new Set();
     this.fileAwareness.getStates().forEach((s, clientId) => {
       var _a2;
@@ -15626,6 +15642,12 @@ var PresenceController = class {
       caretKeys
     });
     this.view.dispatch({ effects: setRoster.of(roster) });
+  }
+  ensureLocalPresence() {
+    var _a2;
+    const cur = ((_a2 = this.manifestAwareness.getLocalState()) == null ? void 0 : _a2.presence) || {};
+    if (cur.activeFile === this.relPath) return;
+    this.manifestAwareness.setLocalStateField("presence", { ...cur, activeFile: this.relPath });
   }
   /** Jump to a collaborator's caret on this file (focused peers only). */
   jumpTo(targetKey) {
@@ -16889,7 +16911,8 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       share,
       (status, fileCount, pending) => this.statusBar.setShare(share.id, { label: share.label, status, fileCount, pending }),
       (_users) => {
-      }
+      },
+      () => this.debouncedActiveEditorRefresh("file-provider-ready")
     );
     this.syncManagers.set(share.id, m);
     try {

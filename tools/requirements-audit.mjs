@@ -73,9 +73,11 @@ const requirements = [
     title: "Active editor changes flush on switch/lifecycle",
     checks: [
       contains("plugin/src/collab/FileProvider.ts", "flushToDisk"),
-      contains("plugin/src/collab/FileProvider.ts", "scheduleEditorFlush"),
+      contains("plugin/src/collab/FileProvider.ts", "editor-bound-write-deferred"),
+      contains("plugin/src/collab/FileProvider.ts", "flushToDisk(\"editor-unbound\")"),
       contains("plugin/src/main.ts", "flushActiveEditorForLifecycle"),
       contains("plugin/src/main.ts", "active-leaf-change"),
+      contains("plugin/test/integration.test.mjs", "bound editor transaction does not external-write mid-typing"),
       contains("plugin/test/integration.test.mjs", "unbind awaited the final flush"),
       contains("plugin/test/integration.test.mjs", "lifecycle flush projects bound editor immediately"),
     ],

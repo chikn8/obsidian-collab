@@ -1,4 +1,4 @@
-import { App, TFile, TFolder, Notice, debounce } from "obsidian";
+import { App, TFile, TFolder, MarkdownView, Notice, debounce } from "obsidian";
 import * as Y from "yjs";
 import { createProvider, detectDevice, installDeviceId } from "./YjsProvider";
 import { FileProvider } from "./FileProvider";
@@ -32,7 +32,9 @@ import {
 import {
   appendPresenceHost,
   clearRenderedPresence,
+  findCollapsedFolderTitle,
   findFileTreeTitle,
+  findOutlineHeadingTarget,
   renderedPresenceConnected,
   tabHeaderForLeaf,
   tabPresenceTarget,
@@ -90,6 +92,7 @@ export class SyncManager {
   // Presence indicators (file explorer) — full-path → rendered elements
   private renderedPresence: Map<string, HTMLElement[]> = new Map();
   private renderedTabPresence: Map<string, HTMLElement[]> = new Map();
+  private renderedOutlinePresence: Map<string, HTMLElement[]> = new Map();
   private lastPresenceSig = "";
   private lastPresenceHadMissingAnchors = false;
   private presenceAnchorRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1663,13 +1666,14 @@ export class SyncManager {
     // Skip if nothing changed since the last render
     const sig = JSON.stringify(
       Array.from(fileUsers.entries())
-        .map(([path, users]) => [path, users.map((u) => [u.presenceKey, u.typing, u.hasCaret, u.color])])
+        .map(([path, users]) => [path, users.map((u) => [u.presenceKey, u.typing, u.hasCaret, u.dimmed, u.color])])
         .sort()
     );
     const presenceChanged = sig !== this.lastPresenceSig;
     const detachedHosts =
       !renderedPresenceConnected(this.renderedPresence) ||
-      !renderedPresenceConnected(this.renderedTabPresence);
+      !renderedPresenceConnected(this.renderedTabPresence) ||
+      !renderedPresenceConnected(this.renderedOutlinePresence);
     if (sig === this.lastPresenceSig && !detachedHosts && !this.lastPresenceHadMissingAnchors) return;
     if (presenceChanged) {
       this.clearPresenceAnchorRetry();
@@ -1686,7 +1690,8 @@ export class SyncManager {
 
     const fileRendered = this.renderFileTreePresence(fileUsers);
     const tabRendered = this.renderTabPresence(fileUsers);
-    const missingAnchors = fileRendered.missing + tabRendered.missing;
+    const outlineRendered = this.renderOutlinePresence(fileUsers);
+    const missingAnchors = fileRendered.missing + tabRendered.missing + outlineRendered.missing;
     this.lastPresenceHadMissingAnchors = missingAnchors > 0;
     this.schedulePresenceAnchorRetry(missingAnchors, fileUsers.size);
     trace("presence", "rendered", {
@@ -1696,6 +1701,8 @@ export class SyncManager {
       fileMissing: fileRendered.missing,
       tabBadges: tabRendered.rendered,
       tabMissing: tabRendered.missing,
+      outlineBadges: outlineRendered.rendered,
+      outlineMissing: outlineRendered.missing,
     });
   }
 
@@ -1834,13 +1841,14 @@ export class SyncManager {
 
     for (const [fullPath, users] of fileUsers) {
       const fileEl = findFileTreeTitle(document, fullPath);
-      if (!fileEl) {
+      const target = fileEl || findCollapsedFolderTitle(document, fullPath);
+      if (!target) {
         missing++;
         trace("presence", "file-anchor-missing", { shareId: this.histShareId, path: fullPath, users: users.length });
         continue;
       }
 
-      const host = appendPresenceHost(fileEl, "collab-file-presence-host", users, "file", () => this.followPresence(fullPath));
+      const host = appendPresenceHost(target, "collab-file-presence-host", users, "file", () => this.followPresence(fullPath));
       this.renderedPresence.set(fullPath, [host]);
       rendered++;
     }
@@ -1870,6 +1878,42 @@ export class SyncManager {
     return { rendered, missing };
   }
 
+  private renderOutlinePresence(fileUsers: Map<string, PresenceDevice[]>): { rendered: number; missing: number } {
+    clearRenderedPresence(this.renderedOutlinePresence);
+    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!activeView) return { rendered: 0, missing: 0 };
+    const file = activeView?.file;
+    if (!(file instanceof TFile) || !this.isInLinkedFolder(file.path)) return { rendered: 0, missing: 0 };
+    const users = fileUsers.get(file.path);
+    if (!users || users.length === 0) return { rendered: 0, missing: 0 };
+    const target = this.currentOutlineTarget(activeView, file);
+    if (!target) return { rendered: 0, missing: 0 };
+    const host = appendPresenceHost(target, "collab-outline-presence-host", users, "tab", () => this.followPresence(file.path));
+    this.renderedOutlinePresence.set(file.path, [host]);
+    return { rendered: 1, missing: 0 };
+  }
+
+  private currentOutlineTarget(view: MarkdownView, file: TFile): HTMLElement | null {
+    const cache = this.app.metadataCache.getFileCache(file);
+    const headings = cache?.headings || [];
+    if (headings.length === 0) return null;
+    const cursorLine = view.editor?.getCursor?.()?.line;
+    if (typeof cursorLine !== "number") return null;
+    let index = -1;
+    for (let i = 0; i < headings.length; i++) {
+      const line = headings[i]?.position?.start?.line;
+      if (typeof line === "number" && line <= cursorLine) index = i;
+    }
+    if (index < 0) return null;
+    const heading = headings[index]?.heading;
+    if (!heading) return null;
+    const occurrence = headings
+      .slice(0, index + 1)
+      .filter((h: any) => h?.heading === heading)
+      .length - 1;
+    return findOutlineHeadingTarget(document, heading, occurrence);
+  }
+
   private async followPresence(fullPath: string): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(fullPath);
     if (!(file instanceof TFile)) {
@@ -1883,6 +1927,7 @@ export class SyncManager {
     this.clearPresenceAnchorRetry();
     clearRenderedPresence(this.renderedPresence);
     clearRenderedPresence(this.renderedTabPresence);
+    clearRenderedPresence(this.renderedOutlinePresence);
     this.lastPresenceSig = "";
     this.lastPresenceHadMissingAnchors = false;
     this.presenceAnchorRetryCount = 0;

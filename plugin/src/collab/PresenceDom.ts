@@ -41,6 +41,29 @@ export function findFileTreeTitle(doc: Document, fullPath: string): HTMLElement 
   return parentTitle || carrier;
 }
 
+export function findCollapsedFolderTitle(doc: Document, fullPath: string): HTMLElement | null {
+  const folders = parentPaths(fullPath);
+  for (const folderPath of folders) {
+    const title = findFolderTitle(doc, folderPath);
+    if (title && isCollapsedFolderTitle(title)) return title;
+  }
+  return null;
+}
+
+export function findOutlineHeadingTarget(doc: Document, heading: string, occurrence = 0): HTMLElement | null {
+  const roots = Array.from(doc.querySelectorAll(
+    '.workspace-leaf-content[data-type="outline"], .workspace-leaf-content[data-view-type="outline"], .outline'
+  )) as HTMLElement[];
+  const scopedCandidates = roots.flatMap((root) =>
+    Array.from(root.querySelectorAll(".tree-item-inner, .outline-item, .outline-heading")) as HTMLElement[]
+  );
+  const candidates = scopedCandidates.length > 0
+    ? scopedCandidates
+    : Array.from(doc.querySelectorAll(".tree-item-inner")) as HTMLElement[];
+  const matches = candidates.filter((el) => cleanText(el.textContent || "") === cleanText(heading));
+  return matches[occurrence] || matches[0] || null;
+}
+
 export function appendPresenceHost(
   target: HTMLElement,
   className: string,
@@ -54,6 +77,42 @@ export function appendPresenceHost(
   renderPresenceAvatars(host, users, surface, onFollow);
   target.appendChild(host);
   return host;
+}
+
+function findFolderTitle(doc: Document, folderPath: string): HTMLElement | null {
+  const pathSelector = `[data-path="${cssAttributeValue(folderPath)}"]`;
+  const direct = doc.querySelector(`.nav-folder-title${pathSelector}`) as HTMLElement | null;
+  if (direct) return direct;
+  const carrier = doc.querySelector(pathSelector) as HTMLElement | null;
+  if (!carrier) return null;
+  if (hasClass(carrier, "nav-folder-title")) return carrier;
+  const nested = carrier.querySelector?.(".nav-folder-title") as HTMLElement | null;
+  if (nested) return nested;
+  return closestByClass(carrier, "nav-folder-title");
+}
+
+function parentPaths(fullPath: string): string[] {
+  const parts = fullPath.split("/").filter(Boolean);
+  parts.pop();
+  const out: string[] = [];
+  for (let i = 1; i <= parts.length; i++) out.push(parts.slice(0, i).join("/"));
+  return out;
+}
+
+function isCollapsedFolderTitle(title: HTMLElement): boolean {
+  const folder = closestByClass(title, "nav-folder") || title;
+  if (hasCollapsedSignal(title) || hasCollapsedSignal(folder)) return true;
+  const expanded = title.getAttribute("aria-expanded") ?? folder.getAttribute("aria-expanded");
+  if (expanded === "false") return true;
+  return !!title.querySelector?.(".is-collapsed, .mod-collapsed, .collapse-icon.is-collapsed");
+}
+
+function hasCollapsedSignal(el: HTMLElement): boolean {
+  return hasClass(el, "is-collapsed") || hasClass(el, "mod-collapsed") || hasClass(el, "collapsed");
+}
+
+function cleanText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 export function renderPresenceAvatars(

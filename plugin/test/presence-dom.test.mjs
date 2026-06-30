@@ -1,7 +1,9 @@
 import {
   appendPresenceHost,
   clearRenderedPresence,
+  findCollapsedFolderTitle,
   findFileTreeTitle,
+  findOutlineHeadingTarget,
   renderPresenceAvatars,
   renderedPresenceConnected,
   tabHeaderForLeaf,
@@ -250,6 +252,48 @@ console.log("presence dom\n");
   wrapper.appendChild(row);
   doc.appendChild(wrapper);
   check("file-tree lookup handles data-path wrappers", findFileTreeTitle(doc, path) === row);
+}
+
+{
+  const doc = new FakeDocument();
+  const root = doc.createElement("div");
+  const child = doc.createElement("div");
+  const rootPath = "Shared";
+  const childPath = "Shared/Folder";
+  root.className = "nav-folder-title is-collapsed";
+  child.className = "nav-folder-title is-collapsed";
+  root.setAttribute("data-path", rootPath);
+  child.setAttribute("data-path", childPath);
+  doc.appendChild(root);
+  doc.appendChild(child);
+  check("collapsed folder lookup uses highest closed parent", findCollapsedFolderTitle(doc, "Shared/Folder/Note.md") === root);
+}
+
+{
+  const doc = new FakeDocument();
+  const folder = doc.createElement("div");
+  folder.className = "nav-folder-title";
+  folder.setAttribute("data-path", "Shared");
+  folder.setAttribute("aria-expanded", "true");
+  doc.appendChild(folder);
+  check("expanded folder lookup is ignored", findCollapsedFolderTitle(doc, "Shared/Note.md") === null);
+}
+
+{
+  const doc = new FakeDocument();
+  const outline = doc.createElement("div");
+  const first = doc.createElement("div");
+  const second = doc.createElement("div");
+  outline.className = "workspace-leaf-content";
+  outline.setAttribute("data-type", "outline");
+  first.className = "tree-item-inner";
+  second.className = "tree-item-inner";
+  first.textContent = "Repeated";
+  second.textContent = "Repeated";
+  outline.appendChild(first);
+  outline.appendChild(second);
+  doc.appendChild(outline);
+  check("outline lookup uses heading occurrence", findOutlineHeadingTarget(doc, "Repeated", 1) === second);
 }
 
 {

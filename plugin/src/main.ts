@@ -1,5 +1,5 @@
 import { Plugin, TFile, TFolder, MarkdownView, Notice, Platform, debounce } from "obsidian";
-import type { EditorView } from "@codemirror/view";
+import { EditorView } from "@codemirror/view";
 import { SyncManager } from "./collab/SyncManager";
 import { FileProvider } from "./collab/FileProvider";
 import { InstanceWatch } from "./collab/InstanceWatch";
@@ -408,7 +408,7 @@ export default class CollabPlugin extends Plugin {
     ) {
       return;
     }
-    const relevant = ".workspace-tab-header, .nav-file-title";
+    const relevant = ".workspace-tab-header, .nav-file-title, .nav-folder-title, .tree-item-inner";
     trace("presence", "dom-observer-started", { selector: relevant });
     this.presenceDomObserver = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
@@ -503,6 +503,9 @@ export default class CollabPlugin extends Plugin {
     const selfBaseColor = this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName);
     const selfColor = deviceScopedColor(selfBaseColor);
     const extras = [session.extension(), selfSelectionExtension({ name: this.settings.displayName || "You", color: selfColor })];
+    extras.push(EditorView.updateListener.of((u) => {
+      if (u.selectionSet) this.debouncedPresenceDomRefresh();
+    }));
     if (presence) extras.push(presence.extension(true));
     if (role !== "editor") extras.push(readOnlyExtension());
 

@@ -101,7 +101,8 @@
 }
 
 .collab-file-presence-host,
-.collab-tab-presence-host {
+.collab-tab-presence-host,
+.collab-outline-presence-host {
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
@@ -112,7 +113,8 @@
   margin-left: 8px;
 }
 
-.collab-tab-presence-host {
+.collab-tab-presence-host,
+.collab-outline-presence-host {
   margin-left: 6px;
   gap: 0;
   max-width: 54px;
@@ -138,7 +140,6 @@
   vertical-align: middle;
   /* ring in the panel background colour so stacked avatars stay distinct */
   box-shadow: 0 0 0 1.5px var(--background-secondary);
-  animation: collab-presence-fade-in 0.15s ease-in;
 }
 
 .collab-presence-avatar.tab {
@@ -213,11 +214,6 @@
 @keyframes collab-typing-dot {
   0%, 80%, 100% { opacity: 0.35; transform: translateY(0); }
   40% { opacity: 1; transform: translateY(-1px); }
-}
-
-@keyframes collab-presence-fade-in {
-  from { opacity: 0; transform: scale(0); }
-  to { opacity: 1; transform: scale(1); }
 }
 
 /* ── Comments sidebar ─────────────────────────────────────────── */

@@ -40,6 +40,7 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian11 = require("obsidian");
+var import_view5 = require("@codemirror/view");
 
 // src/collab/SyncManager.ts
 var import_obsidian4 = require("obsidian");
@@ -12376,6 +12377,25 @@ function findFileTreeTitle(doc2, fullPath) {
   const parentTitle = closestByClass(carrier, "nav-file-title");
   return parentTitle || carrier;
 }
+function findCollapsedFolderTitle(doc2, fullPath) {
+  const folders = parentPaths(fullPath);
+  for (const folderPath of folders) {
+    const title = findFolderTitle(doc2, folderPath);
+    if (title && isCollapsedFolderTitle(title)) return title;
+  }
+  return null;
+}
+function findOutlineHeadingTarget(doc2, heading, occurrence = 0) {
+  const roots = Array.from(doc2.querySelectorAll(
+    '.workspace-leaf-content[data-type="outline"], .workspace-leaf-content[data-view-type="outline"], .outline'
+  ));
+  const scopedCandidates = roots.flatMap(
+    (root) => Array.from(root.querySelectorAll(".tree-item-inner, .outline-item, .outline-heading"))
+  );
+  const candidates = scopedCandidates.length > 0 ? scopedCandidates : Array.from(doc2.querySelectorAll(".tree-item-inner"));
+  const matches = candidates.filter((el) => cleanText(el.textContent || "") === cleanText(heading));
+  return matches[occurrence] || matches[0] || null;
+}
 function appendPresenceHost(target, className, users, surface, onFollow) {
   const doc2 = target.ownerDocument || document;
   const host = doc2.createElement("span");
@@ -12383,6 +12403,39 @@ function appendPresenceHost(target, className, users, surface, onFollow) {
   renderPresenceAvatars(host, users, surface, onFollow);
   target.appendChild(host);
   return host;
+}
+function findFolderTitle(doc2, folderPath) {
+  var _a2;
+  const pathSelector = `[data-path="${cssAttributeValue(folderPath)}"]`;
+  const direct = doc2.querySelector(`.nav-folder-title${pathSelector}`);
+  if (direct) return direct;
+  const carrier = doc2.querySelector(pathSelector);
+  if (!carrier) return null;
+  if (hasClass(carrier, "nav-folder-title")) return carrier;
+  const nested = (_a2 = carrier.querySelector) == null ? void 0 : _a2.call(carrier, ".nav-folder-title");
+  if (nested) return nested;
+  return closestByClass(carrier, "nav-folder-title");
+}
+function parentPaths(fullPath) {
+  const parts = fullPath.split("/").filter(Boolean);
+  parts.pop();
+  const out = [];
+  for (let i = 1; i <= parts.length; i++) out.push(parts.slice(0, i).join("/"));
+  return out;
+}
+function isCollapsedFolderTitle(title) {
+  var _a2, _b2;
+  const folder = closestByClass(title, "nav-folder") || title;
+  if (hasCollapsedSignal(title) || hasCollapsedSignal(folder)) return true;
+  const expanded = (_a2 = title.getAttribute("aria-expanded")) != null ? _a2 : folder.getAttribute("aria-expanded");
+  if (expanded === "false") return true;
+  return !!((_b2 = title.querySelector) == null ? void 0 : _b2.call(title, ".is-collapsed, .mod-collapsed, .collapse-icon.is-collapsed"));
+}
+function hasCollapsedSignal(el) {
+  return hasClass(el, "is-collapsed") || hasClass(el, "mod-collapsed") || hasClass(el, "collapsed");
+}
+function cleanText(value) {
+  return value.replace(/\s+/g, " ").trim();
 }
 function renderPresenceAvatars(parent, users, surface, onFollow) {
   const doc2 = parent.ownerDocument || document;
@@ -12491,6 +12544,7 @@ var SyncManager = class {
     // Presence indicators (file explorer) — full-path → rendered elements
     this.renderedPresence = /* @__PURE__ */ new Map();
     this.renderedTabPresence = /* @__PURE__ */ new Map();
+    this.renderedOutlinePresence = /* @__PURE__ */ new Map();
     this.lastPresenceSig = "";
     this.lastPresenceHadMissingAnchors = false;
     this.presenceAnchorRetryTimer = null;
@@ -13921,10 +13975,10 @@ var SyncManager = class {
   renderPresenceDesktop() {
     const fileUsers = this.collectFilePresence();
     const sig = JSON.stringify(
-      Array.from(fileUsers.entries()).map(([path, users]) => [path, users.map((u) => [u.presenceKey, u.typing, u.hasCaret, u.color])]).sort()
+      Array.from(fileUsers.entries()).map(([path, users]) => [path, users.map((u) => [u.presenceKey, u.typing, u.hasCaret, u.dimmed, u.color])]).sort()
     );
     const presenceChanged = sig !== this.lastPresenceSig;
-    const detachedHosts = !renderedPresenceConnected(this.renderedPresence) || !renderedPresenceConnected(this.renderedTabPresence);
+    const detachedHosts = !renderedPresenceConnected(this.renderedPresence) || !renderedPresenceConnected(this.renderedTabPresence) || !renderedPresenceConnected(this.renderedOutlinePresence);
     if (sig === this.lastPresenceSig && !detachedHosts && !this.lastPresenceHadMissingAnchors) return;
     if (presenceChanged) {
       this.clearPresenceAnchorRetry();
@@ -13940,7 +13994,8 @@ var SyncManager = class {
     }
     const fileRendered = this.renderFileTreePresence(fileUsers);
     const tabRendered = this.renderTabPresence(fileUsers);
-    const missingAnchors = fileRendered.missing + tabRendered.missing;
+    const outlineRendered = this.renderOutlinePresence(fileUsers);
+    const missingAnchors = fileRendered.missing + tabRendered.missing + outlineRendered.missing;
     this.lastPresenceHadMissingAnchors = missingAnchors > 0;
     this.schedulePresenceAnchorRetry(missingAnchors, fileUsers.size);
     trace("presence", "rendered", {
@@ -13949,7 +14004,9 @@ var SyncManager = class {
       fileBadges: fileRendered.rendered,
       fileMissing: fileRendered.missing,
       tabBadges: tabRendered.rendered,
-      tabMissing: tabRendered.missing
+      tabMissing: tabRendered.missing,
+      outlineBadges: outlineRendered.rendered,
+      outlineMissing: outlineRendered.missing
     });
   }
   schedulePresenceAnchorRetry(missingAnchors, activeFiles) {
@@ -14079,12 +14136,13 @@ var SyncManager = class {
     let missing = 0;
     for (const [fullPath, users] of fileUsers) {
       const fileEl = findFileTreeTitle(document, fullPath);
-      if (!fileEl) {
+      const target = fileEl || findCollapsedFolderTitle(document, fullPath);
+      if (!target) {
         missing++;
         trace("presence", "file-anchor-missing", { shareId: this.histShareId, path: fullPath, users: users.length });
         continue;
       }
-      const host = appendPresenceHost(fileEl, "collab-file-presence-host", users, "file", () => this.followPresence(fullPath));
+      const host = appendPresenceHost(target, "collab-file-presence-host", users, "file", () => this.followPresence(fullPath));
       this.renderedPresence.set(fullPath, [host]);
       rendered++;
     }
@@ -14112,6 +14170,38 @@ var SyncManager = class {
     });
     return { rendered, missing };
   }
+  renderOutlinePresence(fileUsers) {
+    clearRenderedPresence(this.renderedOutlinePresence);
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian4.MarkdownView);
+    if (!activeView) return { rendered: 0, missing: 0 };
+    const file = activeView == null ? void 0 : activeView.file;
+    if (!(file instanceof import_obsidian4.TFile) || !this.isInLinkedFolder(file.path)) return { rendered: 0, missing: 0 };
+    const users = fileUsers.get(file.path);
+    if (!users || users.length === 0) return { rendered: 0, missing: 0 };
+    const target = this.currentOutlineTarget(activeView, file);
+    if (!target) return { rendered: 0, missing: 0 };
+    const host = appendPresenceHost(target, "collab-outline-presence-host", users, "tab", () => this.followPresence(file.path));
+    this.renderedOutlinePresence.set(file.path, [host]);
+    return { rendered: 1, missing: 0 };
+  }
+  currentOutlineTarget(view, file) {
+    var _a2, _b2, _c, _d, _e, _f, _g;
+    const cache = this.app.metadataCache.getFileCache(file);
+    const headings = (cache == null ? void 0 : cache.headings) || [];
+    if (headings.length === 0) return null;
+    const cursorLine = (_c = (_b2 = (_a2 = view.editor) == null ? void 0 : _a2.getCursor) == null ? void 0 : _b2.call(_a2)) == null ? void 0 : _c.line;
+    if (typeof cursorLine !== "number") return null;
+    let index = -1;
+    for (let i = 0; i < headings.length; i++) {
+      const line = (_f = (_e = (_d = headings[i]) == null ? void 0 : _d.position) == null ? void 0 : _e.start) == null ? void 0 : _f.line;
+      if (typeof line === "number" && line <= cursorLine) index = i;
+    }
+    if (index < 0) return null;
+    const heading = (_g = headings[index]) == null ? void 0 : _g.heading;
+    if (!heading) return null;
+    const occurrence = headings.slice(0, index + 1).filter((h) => (h == null ? void 0 : h.heading) === heading).length - 1;
+    return findOutlineHeadingTarget(document, heading, occurrence);
+  }
   async followPresence(fullPath) {
     const file = this.app.vault.getAbstractFileByPath(fullPath);
     if (!(file instanceof import_obsidian4.TFile)) {
@@ -14124,6 +14214,7 @@ var SyncManager = class {
     this.clearPresenceAnchorRetry();
     clearRenderedPresence(this.renderedPresence);
     clearRenderedPresence(this.renderedTabPresence);
+    clearRenderedPresence(this.renderedOutlinePresence);
     this.lastPresenceSig = "";
     this.lastPresenceHadMissingAnchors = false;
     this.presenceAnchorRetryCount = 0;
@@ -17044,7 +17135,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     if (typeof document === "undefined" || typeof HTMLElement === "undefined" || typeof MutationObserver === "undefined" || !document.body) {
       return;
     }
-    const relevant = ".workspace-tab-header, .nav-file-title";
+    const relevant = ".workspace-tab-header, .nav-file-title, .nav-folder-title, .tree-item-inner";
     trace("presence", "dom-observer-started", { selector: relevant });
     this.presenceDomObserver = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
@@ -17124,6 +17215,9 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     const selfBaseColor = this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName);
     const selfColor = deviceScopedColor(selfBaseColor);
     const extras = [session.extension(), selfSelectionExtension({ name: this.settings.displayName || "You", color: selfColor })];
+    extras.push(import_view5.EditorView.updateListener.of((u) => {
+      if (u.selectionSet) this.debouncedPresenceDomRefresh();
+    }));
     if (presence) extras.push(presence.extension(true));
     if (role !== "editor") extras.push(readOnlyExtension());
     await provider.setEditorBound(true);

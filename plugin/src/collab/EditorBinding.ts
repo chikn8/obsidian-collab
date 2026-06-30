@@ -3,6 +3,7 @@ import { EditorView } from "@codemirror/view";
 import { yCollab } from "y-codemirror.next";
 import * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
+import { cursorAwarenessExtension } from "./CursorAwareness";
 
 /**
  * Binds the *active* editor to a file's Y.Text via y-codemirror.next (yCollab).
@@ -31,12 +32,17 @@ export function bindEditor(
   view: EditorView,
   ytext: Y.Text,
   awareness: Awareness,
+  label?: string,
   extra: Extension[] = []
 ): void {
-  // yCollab returns an array; append extra layers (e.g. comments) AFTER it so
-  // yUndoManager/ySync ordering inside yCollab is preserved.
+  // yCollab handles text sync/undo. Cursor awareness is local so we can keep
+  // identity, focus clearing, and diagnostics under our control.
   view.dispatch({
-    effects: collabCompartment.reconfigure([yCollab(ytext, awareness), ...extra]),
+    effects: collabCompartment.reconfigure([
+      yCollab(ytext, null),
+      cursorAwarenessExtension(ytext, awareness, { label }),
+      ...extra,
+    ]),
   });
 }
 

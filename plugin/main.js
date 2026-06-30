@@ -40,7 +40,7 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian11 = require("obsidian");
-var import_view5 = require("@codemirror/view");
+var import_view6 = require("@codemirror/view");
 
 // src/collab/SyncManager.ts
 var import_obsidian4 = require("obsidian");
@@ -14889,8 +14889,8 @@ ${text2}`, 15e3);
 }
 
 // src/collab/EditorBinding.ts
-var import_state = require("@codemirror/state");
-var import_view = require("@codemirror/view");
+var import_state2 = require("@codemirror/state");
+var import_view2 = require("@codemirror/view");
 
 // node_modules/y-codemirror.next/src/index.js
 var cmView4 = __toESM(require("@codemirror/view"), 1);
@@ -15429,24 +15429,253 @@ var yCollab = (ytext, awareness, { undoManager = new UndoManager(ytext) } = {}) 
   return plugins;
 };
 
+// src/collab/CursorAwareness.ts
+var import_state = require("@codemirror/state");
+var import_view = require("@codemirror/view");
+var refreshRemoteCursors = import_state.StateEffect.define();
+function cursorAwarenessExtension(ytext, awareness, options = {}) {
+  return [
+    import_view.ViewPlugin.define((view) => new CursorAwarenessPlugin(view, ytext, awareness, options.label), {
+      decorations: (plugin) => plugin.decorations
+    })
+  ];
+}
+var CursorAwarenessPlugin = class {
+  constructor(view, ytext, awareness, label) {
+    this.view = view;
+    this.ytext = ytext;
+    this.awareness = awareness;
+    this.label = label;
+    this.decorations = import_view.Decoration.none;
+    this.lastRenderSig = "";
+    this.awarenessListener = ({ added, updated, removed }, origin) => {
+      const changedRemote = added.concat(updated, removed).filter((id2) => id2 !== this.awareness.clientID);
+      if (changedRemote.length === 0) return;
+      trace("awareness", "cursor-remote-change", {
+        label: this.label,
+        added: added.length,
+        updated: updated.length,
+        removed: removed.length,
+        remoteChanged: changedRemote.length,
+        origin: originName2(origin)
+      });
+      this.view.dispatch({ effects: refreshRemoteCursors.of(void 0) });
+    };
+    this.awareness.on("change", this.awarenessListener);
+    this.publishLocalCursor(view, "init");
+    this.rebuild(view);
+  }
+  update(update) {
+    if (update.docChanged || update.selectionSet || update.focusChanged) {
+      this.publishLocalCursor(update.view, updateReason(update));
+    }
+    if (update.docChanged || update.viewportChanged || update.transactions.some((tr) => tr.effects.some((effect) => effect.is(refreshRemoteCursors)))) {
+      this.rebuild(update.view);
+    }
+  }
+  destroy() {
+    this.awareness.off("change", this.awarenessListener);
+    this.clearLocalCursor("destroy");
+  }
+  publishLocalCursor(view, reason) {
+    var _a2, _b2, _c, _d;
+    const local = (_b2 = (_a2 = this.awareness).getLocalState) == null ? void 0 : _b2.call(_a2);
+    if (!local) return;
+    const hasFocus = !!view.hasFocus && !!((_d = (_c = view.dom.ownerDocument) == null ? void 0 : _c.hasFocus) == null ? void 0 : _d.call(_c));
+    if (!hasFocus) {
+      this.clearLocalCursor(reason);
+      return;
+    }
+    const sel = view.state.selection.main;
+    const anchor = createRelativePositionFromTypeIndex(this.ytext, sel.anchor);
+    const head = createRelativePositionFromTypeIndex(this.ytext, sel.head);
+    if (sameStoredCursor(local.cursor, anchor, head)) return;
+    this.awareness.setLocalStateField("cursor", { anchor, head });
+    trace("awareness", "cursor-local", {
+      label: this.label,
+      reason,
+      clientId: this.awareness.clientID,
+      anchor: sel.anchor,
+      head: sel.head,
+      empty: sel.empty
+    });
+  }
+  clearLocalCursor(reason) {
+    var _a2, _b2;
+    const local = (_b2 = (_a2 = this.awareness).getLocalState) == null ? void 0 : _b2.call(_a2);
+    if (!(local == null ? void 0 : local.cursor)) return;
+    this.awareness.setLocalStateField("cursor", null);
+    trace("awareness", "cursor-local-cleared", {
+      label: this.label,
+      reason,
+      clientId: this.awareness.clientID
+    });
+  }
+  rebuild(view) {
+    var _a2, _b2, _c;
+    const ranges = [];
+    const docLen = view.state.doc.length;
+    const localUser = (_c = (_b2 = (_a2 = this.awareness).getLocalState) == null ? void 0 : _b2.call(_a2)) == null ? void 0 : _c.user;
+    let rendered = 0;
+    let invalid = 0;
+    let skippedSelf = 0;
+    this.awareness.getStates().forEach((state, clientId) => {
+      var _a3, _b3, _c2, _d, _e, _f;
+      if (clientId === this.awareness.clientID) {
+        skippedSelf++;
+        return;
+      }
+      if (sameIdentity(localUser, state == null ? void 0 : state.user)) {
+        skippedSelf++;
+        return;
+      }
+      const cursor = state == null ? void 0 : state.cursor;
+      if (!(cursor == null ? void 0 : cursor.anchor) || !(cursor == null ? void 0 : cursor.head)) return;
+      const anchor = absoluteIndex(cursor.anchor, this.ytext);
+      const head = absoluteIndex(cursor.head, this.ytext);
+      if (anchor == null || head == null) {
+        invalid++;
+        return;
+      }
+      const start = clamp2(Math.min(anchor, head), 0, docLen);
+      const end = clamp2(Math.max(anchor, head), 0, docLen);
+      const color = validColor((_a3 = state == null ? void 0 : state.user) == null ? void 0 : _a3.color) || "#30bced";
+      const colorLight = validColorLight((_b3 = state == null ? void 0 : state.user) == null ? void 0 : _b3.colorLight) || `${color}33`;
+      const name = ((_c2 = state == null ? void 0 : state.user) == null ? void 0 : _c2.name) || ((_d = state == null ? void 0 : state.user) == null ? void 0 : _d.displayName) || "Anonymous";
+      const key = `${((_e = state == null ? void 0 : state.user) == null ? void 0 : _e.uid) || clientId}:${((_f = state == null ? void 0 : state.user) == null ? void 0 : _f.deviceId) || clientId}`;
+      if (start < end) {
+        ranges.push(import_view.Decoration.mark({
+          class: "cm-ySelection",
+          attributes: { style: `background-color: ${colorLight}` }
+        }).range(start, end));
+      }
+      ranges.push(import_view.Decoration.widget({
+        side: head >= anchor ? 1 : -1,
+        widget: new RemoteCaretWidget(color, name, key)
+      }).range(clamp2(head, 0, docLen)));
+      rendered++;
+    });
+    this.decorations = import_view.Decoration.set(ranges, true);
+    const sig = `${rendered}:${invalid}:${skippedSelf}:${ranges.length}`;
+    if (sig !== this.lastRenderSig) {
+      this.lastRenderSig = sig;
+      trace("awareness", "cursor-render", {
+        label: this.label,
+        rendered,
+        invalid,
+        skippedSelf,
+        states: this.awareness.getStates().size
+      });
+    }
+  }
+};
+var RemoteCaretWidget = class extends import_view.WidgetType {
+  constructor(color, name, key) {
+    super();
+    this.color = color;
+    this.name = name;
+    this.key = key;
+  }
+  toDOM(view) {
+    const doc2 = view.dom.ownerDocument || document;
+    const el = doc2.createElement("span");
+    el.className = "cm-ySelectionCaret";
+    el.style.backgroundColor = this.color;
+    el.style.borderColor = this.color;
+    el.dataset.collabCursorKey = this.key;
+    el.appendChild(doc2.createTextNode("\u2060"));
+    const dot = doc2.createElement("span");
+    dot.className = "cm-ySelectionCaretDot";
+    el.appendChild(dot);
+    el.appendChild(doc2.createTextNode("\u2060"));
+    const info = doc2.createElement("span");
+    info.className = "cm-ySelectionInfo";
+    info.textContent = this.name;
+    el.appendChild(info);
+    el.appendChild(doc2.createTextNode("\u2060"));
+    return el;
+  }
+  eq(other) {
+    return this.color === other.color && this.name === other.name && this.key === other.key;
+  }
+  ignoreEvent() {
+    return true;
+  }
+};
+function sameStoredCursor(cursor, anchor, head) {
+  if (!(cursor == null ? void 0 : cursor.anchor) || !(cursor == null ? void 0 : cursor.head)) return false;
+  const currentAnchor = storedRelativePosition(cursor.anchor);
+  const currentHead = storedRelativePosition(cursor.head);
+  return !!currentAnchor && !!currentHead && compareRelativePositions(currentAnchor, anchor) && compareRelativePositions(currentHead, head);
+}
+function storedRelativePosition(value) {
+  if (!value) return null;
+  try {
+    return typeof value === "object" && value.type !== void 0 ? value : createRelativePositionFromJSON(value);
+  } catch (e) {
+    return null;
+  }
+}
+function absoluteIndex(value, ytext) {
+  const pos = storedRelativePosition(value);
+  if (!pos) return null;
+  try {
+    const abs2 = createAbsolutePositionFromRelativePosition(pos, ytext.doc);
+    if (!abs2 || abs2.type !== ytext) return null;
+    return abs2.index;
+  } catch (e) {
+    return null;
+  }
+}
+function sameIdentity(a, b) {
+  return !!(a == null ? void 0 : a.uid) && !!(b == null ? void 0 : b.uid) && a.uid === b.uid && (a.deviceId || "") === (b.deviceId || "");
+}
+function validColor(value) {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value : null;
+}
+function validColorLight(value) {
+  return typeof value === "string" && /^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(value) ? value : null;
+}
+function clamp2(value, min2, max2) {
+  return Math.max(min2, Math.min(max2, value));
+}
+function updateReason(update) {
+  const parts = [];
+  if (update.docChanged) parts.push("doc");
+  if (update.selectionSet) parts.push("selection");
+  if (update.focusChanged) parts.push("focus");
+  return parts.join("+") || "update";
+}
+function originName2(origin) {
+  var _a2;
+  if (origin == null) return "null";
+  if (typeof origin === "string") return origin;
+  if (typeof origin === "object") return ((_a2 = origin.constructor) == null ? void 0 : _a2.name) || "object";
+  return typeof origin;
+}
+
 // src/collab/EditorBinding.ts
-var collabCompartment = new import_state.Compartment();
+var collabCompartment = new import_state2.Compartment();
 var collabEditorExtension = collabCompartment.of([]);
 function getEditorView(markdownView) {
   var _a2;
   const cm = (_a2 = markdownView == null ? void 0 : markdownView.editor) == null ? void 0 : _a2.cm;
-  return cm instanceof import_view.EditorView ? cm : cm != null ? cm : null;
+  return cm instanceof import_view2.EditorView ? cm : cm != null ? cm : null;
 }
-function bindEditor(view, ytext, awareness, extra = []) {
+function bindEditor(view, ytext, awareness, label, extra = []) {
   view.dispatch({
-    effects: collabCompartment.reconfigure([yCollab(ytext, awareness), ...extra])
+    effects: collabCompartment.reconfigure([
+      yCollab(ytext, null),
+      cursorAwarenessExtension(ytext, awareness, { label }),
+      ...extra
+    ])
   });
 }
 function unbindEditor(view) {
   view.dispatch({ effects: collabCompartment.reconfigure([]) });
 }
 function readOnlyExtension() {
-  return [import_state.EditorState.readOnly.of(true), import_view.EditorView.editable.of(false)];
+  return [import_state2.EditorState.readOnly.of(true), import_view2.EditorView.editable.of(false)];
 }
 
 // src/collab/CommentStore.ts
@@ -15616,19 +15845,19 @@ var CommentStore = class {
 };
 
 // src/collab/CommentLayer.ts
-var import_view2 = require("@codemirror/view");
-var import_state2 = require("@codemirror/state");
-var setCommentDecos = import_state2.StateEffect.define();
-var commentField = import_state2.StateField.define({
-  create: () => import_view2.Decoration.none,
+var import_view3 = require("@codemirror/view");
+var import_state3 = require("@codemirror/state");
+var setCommentDecos = import_state3.StateEffect.define();
+var commentField = import_state3.StateField.define({
+  create: () => import_view3.Decoration.none,
   update(decos, tr) {
     decos = decos.map(tr.changes);
     for (const e of tr.effects) if (e.is(setCommentDecos)) decos = e.value;
     return decos;
   },
-  provide: (f) => import_view2.EditorView.decorations.from(f)
+  provide: (f) => import_view3.EditorView.decorations.from(f)
 });
-var commentTheme = import_view2.EditorView.baseTheme({
+var commentTheme = import_view3.EditorView.baseTheme({
   ".cm-collab-comment": {
     backgroundColor: "rgba(255, 206, 84, 0.28)",
     borderBottom: "2px solid rgba(255, 206, 84, 0.9)",
@@ -15652,10 +15881,10 @@ var CommentSession = class {
     return [
       commentField,
       commentTheme,
-      import_view2.EditorView.domEventHandlers({
+      import_view3.EditorView.domEventHandlers({
         mousedown: (evt, view) => this.handleClick(evt, view)
       }),
-      import_view2.EditorView.updateListener.of((u) => {
+      import_view3.EditorView.updateListener.of((u) => {
         if (u.docChanged) this.recompute();
       })
     ];
@@ -15678,7 +15907,7 @@ var CommentSession = class {
     if (!hit || !this.view) return;
     this.view.dispatch({
       selection: { anchor: hit.from, head: hit.to },
-      effects: import_view2.EditorView.scrollIntoView(hit.from, { y: "center" })
+      effects: import_view3.EditorView.scrollIntoView(hit.from, { y: "center" })
     });
     this.view.focus();
   }
@@ -15696,12 +15925,12 @@ var CommentSession = class {
       const to = Math.min(t.anchor.to, docLen);
       if (to <= from2) continue;
       const cls = t.resolved ? "cm-collab-comment-resolved" : "cm-collab-comment";
-      builder.push({ from: from2, to, deco: import_view2.Decoration.mark({ class: cls, attributes: { "data-thread": t.id } }) });
+      builder.push({ from: from2, to, deco: import_view3.Decoration.mark({ class: cls, attributes: { "data-thread": t.id } }) });
       hits.push({ id: t.id, from: from2, to });
     }
     builder.sort((a, b) => a.from - b.from || a.to - b.to);
     this.ranges = hits;
-    const set = import_view2.Decoration.set(builder.map((b) => b.deco.range(b.from, b.to)), true);
+    const set = import_view3.Decoration.set(builder.map((b) => b.deco.range(b.from, b.to)), true);
     this.view.dispatch({ effects: setCommentDecos.of(set) });
   }
   handleClick(evt, view) {
@@ -15721,11 +15950,11 @@ var CommentSession = class {
 };
 
 // src/collab/Presence.ts
-var import_view3 = require("@codemirror/view");
-var import_state3 = require("@codemirror/state");
-var setRoster = import_state3.StateEffect.define();
+var import_view4 = require("@codemirror/view");
+var import_state4 = require("@codemirror/state");
+var setRoster = import_state4.StateEffect.define();
 function facepileExtension(onJump) {
-  return import_view3.showPanel.of((view) => makePanel(view, onJump));
+  return import_view4.showPanel.of((view) => makePanel(view, onJump));
 }
 function makePanel(_view, onJump) {
   const dom = document.createElement("div");
@@ -15783,8 +16012,23 @@ var PresenceController = class {
   extension(showFacepile = true) {
     return [
       ...showFacepile ? [facepileExtension((uid) => this.jumpTo(uid))] : [],
-      import_view3.EditorView.updateListener.of((u) => {
-        if (u.docChanged) this.bumpTyping();
+      import_view4.EditorView.domEventHandlers({
+        beforeinput: (event) => {
+          if (isTypingInputType(event.inputType)) this.bumpTyping();
+          return false;
+        },
+        input: () => {
+          this.bumpTyping();
+          return false;
+        },
+        paste: () => {
+          this.bumpTyping();
+          return false;
+        },
+        cut: () => {
+          this.bumpTyping();
+          return false;
+        }
       })
     ];
   }
@@ -15811,12 +16055,14 @@ var PresenceController = class {
     for (const c of this.cleanup) c();
     this.cleanup = [];
     const cur = ((_a2 = this.manifestAwareness.getLocalState()) == null ? void 0 : _a2.presence) || {};
+    if (cur.activeFile === null && cur.typing === false) return;
     this.manifestAwareness.setLocalStateField("presence", { ...cur, typing: false, activeFile: null });
   }
   /** Broadcast our own typing state on the manifest awareness. */
   setTyping(typing) {
     var _a2;
     const cur = ((_a2 = this.manifestAwareness.getLocalState()) == null ? void 0 : _a2.presence) || {};
+    if (cur.activeFile === this.relPath && cur.typing === typing) return;
     this.manifestAwareness.setLocalStateField("presence", { ...cur, typing, activeFile: this.relPath });
   }
   refresh() {
@@ -15850,9 +16096,13 @@ var PresenceController = class {
     const idx = resolveAwarenessCursor((_a2 = target.head) != null ? _a2 : target.anchor, this.doc);
     if (idx == null) return;
     const pos = Math.min(idx, this.view.state.doc.length);
-    this.view.dispatch({ effects: import_view3.EditorView.scrollIntoView(pos, { y: "center" }) });
+    this.view.dispatch({ effects: import_view4.EditorView.scrollIntoView(pos, { y: "center" }) });
   }
 };
+function isTypingInputType(inputType) {
+  if (!inputType) return true;
+  return inputType.startsWith("insert") || inputType.startsWith("delete") || inputType === "historyUndo" || inputType === "historyRedo";
+}
 function resolveAwarenessCursor(rel, doc2) {
   if (rel == null) return null;
   try {
@@ -15870,8 +16120,8 @@ function resolveAwarenessCursor(rel, doc2) {
 }
 
 // src/collab/SelfSelection.ts
-var import_state4 = require("@codemirror/state");
-var import_view4 = require("@codemirror/view");
+var import_state5 = require("@codemirror/state");
+var import_view5 = require("@codemirror/view");
 function selfSelectionOverlay(anchor, head) {
   const from2 = Math.min(anchor, head);
   const to = Math.max(anchor, head);
@@ -15886,12 +16136,12 @@ function selfSelectionOverlay(anchor, head) {
 function selfSelectionExtension(user) {
   return [
     selfSelectionTheme,
-    import_view4.ViewPlugin.define((view) => new SelfSelectionPlugin(view, user), {
+    import_view5.ViewPlugin.define((view) => new SelfSelectionPlugin(view, user), {
       decorations: (v) => v.decorations
     })
   ];
 }
-var selfSelectionTheme = import_view4.EditorView.baseTheme({
+var selfSelectionTheme = import_view5.EditorView.baseTheme({
   ".cm-collab-self-selection": {
     opacity: "0.35"
   },
@@ -15924,7 +16174,7 @@ var selfSelectionTheme = import_view4.EditorView.baseTheme({
 var SelfSelectionPlugin = class {
   constructor(view, user) {
     this.user = user;
-    this.decorations = import_view4.Decoration.none;
+    this.decorations = import_view5.Decoration.none;
     this.rebuild(view);
   }
   update(update) {
@@ -15933,24 +16183,24 @@ var SelfSelectionPlugin = class {
     }
   }
   rebuild(view) {
-    const builder = new import_state4.RangeSetBuilder();
+    const builder = new import_state5.RangeSetBuilder();
     const sel = view.state.selection.main;
     const overlay = selfSelectionOverlay(sel.anchor, sel.head);
     const color = this.user.color || "var(--interactive-accent)";
     if (overlay.selection) {
-      builder.add(overlay.selection.from, overlay.selection.to, import_view4.Decoration.mark({
+      builder.add(overlay.selection.from, overlay.selection.to, import_view5.Decoration.mark({
         class: "cm-collab-self-selection",
         attributes: { style: `background-color: ${alphaColor(color, "44")}` }
       }));
     }
-    builder.add(overlay.caret.pos, overlay.caret.pos, import_view4.Decoration.widget({
+    builder.add(overlay.caret.pos, overlay.caret.pos, import_view5.Decoration.widget({
       side: overlay.caret.side,
       widget: new SelfCaretWidget(this.user.name || "You", color)
     }));
     this.decorations = builder.finish();
   }
 };
-var SelfCaretWidget = class extends import_view4.WidgetType {
+var SelfCaretWidget = class extends import_view5.WidgetType {
   constructor(name, color) {
     super();
     this.name = name;
@@ -17236,13 +17486,13 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     const selfBaseColor = this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName);
     const selfColor = deviceScopedColor(selfBaseColor);
     const extras = [session.extension(), selfSelectionExtension({ name: this.settings.displayName || "You", color: selfColor })];
-    extras.push(import_view5.EditorView.updateListener.of((u) => {
+    extras.push(import_view6.EditorView.updateListener.of((u) => {
       if (u.selectionSet) this.debouncedPresenceDomRefresh();
     }));
     if (presence) extras.push(presence.extension(true));
     if (role !== "editor") extras.push(readOnlyExtension());
     await provider.setEditorBound(true);
-    bindEditor(ev, ytext, awareness, extras);
+    bindEditor(ev, ytext, awareness, path, extras);
     session.attach(ev);
     presence == null ? void 0 : presence.start();
     manager == null ? void 0 : manager.refreshPresenceUi();

@@ -96,7 +96,24 @@ export class PresenceController {
   extension(showFacepile = true): Extension {
     return [
       ...(showFacepile ? [facepileExtension((uid) => this.jumpTo(uid))] : []),
-      EditorView.updateListener.of((u) => { if (u.docChanged) this.bumpTyping(); }),
+      EditorView.domEventHandlers({
+        beforeinput: (event) => {
+          if (isTypingInputType((event as InputEvent).inputType)) this.bumpTyping();
+          return false;
+        },
+        input: () => {
+          this.bumpTyping();
+          return false;
+        },
+        paste: () => {
+          this.bumpTyping();
+          return false;
+        },
+        cut: () => {
+          this.bumpTyping();
+          return false;
+        },
+      }),
     ];
   }
 
@@ -121,12 +138,14 @@ export class PresenceController {
     for (const c of this.cleanup) c();
     this.cleanup = [];
     const cur = this.manifestAwareness.getLocalState()?.presence || {};
+    if (cur.activeFile === null && cur.typing === false) return;
     this.manifestAwareness.setLocalStateField("presence", { ...cur, typing: false, activeFile: null });
   }
 
   /** Broadcast our own typing state on the manifest awareness. */
   setTyping(typing: boolean): void {
     const cur = this.manifestAwareness.getLocalState()?.presence || {};
+    if (cur.activeFile === this.relPath && cur.typing === typing) return;
     this.manifestAwareness.setLocalStateField("presence", { ...cur, typing, activeFile: this.relPath });
   }
 
@@ -164,6 +183,16 @@ export class PresenceController {
     const pos = Math.min(idx, this.view.state.doc.length);
     this.view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: "center" }) });
   }
+}
+
+export function isTypingInputType(inputType: string | null | undefined): boolean {
+  if (!inputType) return true;
+  return (
+    inputType.startsWith("insert") ||
+    inputType.startsWith("delete") ||
+    inputType === "historyUndo" ||
+    inputType === "historyRedo"
+  );
 }
 
 /** Resolve a yCollab awareness cursor (a relative position) to an absolute index. */

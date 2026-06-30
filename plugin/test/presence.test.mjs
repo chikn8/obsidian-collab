@@ -3,7 +3,7 @@ import {
   deviceColor,
   presenceLabel,
 } from "../src/collab/PresenceModel.ts";
-import { PresenceController } from "../src/collab/Presence.ts";
+import { PresenceController, isTypingInputType } from "../src/collab/Presence.ts";
 
 let failures = 0;
 function check(name, cond, extra = "") {
@@ -28,11 +28,13 @@ class MutableAwareness extends FakeAwareness {
   constructor(clientID, states) {
     super(clientID, states);
     this.handlers = new Set();
+    this.writes = 0;
   }
   getLocalState() {
     return this.states.get(this.clientID) || null;
   }
   setLocalStateField(field, value) {
+    this.writes++;
     const cur = this.getLocalState() || {};
     this.states.set(this.clientID, { ...cur, [field]: value });
     for (const handler of this.handlers) handler();
@@ -132,9 +134,25 @@ console.log("presence model\n");
   check("presence controller advertises active file on start", presence?.activeFile === "note.md", JSON.stringify(presence));
   check("presence controller starts non-typing", presence?.typing === false, JSON.stringify(presence));
   check("presence controller refreshes roster on start", dispatches.length > 0);
+  const writesBeforeNoop = manifestAwareness.writes;
+  controller.setTyping(false);
+  check("presence controller typing false is idempotent", manifestAwareness.writes === writesBeforeNoop);
+  controller.setTyping(true);
+  const typingPresence = manifestAwareness.getLocalState()?.presence;
+  check("presence controller can mark local typing", typingPresence?.typing === true, JSON.stringify(typingPresence));
+  const writesBeforeNoopTyping = manifestAwareness.writes;
+  controller.setTyping(true);
+  check("presence controller typing true is idempotent", manifestAwareness.writes === writesBeforeNoopTyping);
   controller.stop();
   const stoppedPresence = manifestAwareness.getLocalState()?.presence;
   check("presence controller clears active file on stop", stoppedPresence?.activeFile === null && stoppedPresence?.typing === false, JSON.stringify(stoppedPresence));
+}
+
+{
+  check("insert input counts as typing", isTypingInputType("insertText") === true);
+  check("delete input counts as typing", isTypingInputType("deleteContentBackward") === true);
+  check("history input counts as typing", isTypingInputType("historyUndo") === true);
+  check("format input does not count as typing", isTypingInputType("formatBold") === false);
 }
 
 console.log("");

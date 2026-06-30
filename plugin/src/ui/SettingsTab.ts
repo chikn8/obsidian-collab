@@ -85,7 +85,7 @@ export class CollabSettingsTab extends PluginSettingTab {
           .setValue(this.plugin.settings.displayName)
           .onChange(async (value) => {
             this.plugin.settings.displayName = value;
-            await this.plugin.saveSettings();
+            await this.plugin.saveSettings(false, true);
           })
       );
 
@@ -100,7 +100,7 @@ export class CollabSettingsTab extends PluginSettingTab {
           .setValue(this.plugin.settings.cursorColor)
           .onChange(async (value) => {
             this.plugin.settings.cursorColor = value;
-            await this.plugin.saveSettings();
+            await this.plugin.saveSettings(false, true);
           });
       });
 

@@ -10600,6 +10600,25 @@ function installDeviceId() {
 function deviceScopedColor(baseColor, deviceId = installDeviceId()) {
   return deviceColor(baseColor || "#888888", deviceId);
 }
+function localAwarenessUser(userInfo) {
+  var _a2;
+  const device = detectDevice();
+  const deviceId = installDeviceId();
+  const displayName = ((_a2 = userInfo.name) == null ? void 0 : _a2.trim()) || "Anonymous";
+  const cursorName = cursorDisplayName(displayName, device);
+  const baseColor = userInfo.color || "#888888";
+  const scopedColor = deviceScopedColor(baseColor, deviceId);
+  return {
+    uid: userInfo.uid,
+    deviceId,
+    name: cursorName,
+    displayName,
+    color: scopedColor,
+    colorLight: scopedColor + "33",
+    baseColor,
+    device
+  };
+}
 function shareIdFromRoom(roomName) {
   if (!roomName.startsWith("@")) return null;
   const idx = roomName.indexOf(":");
@@ -10633,17 +10652,7 @@ function createProvider(serverUrl, roomName, ydoc, token, userInfo, callbacks, a
     // WebsocketProvider handles reconnection automatically
     maxBackoffTime: 1e4
   });
-  provider.awareness.setLocalStateField("user", {
-    uid: userInfo.uid,
-    deviceId,
-    name: cursorName,
-    displayName,
-    color: scopedColor,
-    colorLight: scopedColor + "33",
-    // 20% opacity version for selection
-    baseColor,
-    device
-  });
+  provider.awareness.setLocalStateField("user", localAwarenessUser(userInfo));
   const localAwareness = (_c = (_b2 = provider.awareness).getLocalState) == null ? void 0 : _c.call(_b2);
   trace("awareness", "provider-user-state", {
     room: roomName,
@@ -12612,6 +12621,20 @@ var SyncManager = class {
   getManifestAwareness() {
     var _a2, _b2;
     return (_b2 = (_a2 = this.manifestProvider) == null ? void 0 : _a2.awareness) != null ? _b2 : null;
+  }
+  /** Refresh display name/color without tearing down sockets and duplicating awareness clients. */
+  refreshLocalAwarenessIdentity() {
+    var _a2, _b2, _c;
+    const user = localAwarenessUser({
+      uid: this.settings.uid,
+      name: this.settings.displayName,
+      color: this.userColor()
+    });
+    (_b2 = (_a2 = this.manifestProvider) == null ? void 0 : _a2.awareness) == null ? void 0 : _b2.setLocalStateField("user", user);
+    for (const [, fp] of this.fileProviders) {
+      (_c = fp.getAwareness()) == null ? void 0 : _c.setLocalStateField("user", user);
+    }
+    this.refreshPresenceUi();
   }
   /** Collaborators currently in this share (for @mention autocomplete). */
   roster() {
@@ -14699,7 +14722,7 @@ var CollabSettingsTab = class extends import_obsidian7.PluginSettingTab {
     new import_obsidian7.Setting(containerEl).setName("Display Name").setDesc("Shown to collaborators (and its first letter becomes your avatar).").addText(
       (text2) => text2.setPlaceholder("Anonymous").setValue(this.plugin.settings.displayName).onChange(async (value) => {
         this.plugin.settings.displayName = value;
-        await this.plugin.saveSettings();
+        await this.plugin.saveSettings(false, true);
       })
     );
     new import_obsidian7.Setting(containerEl).setName("Cursor / Avatar Color").setDesc("Your color visible to others.").addText((text2) => {
@@ -14708,7 +14731,7 @@ var CollabSettingsTab = class extends import_obsidian7.PluginSettingTab {
       text2.inputEl.style.padding = "2px";
       text2.setValue(this.plugin.settings.cursorColor).onChange(async (value) => {
         this.plugin.settings.cursorColor = value;
-        await this.plugin.saveSettings();
+        await this.plugin.saveSettings(false, true);
       });
     });
     new import_obsidian7.Setting(containerEl).setName("ntfy Topic (mentions)").setDesc("Your ntfy.sh topic to receive @mention push notifications. Leave blank to disable.").addText(
@@ -15449,6 +15472,8 @@ var CursorAwarenessPlugin = class {
     this.label = label;
     this.decorations = import_view.Decoration.none;
     this.lastRenderSig = "";
+    this.refreshQueued = false;
+    this.destroyed = false;
     this.awarenessListener = ({ added, updated, removed }, origin) => {
       const changedRemote = added.concat(updated, removed).filter((id2) => id2 !== this.awareness.clientID);
       if (changedRemote.length === 0) return;
@@ -15460,7 +15485,7 @@ var CursorAwarenessPlugin = class {
         remoteChanged: changedRemote.length,
         origin: originName2(origin)
       });
-      this.view.dispatch({ effects: refreshRemoteCursors.of(void 0) });
+      this.requestRemoteRefresh();
     };
     this.awareness.on("change", this.awarenessListener);
     this.publishLocalCursor(view, "init");
@@ -15475,8 +15500,18 @@ var CursorAwarenessPlugin = class {
     }
   }
   destroy() {
+    this.destroyed = true;
     this.awareness.off("change", this.awarenessListener);
     this.clearLocalCursor("destroy");
+  }
+  requestRemoteRefresh() {
+    if (this.refreshQueued || this.destroyed) return;
+    this.refreshQueued = true;
+    queueMicrotask(() => {
+      this.refreshQueued = false;
+      if (this.destroyed) return;
+      this.view.dispatch({ effects: refreshRemoteCursors.of(void 0) });
+    });
   }
   publishLocalCursor(view, reason) {
     var _a2, _b2;
@@ -16011,6 +16046,9 @@ var PresenceController = class {
     this.fileAwareness = fileAwareness;
     this.relPath = relPath;
     this.cleanup = [];
+    this.refreshQueued = false;
+    this.stopped = false;
+    this.lastRosterSig = "";
     this.typingTimer = null;
   }
   extension(showFacepile = true) {
@@ -16045,16 +16083,18 @@ var PresenceController = class {
     this.typingTimer = setTimeout(() => this.setTyping(false), 1500);
   }
   start() {
-    const onChange2 = () => this.refresh();
+    this.stopped = false;
+    const onChange2 = () => this.requestRefresh();
     this.manifestAwareness.on("change", onChange2);
     this.fileAwareness.on("change", onChange2);
     this.cleanup.push(() => this.manifestAwareness.off("change", onChange2));
     this.cleanup.push(() => this.fileAwareness.off("change", onChange2));
     this.setTyping(false);
-    this.refresh();
+    this.requestRefresh();
   }
   stop() {
     var _a2;
+    this.stopped = true;
     if (this.typingTimer) {
       clearTimeout(this.typingTimer);
       this.typingTimer = null;
@@ -16072,7 +16112,16 @@ var PresenceController = class {
     if (cur.activeFile === this.relPath && cur.typing === typing) return;
     this.manifestAwareness.setLocalStateField("presence", { ...cur, typing, activeFile: this.relPath });
   }
-  refresh() {
+  requestRefresh() {
+    if (this.refreshQueued || this.stopped) return;
+    this.refreshQueued = true;
+    queueMicrotask(() => {
+      this.refreshQueued = false;
+      if (this.stopped) return;
+      this.refreshNow();
+    });
+  }
+  refreshNow() {
     this.ensureLocalPresence();
     const caretKeys = /* @__PURE__ */ new Set();
     this.fileAwareness.getStates().forEach((s, clientId) => {
@@ -16084,6 +16133,9 @@ var PresenceController = class {
       relPath: this.relPath,
       caretKeys
     });
+    const sig = rosterSignature(roster);
+    if (sig === this.lastRosterSig) return;
+    this.lastRosterSig = sig;
     this.view.dispatch({ effects: setRoster.of(roster) });
   }
   ensureLocalPresence() {
@@ -16106,6 +16158,18 @@ var PresenceController = class {
     this.view.dispatch({ effects: import_view4.EditorView.scrollIntoView(pos, { y: "center" }) });
   }
 };
+function rosterSignature(roster) {
+  return JSON.stringify(roster.map((u) => [
+    u.presenceKey,
+    u.name,
+    u.color,
+    u.activeFile,
+    u.typing,
+    u.hasCaret,
+    u.isSelf,
+    !!u.dimmed
+  ]));
+}
 function isTypingInputType(inputType) {
   if (!inputType) return true;
   return inputType.startsWith("insert") || inputType.startsWith("delete") || inputType === "historyUndo" || inputType === "historyRedo";
@@ -17122,6 +17186,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       void this.persist();
     }, 500, false);
     this.debouncedPresenceDomRefresh = (0, import_obsidian11.debounce)(() => this.eachManager((m) => m.refreshPresenceUi()), 250, false);
+    this.debouncedLiveIdentityRefresh = (0, import_obsidian11.debounce)(() => this.refreshLiveIdentity(), 250, false);
     this.debouncedActiveEditorRefresh = (0, import_obsidian11.debounce)((reason) => {
       trace("bind", "active-editor-refresh", { reason, managers: this.syncManagers.size });
       void this.handleActiveLeafChange();
@@ -17412,6 +17477,10 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     await this.stopAllShares();
     await this.startAllShares();
     this.debouncedActiveEditorRefresh("shares-restarted");
+  }
+  refreshLiveIdentity() {
+    this.eachManager((m) => m.refreshLocalAwarenessIdentity());
+    this.debouncedPresenceDomRefresh();
   }
   eachManager(fn) {
     for (const m of this.syncManagers.values()) {
@@ -18324,7 +18393,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     await this.saveData(this.settings);
   }
   /** Called by the settings UI. `restart` debounces a full re-sync for connection changes. */
-  async saveSettings(restart = true) {
+  async saveSettings(restart = true, refreshIdentity = false) {
     configureDiagnostics({
       app: this.app,
       uid: this.settings.uid,
@@ -18335,7 +18404,8 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     });
     setDiagnosticLogging(this.settings.diagnosticLogging);
     await this.persist();
-    if (restart) this.debouncedRestart();
+    if (refreshIdentity) this.debouncedLiveIdentityRefresh();
+    else if (restart) this.debouncedRestart();
   }
   clientTelemetryConfig() {
     if (!this.settings.clientTelemetry) return { enabled: false, url: "" };

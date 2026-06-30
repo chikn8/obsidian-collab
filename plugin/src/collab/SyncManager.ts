@@ -1,6 +1,6 @@
 import { App, TFile, TFolder, MarkdownView, Notice, debounce } from "obsidian";
 import * as Y from "yjs";
-import { createProvider, detectDevice, installDeviceId } from "./YjsProvider";
+import { createProvider, detectDevice, installDeviceId, localAwarenessUser } from "./YjsProvider";
 import { FileProvider } from "./FileProvider";
 import { EchoGuard, beginRemoteApply, endRemoteApply, isApplyingRemote } from "./EchoGuard";
 import { manifestRoom, fileRoom, shareToken, shareAuthParams, httpBase } from "../utils/roomName";
@@ -143,6 +143,20 @@ export class SyncManager {
 
   /** Manifest awareness — drives facepile / follow / typing (P1B). */
   getManifestAwareness(): any { return this.manifestProvider?.awareness ?? null; }
+
+  /** Refresh display name/color without tearing down sockets and duplicating awareness clients. */
+  refreshLocalAwarenessIdentity(): void {
+    const user = localAwarenessUser({
+      uid: this.settings.uid,
+      name: this.settings.displayName,
+      color: this.userColor(),
+    });
+    this.manifestProvider?.awareness?.setLocalStateField("user", user);
+    for (const [, fp] of this.fileProviders) {
+      fp.getAwareness()?.setLocalStateField("user", user);
+    }
+    this.refreshPresenceUi();
+  }
 
   /** Collaborators currently in this share (for @mention autocomplete). */
   roster(): { uid: string; name: string }[] {

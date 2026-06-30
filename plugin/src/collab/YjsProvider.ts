@@ -11,7 +11,7 @@ export function detectDevice(): string {
   return "desktop";
 }
 
-function cursorDisplayName(name: string, device: string): string {
+export function cursorDisplayName(name: string, device: string): string {
   const base = name?.trim() || "Anonymous";
   return device ? `${base} (${device})` : base;
 }
@@ -45,6 +45,25 @@ export function installDeviceId(): string {
 
 export function deviceScopedColor(baseColor: string, deviceId = installDeviceId()): string {
   return deviceColor(baseColor || "#888888", deviceId);
+}
+
+export function localAwarenessUser(userInfo: { uid: string; name: string; color: string }): Record<string, string> {
+  const device = detectDevice();
+  const deviceId = installDeviceId();
+  const displayName = userInfo.name?.trim() || "Anonymous";
+  const cursorName = cursorDisplayName(displayName, device);
+  const baseColor = userInfo.color || "#888888";
+  const scopedColor = deviceScopedColor(baseColor, deviceId);
+  return {
+    uid: userInfo.uid,
+    deviceId,
+    name: cursorName,
+    displayName,
+    color: scopedColor,
+    colorLight: scopedColor + "33",
+    baseColor,
+    device,
+  };
 }
 
 export interface ProviderCallbacks {
@@ -104,16 +123,7 @@ export function createProvider(
 
   // Set local awareness state so others can see our cursor. `uid` is the stable
   // join key across the separate manifest/file awarenesses (different clientIDs).
-  provider.awareness.setLocalStateField("user", {
-    uid: userInfo.uid,
-    deviceId,
-    name: cursorName,
-    displayName,
-    color: scopedColor,
-    colorLight: scopedColor + "33", // 20% opacity version for selection
-    baseColor,
-    device,
-  });
+  provider.awareness.setLocalStateField("user", localAwarenessUser(userInfo));
   const localAwareness = provider.awareness.getLocalState?.();
   trace("awareness", "provider-user-state", {
     room: roomName,

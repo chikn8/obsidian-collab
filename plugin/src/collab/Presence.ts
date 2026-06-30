@@ -82,6 +82,9 @@ export function renderFacepileRoster(
 /** Wires awareness → facepile + jump, for one bound editor. Torn down on unbind. */
 export class PresenceController {
   private cleanup: (() => void)[] = [];
+  private refreshQueued = false;
+  private stopped = false;
+  private lastRosterSig = "";
 
   constructor(
     private view: EditorView,
@@ -127,16 +130,18 @@ export class PresenceController {
   }
 
   start(): void {
-    const onChange = () => this.refresh();
+    this.stopped = false;
+    const onChange = () => this.requestRefresh();
     this.manifestAwareness.on("change", onChange);
     this.fileAwareness.on("change", onChange);
     this.cleanup.push(() => this.manifestAwareness.off("change", onChange));
     this.cleanup.push(() => this.fileAwareness.off("change", onChange));
     this.setTyping(false);
-    this.refresh();
+    this.requestRefresh();
   }
 
   stop(): void {
+    this.stopped = true;
     if (this.typingTimer) { clearTimeout(this.typingTimer); this.typingTimer = null; }
     for (const c of this.cleanup) c();
     this.cleanup = [];
@@ -152,7 +157,17 @@ export class PresenceController {
     this.manifestAwareness.setLocalStateField("presence", { ...cur, typing, activeFile: this.relPath });
   }
 
-  private refresh(): void {
+  private requestRefresh(): void {
+    if (this.refreshQueued || this.stopped) return;
+    this.refreshQueued = true;
+    queueMicrotask(() => {
+      this.refreshQueued = false;
+      if (this.stopped) return;
+      this.refreshNow();
+    });
+  }
+
+  private refreshNow(): void {
     this.ensureLocalPresence();
     // Who has this file open (manifest awareness presence.activeFile === relPath)
     const caretKeys = new Set<string>();
@@ -165,6 +180,9 @@ export class PresenceController {
       relPath: this.relPath,
       caretKeys,
     });
+    const sig = rosterSignature(roster);
+    if (sig === this.lastRosterSig) return;
+    this.lastRosterSig = sig;
     this.view.dispatch({ effects: setRoster.of(roster) });
   }
 
@@ -186,6 +204,19 @@ export class PresenceController {
     const pos = Math.min(idx, this.view.state.doc.length);
     this.view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: "center" }) });
   }
+}
+
+function rosterSignature(roster: RosterEntry[]): string {
+  return JSON.stringify(roster.map((u) => [
+    u.presenceKey,
+    u.name,
+    u.color,
+    u.activeFile,
+    u.typing,
+    u.hasCaret,
+    u.isSelf,
+    !!u.dimmed,
+  ]));
 }
 
 export function isTypingInputType(inputType: string | null | undefined): boolean {

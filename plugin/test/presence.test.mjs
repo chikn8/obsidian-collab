@@ -11,6 +11,11 @@ function check(name, cond, extra = "") {
   else { failures++; console.error(`  ✗ ${name} ${extra}`); }
 }
 
+async function flushMicrotasks() {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 class FakeAwareness {
   constructor(clientID, states) {
     this.clientID = clientID;
@@ -130,6 +135,7 @@ console.log("presence model\n");
     "note.md"
   );
   controller.start();
+  await flushMicrotasks();
   const presence = manifestAwareness.getLocalState()?.presence;
   check("presence controller advertises active file on start", presence?.activeFile === "note.md", JSON.stringify(presence));
   check("presence controller starts non-typing", presence?.typing === false, JSON.stringify(presence));

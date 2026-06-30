@@ -50,6 +50,7 @@ export default class CollabPlugin extends Plugin {
   }, 800, false);
   private debouncedPersistReadMarkers = debounce(() => { void this.persist(); }, 500, false);
   private debouncedPresenceDomRefresh = debounce(() => this.eachManager((m) => m.refreshPresenceUi()), 250, false);
+  private debouncedLiveIdentityRefresh = debounce(() => this.refreshLiveIdentity(), 250, false);
   private debouncedActiveEditorRefresh = debounce((reason: string) => {
     trace("bind", "active-editor-refresh", { reason, managers: this.syncManagers.size });
     void this.handleActiveLeafChange();
@@ -384,6 +385,11 @@ export default class CollabPlugin extends Plugin {
     await this.stopAllShares();
     await this.startAllShares();
     this.debouncedActiveEditorRefresh("shares-restarted");
+  }
+
+  private refreshLiveIdentity(): void {
+    this.eachManager((m) => m.refreshLocalAwarenessIdentity());
+    this.debouncedPresenceDomRefresh();
   }
 
   private eachManager(fn: (m: SyncManager) => void | Promise<void>): void {
@@ -1370,7 +1376,7 @@ export default class CollabPlugin extends Plugin {
   }
 
   /** Called by the settings UI. `restart` debounces a full re-sync for connection changes. */
-  async saveSettings(restart = true): Promise<void> {
+  async saveSettings(restart = true, refreshIdentity = false): Promise<void> {
     configureDiagnostics({
       app: this.app,
       uid: this.settings.uid,
@@ -1381,7 +1387,8 @@ export default class CollabPlugin extends Plugin {
     });
     setDiagnosticLogging(this.settings.diagnosticLogging);
     await this.persist();
-    if (restart) this.debouncedRestart();
+    if (refreshIdentity) this.debouncedLiveIdentityRefresh();
+    else if (restart) this.debouncedRestart();
   }
 
   private clientTelemetryConfig(): { enabled: boolean; url: string } {

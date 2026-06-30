@@ -23,6 +23,8 @@ class CursorAwarenessPlugin {
   decorations: DecorationSet = Decoration.none;
   private awarenessListener: (changes: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => void;
   private lastRenderSig = "";
+  private refreshQueued = false;
+  private destroyed = false;
 
   constructor(
     private view: EditorView,
@@ -41,7 +43,7 @@ class CursorAwarenessPlugin {
         remoteChanged: changedRemote.length,
         origin: originName(origin),
       });
-      this.view.dispatch({ effects: refreshRemoteCursors.of(undefined) });
+      this.requestRemoteRefresh();
     };
     this.awareness.on("change", this.awarenessListener);
     this.publishLocalCursor(view, "init");
@@ -62,8 +64,19 @@ class CursorAwarenessPlugin {
   }
 
   destroy(): void {
+    this.destroyed = true;
     this.awareness.off("change", this.awarenessListener);
     this.clearLocalCursor("destroy");
+  }
+
+  private requestRemoteRefresh(): void {
+    if (this.refreshQueued || this.destroyed) return;
+    this.refreshQueued = true;
+    queueMicrotask(() => {
+      this.refreshQueued = false;
+      if (this.destroyed) return;
+      this.view.dispatch({ effects: refreshRemoteCursors.of(undefined) });
+    });
   }
 
   private publishLocalCursor(view: EditorView, reason: string): void {

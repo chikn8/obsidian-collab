@@ -11197,7 +11197,6 @@ var FileProvider = class _FileProvider {
     /** When the active editor is bound via yCollab, it owns this doc — the
      *  headless disk round-trip is suppressed to avoid double-apply/flicker. */
     this.editorBound = false;
-    this.editorFlushTimer = null;
     this.needsWriteAfterCurrent = false;
     this.writeQueue = Promise.resolve();
     this.writeSeq = 0;
@@ -11269,10 +11268,6 @@ var FileProvider = class _FileProvider {
   }
   /** Force-write current ytext to disk (used when the editor unbinds). */
   async flushToDisk(reason = "manual") {
-    if (this.editorFlushTimer) {
-      clearTimeout(this.editorFlushTimer);
-      this.editorFlushTimer = null;
-    }
     await this.writeToFile(true, reason);
   }
   async readDiskContent(fallback) {
@@ -11434,9 +11429,10 @@ var FileProvider = class _FileProvider {
       err("file", "initial sync finalization failed", { path: this.filePath, room: this.roomName }, e);
     }
   }
-  /** Watch ytext changes. Remote changes write to disk; editor-owned local
-   *  transactions schedule a responsive disk projection so switching tabs can't
-   *  lose the latest CRDT state. */
+  /** Watch ytext changes. Headless remote changes write to disk. While the
+   *  active editor owns this doc, yCollab renders changes directly and disk
+   *  writes are deferred until unbind/lifecycle to avoid Obsidian's external
+   *  merge path duplicating recent keystrokes. */
   startObserver() {
     if (this.observer || this.destroyed) return;
     trace("file", "observer-started", {
@@ -11464,7 +11460,12 @@ var FileProvider = class _FileProvider {
           (_b2 = this.onPending) == null ? void 0 : _b2.call(this);
         }
         if (this.editorBound && transaction.origin !== "seed") {
-          this.scheduleEditorFlush("editor-local-transaction");
+          trace("file", "editor-bound-write-deferred", {
+            path: this.filePath,
+            room: this.roomName,
+            reason: "editor-local-transaction",
+            len: this.ytext.length
+          });
         }
         return;
       }
@@ -11484,26 +11485,11 @@ var FileProvider = class _FileProvider {
           room: this.roomName,
           len: this.ytext.length
         });
-        this.scheduleEditorFlush("editor-remote-transaction");
         return;
       }
       this.writeToFile(false, "remote-transaction");
     };
     this.ytext.observe(this.observer);
-  }
-  scheduleEditorFlush(reason) {
-    if (this.destroyed) return;
-    if (this.editorFlushTimer) clearTimeout(this.editorFlushTimer);
-    this.editorFlushTimer = setTimeout(() => {
-      this.editorFlushTimer = null;
-      void this.flushToDisk(reason);
-    }, 250);
-    trace("file", "editor-flush-scheduled", {
-      path: this.filePath,
-      room: this.roomName,
-      reason,
-      len: this.ytext.length
-    });
   }
   /** Write ytext content to vault file (if different) */
   async writeToFile(force = false, reason = "sync") {
@@ -11571,7 +11557,11 @@ var FileProvider = class _FileProvider {
       this.writing = false;
       if (this.needsWriteAfterCurrent && !this.destroyed) {
         this.needsWriteAfterCurrent = false;
-        if (this.editorBound) void this.flushToDisk("coalesced-remote-transaction");
+        if (this.editorBound) trace("file", "coalesced-write-deferred-editor-bound", {
+          path: this.filePath,
+          room: this.roomName,
+          len: this.ytext.length
+        });
         else void this.writeToFile(false, "coalesced-remote-transaction");
       }
     }
@@ -11781,10 +11771,6 @@ var FileProvider = class _FileProvider {
   /** Normal teardown — preserves IndexedDB for next session */
   destroy() {
     this.destroyed = true;
-    if (this.editorFlushTimer) {
-      clearTimeout(this.editorFlushTimer);
-      this.editorFlushTimer = null;
-    }
     if (this.observer) {
       this.ytext.unobserve(this.observer);
       this.observer = null;
@@ -11805,10 +11791,6 @@ var FileProvider = class _FileProvider {
   /** Teardown AND wipe IndexedDB data (call when file is permanently deleted) */
   async destroyAndClearData() {
     this.destroyed = true;
-    if (this.editorFlushTimer) {
-      clearTimeout(this.editorFlushTimer);
-      this.editorFlushTimer = null;
-    }
     if (this.observer) {
       this.ytext.unobserve(this.observer);
       this.observer = null;

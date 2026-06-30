@@ -218,8 +218,8 @@ console.log("Offline edit reconciles on reconnect");
   A.fp.destroy(); B.fp.destroy();
 }
 
-// ── 4b. Editor-owned yCollab transactions still project to disk ──────────────
-console.log("Editor-bound transactions flush to disk");
+// ── 4b. Editor-owned yCollab transactions avoid mid-typing disk writes ──────
+console.log("Editor-bound transactions flush only on lifecycle/unbind");
 {
   __resetIdb(); __resetHubs();
   const room = "@test:file:note5";
@@ -230,10 +230,10 @@ console.log("Editor-bound transactions flush to disk");
   A.fp.getDoc().transact(() => {
     A.fp.getYText().insert(A.fp.getYText().length, "\nwhile-bound");
   }, "test-editor");
+  await sleep(450);
+  check("bound editor transaction does not external-write mid-typing", !A.disk().includes("while-bound"), `disk="${A.disk()}"`);
   await A.fp.flushToDisk("lifecycle-visibility-hidden");
   check("lifecycle flush projects bound editor immediately", A.disk().includes("while-bound"), `disk="${A.disk()}"`);
-  await sleep(450);
-  check("bound editor transaction projected to disk", A.disk().includes("while-bound"), `disk="${A.disk()}"`);
 
   A.fp.getDoc().transact(() => {
     A.fp.getYText().insert(A.fp.getYText().length, "\non-switch");

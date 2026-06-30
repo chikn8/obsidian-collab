@@ -65,7 +65,6 @@ export class FileProvider {
   /** When the active editor is bound via yCollab, it owns this doc — the
    *  headless disk round-trip is suppressed to avoid double-apply/flicker. */
   private editorBound = false;
-  private editorFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private needsWriteAfterCurrent = false;
   private writeQueue: Promise<void> = Promise.resolve();
   private writeSeq = 0;
@@ -151,10 +150,6 @@ export class FileProvider {
 
   /** Force-write current ytext to disk (used when the editor unbinds). */
   async flushToDisk(reason = "manual"): Promise<void> {
-    if (this.editorFlushTimer) {
-      clearTimeout(this.editorFlushTimer);
-      this.editorFlushTimer = null;
-    }
     await this.writeToFile(true, reason);
   }
 
@@ -364,9 +359,10 @@ export class FileProvider {
     }
   }
 
-  /** Watch ytext changes. Remote changes write to disk; editor-owned local
-   *  transactions schedule a responsive disk projection so switching tabs can't
-   *  lose the latest CRDT state. */
+  /** Watch ytext changes. Headless remote changes write to disk. While the
+   *  active editor owns this doc, yCollab renders changes directly and disk
+   *  writes are deferred until unbind/lifecycle to avoid Obsidian's external
+   *  merge path duplicating recent keystrokes. */
   private startObserver(): void {
     if (this.observer || this.destroyed) return;
 
@@ -398,7 +394,12 @@ export class FileProvider {
           this.onPending?.();
         }
         if (this.editorBound && transaction.origin !== "seed") {
-          this.scheduleEditorFlush("editor-local-transaction");
+          trace("file", "editor-bound-write-deferred", {
+            path: this.filePath,
+            room: this.roomName,
+            reason: "editor-local-transaction",
+            len: this.ytext.length,
+          });
         }
         return;
       }
@@ -420,27 +421,11 @@ export class FileProvider {
           room: this.roomName,
           len: this.ytext.length,
         });
-        this.scheduleEditorFlush("editor-remote-transaction");
         return;
       }
       this.writeToFile(false, "remote-transaction");
     };
     this.ytext.observe(this.observer);
-  }
-
-  private scheduleEditorFlush(reason: string): void {
-    if (this.destroyed) return;
-    if (this.editorFlushTimer) clearTimeout(this.editorFlushTimer);
-    this.editorFlushTimer = setTimeout(() => {
-      this.editorFlushTimer = null;
-      void this.flushToDisk(reason);
-    }, 250);
-    trace("file", "editor-flush-scheduled", {
-      path: this.filePath,
-      room: this.roomName,
-      reason,
-      len: this.ytext.length,
-    });
   }
 
   /** Write ytext content to vault file (if different) */
@@ -512,7 +497,11 @@ export class FileProvider {
       this.writing = false;
       if (this.needsWriteAfterCurrent && !this.destroyed) {
         this.needsWriteAfterCurrent = false;
-        if (this.editorBound) void this.flushToDisk("coalesced-remote-transaction");
+        if (this.editorBound) trace("file", "coalesced-write-deferred-editor-bound", {
+          path: this.filePath,
+          room: this.roomName,
+          len: this.ytext.length,
+        });
         else void this.writeToFile(false, "coalesced-remote-transaction");
       }
     }
@@ -740,10 +729,6 @@ export class FileProvider {
   /** Normal teardown — preserves IndexedDB for next session */
   destroy(): void {
     this.destroyed = true;
-    if (this.editorFlushTimer) {
-      clearTimeout(this.editorFlushTimer);
-      this.editorFlushTimer = null;
-    }
     if (this.observer) {
       this.ytext.unobserve(this.observer);
       this.observer = null;
@@ -765,10 +750,6 @@ export class FileProvider {
   /** Teardown AND wipe IndexedDB data (call when file is permanently deleted) */
   async destroyAndClearData(): Promise<void> {
     this.destroyed = true;
-    if (this.editorFlushTimer) {
-      clearTimeout(this.editorFlushTimer);
-      this.editorFlushTimer = null;
-    }
     if (this.observer) {
       this.ytext.unobserve(this.observer);
       this.observer = null;

@@ -3,6 +3,7 @@ import * as syncProtocol from "y-protocols/sync";
 import * as awarenessProtocol from "y-protocols/awareness";
 import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
+import { trace } from "../utils/log";
 
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
@@ -195,7 +196,10 @@ export class MuxProvider {
   private conn: MuxConnection;
   private synced = false;
   private updateHandler: (update: Uint8Array, origin: any) => void;
-  private awarenessHandler: ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }) => void;
+  private awarenessHandler: (
+    { added, updated, removed }: { added: number[]; updated: number[]; removed: number[] },
+    origin: any
+  ) => void;
 
   constructor(
     args: MuxParams & {
@@ -206,7 +210,6 @@ export class MuxProvider {
     this.roomName = args.roomName;
     this.ydoc = args.ydoc;
     this.awareness = new awarenessProtocol.Awareness(this.ydoc);
-    this.awareness.setLocalState(null);
     this.conn = sharedConnection(args);
     this.ws = { send: (data) => this.conn.send(this.roomName, data) };
 
@@ -219,8 +222,28 @@ export class MuxProvider {
     };
     this.ydoc.on("update", this.updateHandler);
 
-    this.awarenessHandler = ({ added, updated, removed }) => {
+    this.awarenessHandler = ({ added, updated, removed }, origin) => {
+      if (origin === this) {
+        trace("awareness", "mux-remote-applied", {
+          room: this.roomName,
+          added: added.length,
+          updated: updated.length,
+          removed: removed.length,
+          states: this.awareness.getStates().size,
+        });
+        return;
+      }
       const changedClients = added.concat(updated, removed);
+      const local = this.awareness.getLocalState();
+      trace("awareness", "mux-send", {
+        room: this.roomName,
+        added: added.length,
+        updated: updated.length,
+        removed: removed.length,
+        hasLocalUser: !!local?.user,
+        hasLocalCursor: !!local?.cursor,
+        clients: changedClients.length,
+      });
       const encoder = encoding.createEncoder();
       encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
       encoding.writeVarUint8Array(
@@ -283,7 +306,7 @@ export class MuxProvider {
 
   destroy(): void {
     this.ydoc.off("update", this.updateHandler);
-    awarenessProtocol.removeAwarenessStates(this.awareness, Array.from(this.awareness.getStates().keys()), this);
+    awarenessProtocol.removeAwarenessStates(this.awareness, [this.awareness.clientID], "destroy");
     this.awareness.off("update", this.awarenessHandler);
     this.awareness.destroy();
     this.conn.unregister(this);
@@ -301,7 +324,13 @@ export class MuxProvider {
       if (encoding.length(encoder) > 1) this.send(encoding.toUint8Array(encoder));
       if (subtype === 1) this.setSynced(true);
     } else if (messageType === MESSAGE_AWARENESS) {
-      awarenessProtocol.applyAwarenessUpdate(this.awareness, decoding.readVarUint8Array(decoder), this);
+      const update = decoding.readVarUint8Array(decoder);
+      trace("awareness", "mux-receive", {
+        room: this.roomName,
+        bytes: update.byteLength,
+        statesBefore: this.awareness.getStates().size,
+      });
+      awarenessProtocol.applyAwarenessUpdate(this.awareness, update, this);
     }
   }
 
@@ -315,6 +344,12 @@ export class MuxProvider {
   private flushLocalAwareness(): void {
     const local = this.awareness.getLocalState();
     if (!local) return;
+    trace("awareness", "mux-flush-local", {
+      room: this.roomName,
+      hasLocalUser: !!local.user,
+      hasLocalCursor: !!local.cursor,
+      states: this.awareness.getStates().size,
+    });
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MESSAGE_AWARENESS);
     encoding.writeVarUint8Array(

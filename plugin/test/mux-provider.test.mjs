@@ -1,16 +1,19 @@
 import * as Y from "yjs";
 import * as syncProtocol from "y-protocols/sync";
+import * as awarenessProtocol from "y-protocols/awareness";
 import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
 import { MuxProvider, reconnectDelayForAttempt } from "../src/collab/MuxProvider.ts";
 
 const MESSAGE_SYNC = 0;
+const MESSAGE_AWARENESS = 1;
 const MESSAGE_MUX = 6;
 const MESSAGE_MUX_LEAVE = 7;
 const stats = {
   received: 0,
   sent: 0,
   updates: 0,
+  awareness: 0,
 };
 
 let failures = 0;
@@ -41,6 +44,8 @@ class FakeMuxRoom {
     this.name = name;
     this.hub = hub;
     this.doc = new Y.Doc();
+    this.awareness = new awarenessProtocol.Awareness(this.doc);
+    this.awareness.setLocalState(null);
     this.clients = new Set();
     this.doc.on("update", (update, origin) => {
       stats.updates++;
@@ -52,6 +57,32 @@ class FakeMuxRoom {
         if (client !== origin) this.hub.send(client, this.name, message);
       }
     });
+    this.awareness.on("update", ({ added, updated, removed }, origin) => {
+      stats.awareness++;
+      const changedClients = added.concat(updated, removed);
+      const inner = encoding.createEncoder();
+      encoding.writeVarUint(inner, MESSAGE_AWARENESS);
+      encoding.writeVarUint8Array(
+        inner,
+        awarenessProtocol.encodeAwarenessUpdate(this.awareness, changedClients)
+      );
+      const message = encoding.toUint8Array(inner);
+      for (const client of this.clients) {
+        if (client !== origin) this.hub.send(client, this.name, message);
+      }
+    });
+  }
+
+  addClient(client) {
+    this.clients.add(client);
+  }
+
+  removeClient(client) {
+    this.clients.delete(client);
+  }
+
+  destroy() {
+    this.doc.destroy();
   }
 }
 
@@ -76,7 +107,13 @@ class FakeMuxHub {
 
   remove(client) {
     this.clients.delete(client);
-    for (const room of this.rooms.values()) room.clients.delete(client);
+    for (const room of this.rooms.values()) room.removeClient(client);
+  }
+
+  destroy() {
+    for (const room of this.rooms.values()) room.destroy();
+    this.rooms.clear();
+    this.clients.clear();
   }
 
   receive(client, data) {
@@ -86,17 +123,22 @@ class FakeMuxHub {
     const outerType = decoding.readVarUint(outer);
     if (outerType === MESSAGE_MUX_LEAVE) {
       const roomName = decoding.readVarString(outer);
-      this.room(roomName).clients.delete(client);
+      this.room(roomName).removeClient(client);
       return;
     }
     if (outerType !== MESSAGE_MUX) return;
     const roomName = decoding.readVarString(outer);
     const innerBytes = decoding.readVarUint8Array(outer);
     const room = this.room(roomName);
-    room.clients.add(client);
+    room.addClient(client);
 
     const inner = decoding.createDecoder(innerBytes);
     const messageType = decoding.readVarUint(inner);
+    if (messageType === MESSAGE_AWARENESS) {
+      const update = decoding.readVarUint8Array(inner);
+      awarenessProtocol.applyAwarenessUpdate(room.awareness, update, client);
+      return;
+    }
     if (messageType !== MESSAGE_SYNC) return;
 
     const reply = encoding.createEncoder();
@@ -210,6 +252,7 @@ try {
   );
   check("one physical socket per user", FakeWebSocket.created.length === 2, `created=${FakeWebSocket.created.length}`);
   check("all providers report connected", providers.every((p) => p.wsconnected === true));
+  check("mux awareness starts field-writable", providers.every((p) => p.awareness.getLocalState() !== null));
 
   setText(a1, "room A text");
   setText(a2, "room B text");
@@ -230,6 +273,22 @@ try {
   await waitFor(() => a1.getText("codemirror").toString() === "room A reply", 1000, "reply text");
   check("updates flow back over the shared socket", a1.getText("codemirror").toString() === "room A reply");
 
+  const cursor = Y.createRelativePositionFromTypeIndex(a1.getText("codemirror"), 4);
+  providers[0].awareness.setLocalStateField("user", { uid: "a", name: "A", color: "#ff0000" });
+  providers[0].awareness.setLocalStateField("cursor", { anchor: cursor, head: cursor });
+  await waitFor(
+    () => Array.from(providers[2].awareness.getStates().values()).some((state) => state?.user?.uid === "a" && state?.cursor?.head),
+    1000,
+    `remote mux awareness ${JSON.stringify({
+      states: Array.from(providers[2].awareness.getStates().values()),
+      stats,
+    })}`
+  );
+  check("cursor awareness crosses the mux room",
+    Array.from(providers[2].awareness.getStates().values()).some((state) => state?.user?.uid === "a" && state?.cursor?.head));
+  check("cursor awareness stays in its logical room",
+    !Array.from(providers[3].awareness.getStates().values()).some((state) => state?.user?.uid === "a" && state?.cursor?.head));
+
   providers[0].destroy();
   providers[0] = null;
   await sleep(20);
@@ -245,6 +304,8 @@ try {
 
 await waitFor(() => FakeWebSocket.created.every((ws) => ws.readyState === FakeWebSocket.CLOSED), 1000, "socket cleanup");
 check("destroy closes shared sockets after last provider", FakeWebSocket.created.every((ws) => ws.readyState === FakeWebSocket.CLOSED));
+for (const hub of hubs.values()) hub.destroy();
+hubs.clear();
 
 console.log("");
 if (failures > 0) { console.error(`FAILED — ${failures} assertion(s) failed`); process.exit(1); }

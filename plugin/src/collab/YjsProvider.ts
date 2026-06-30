@@ -4,6 +4,7 @@ import * as Y from "yjs";
 import type { ConnectionStatus } from "../types";
 import { MuxProvider } from "./MuxProvider";
 import { deviceColor } from "./PresenceModel";
+import { trace } from "../utils/log";
 
 export function detectDevice(): string {
   if (Platform.isMobile) return "mobile";
@@ -112,6 +113,14 @@ export function createProvider(
     colorLight: scopedColor + "33", // 20% opacity version for selection
     baseColor,
     device,
+  });
+  const localAwareness = provider.awareness.getLocalState?.();
+  trace("awareness", "provider-user-state", {
+    room: roomName,
+    useMux,
+    hasLocalState: !!localAwareness,
+    hasUser: !!localAwareness?.user,
+    clientId: provider.awareness.clientID,
   });
 
   // Forward status events

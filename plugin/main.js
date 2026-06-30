@@ -9846,737 +9846,6 @@ var WebsocketProvider = class extends ObservableV2 {
 // src/collab/YjsProvider.ts
 var import_obsidian = require("obsidian");
 
-// src/collab/MuxProvider.ts
-var MESSAGE_SYNC = 0;
-var MESSAGE_AWARENESS = 1;
-var MESSAGE_MUX = 6;
-var MESSAGE_MUX_LEAVE = 7;
-var MUX_RECONNECT_BASE_MS = 500;
-var MUX_RECONNECT_MAX_MS = 1e4;
-var MUX_RECONNECT_MIN_MS = 250;
-var MUX_RECONNECT_JITTER_RATIO = 0.4;
-var connections = /* @__PURE__ */ new Map();
-function paramsKey(params2) {
-  return Object.entries(params2).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
-}
-function muxKey(args2) {
-  return `${args2.serverUrl}|${args2.shareId}|${paramsKey(args2.params)}`;
-}
-function muxUrl(args2) {
-  const base = args2.serverUrl.replace(/\/$/, "");
-  const q = new URLSearchParams(args2.params);
-  return `${base}/${encodeURIComponent(`@${args2.shareId}:__mux__`)}?${q.toString()}`;
-}
-function reconnectDelayForAttempt(attempt, random2 = Math.random) {
-  const base = Math.min(MUX_RECONNECT_MAX_MS, MUX_RECONNECT_BASE_MS * Math.pow(2, Math.max(0, attempt)));
-  const jitter = base * MUX_RECONNECT_JITTER_RATIO * (random2() * 2 - 1);
-  return Math.max(MUX_RECONNECT_MIN_MS, Math.min(MUX_RECONNECT_MAX_MS, Math.round(base + jitter)));
-}
-function toBytes(data) {
-  return data instanceof Uint8Array ? data : new Uint8Array(data);
-}
-var MuxConnection = class {
-  constructor(args2) {
-    this.args = args2;
-    this.ws = null;
-    this.providers = /* @__PURE__ */ new Map();
-    this.reconnectTimer = null;
-    this.attempts = 0;
-    this.shouldConnect = true;
-    this.connect();
-  }
-  get connected() {
-    var _a2;
-    return ((_a2 = this.ws) == null ? void 0 : _a2.readyState) === WebSocket.OPEN;
-  }
-  register(provider) {
-    let set = this.providers.get(provider.roomName);
-    if (!set) {
-      set = /* @__PURE__ */ new Set();
-      this.providers.set(provider.roomName, set);
-    }
-    set.add(provider);
-    provider.setConnected(this.connected);
-    if (this.connected) provider.onSocketOpen();
-  }
-  unregister(provider) {
-    var _a2;
-    const set = this.providers.get(provider.roomName);
-    set == null ? void 0 : set.delete(provider);
-    if (set && set.size === 0) {
-      this.leave(provider.roomName);
-      this.providers.delete(provider.roomName);
-    }
-    if (this.providers.size === 0) {
-      this.shouldConnect = false;
-      if (this.reconnectTimer) {
-        clearTimeout(this.reconnectTimer);
-        this.reconnectTimer = null;
-      }
-      (_a2 = this.ws) == null ? void 0 : _a2.close();
-      connections.delete(muxKey(this.args));
-    }
-  }
-  connect() {
-    this.shouldConnect = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
-    this.providers.forEach((set) => set.forEach((p) => p.emitStatus("connecting")));
-    const ws = new WebSocket(muxUrl(this.args));
-    ws.binaryType = "arraybuffer";
-    this.ws = ws;
-    ws.onopen = () => {
-      if (this.ws !== ws) return;
-      this.attempts = 0;
-      this.providers.forEach((set) => set.forEach((p) => {
-        p.setConnected(true);
-        p.emitStatus("connected");
-        p.onSocketOpen();
-      }));
-    };
-    ws.onclose = () => this.handleClosed(ws);
-    ws.onerror = () => {
-      if (this.ws !== ws) return;
-      this.providers.forEach((set) => set.forEach((p) => p.emit("connection-error")));
-    };
-    ws.onmessage = (event) => {
-      if (this.ws !== ws) return;
-      this.handleMessage(event.data);
-    };
-  }
-  disconnect() {
-    var _a2;
-    this.shouldConnect = false;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    (_a2 = this.ws) == null ? void 0 : _a2.close();
-  }
-  send(roomName, inner) {
-    if (!this.connected || !this.ws) return;
-    const encoder = createEncoder();
-    writeVarUint(encoder, MESSAGE_MUX);
-    writeVarString(encoder, roomName);
-    writeVarUint8Array(encoder, inner);
-    this.ws.send(toUint8Array(encoder));
-  }
-  leave(roomName) {
-    if (!this.connected || !this.ws) return;
-    const encoder = createEncoder();
-    writeVarUint(encoder, MESSAGE_MUX_LEAVE);
-    writeVarString(encoder, roomName);
-    this.ws.send(toUint8Array(encoder));
-  }
-  handleClosed(ws) {
-    if (this.ws !== ws) return;
-    this.ws = null;
-    this.providers.forEach((set) => set.forEach((p) => {
-      p.setConnected(false);
-      p.setSynced(false);
-      p.emitStatus("disconnected");
-    }));
-    if (!this.shouldConnect || this.providers.size === 0) return;
-    const delay = reconnectDelayForAttempt(this.attempts++);
-    this.reconnectTimer = setTimeout(() => this.connect(), delay);
-  }
-  handleMessage(raw) {
-    const bytes = raw instanceof ArrayBuffer ? new Uint8Array(raw) : toBytes(raw);
-    const decoder = createDecoder(bytes);
-    const outerType = readVarUint(decoder);
-    if (outerType !== MESSAGE_MUX) return;
-    const roomName = readVarString(decoder);
-    const inner = readVarUint8Array(decoder);
-    const set = this.providers.get(roomName);
-    if (!set) return;
-    for (const provider of set) provider.receive(inner);
-  }
-};
-function sharedConnection(args2) {
-  const key = muxKey(args2);
-  let conn = connections.get(key);
-  if (!conn) {
-    conn = new MuxConnection(args2);
-    connections.set(key, conn);
-  }
-  return conn;
-}
-var MuxProvider = class {
-  constructor(args2) {
-    this.wsconnected = false;
-    this.listeners = /* @__PURE__ */ new Map();
-    this.synced = false;
-    this.roomName = args2.roomName;
-    this.ydoc = args2.ydoc;
-    this.awareness = new Awareness(this.ydoc);
-    this.awareness.setLocalState(null);
-    this.conn = sharedConnection(args2);
-    this.ws = { send: (data) => this.conn.send(this.roomName, data) };
-    this.updateHandler = (update, origin) => {
-      if (origin === this) return;
-      const encoder = createEncoder();
-      writeVarUint(encoder, MESSAGE_SYNC);
-      writeUpdate(encoder, update);
-      this.send(toUint8Array(encoder));
-    };
-    this.ydoc.on("update", this.updateHandler);
-    this.awarenessHandler = ({ added, updated, removed }) => {
-      const changedClients = added.concat(updated, removed);
-      const encoder = createEncoder();
-      writeVarUint(encoder, MESSAGE_AWARENESS);
-      writeVarUint8Array(
-        encoder,
-        encodeAwarenessUpdate(this.awareness, changedClients)
-      );
-      this.send(toUint8Array(encoder));
-    };
-    this.awareness.on("update", this.awarenessHandler);
-    this.conn.register(this);
-  }
-  on(event, listener) {
-    let set = this.listeners.get(event);
-    if (!set) {
-      set = /* @__PURE__ */ new Set();
-      this.listeners.set(event, set);
-    }
-    set.add(listener);
-  }
-  off(event, listener) {
-    var _a2;
-    (_a2 = this.listeners.get(event)) == null ? void 0 : _a2.delete(listener);
-  }
-  emit(event, ...args2) {
-    var _a2;
-    (_a2 = this.listeners.get(event)) == null ? void 0 : _a2.forEach((listener) => listener(...args2));
-  }
-  emitStatus(status) {
-    this.emit("status", { status });
-  }
-  setConnected(connected) {
-    this.wsconnected = connected;
-  }
-  setSynced(synced) {
-    if (this.synced === synced) return;
-    this.synced = synced;
-    this.emit("sync", synced);
-  }
-  onSocketOpen() {
-    this.sendSyncStep1();
-    this.flushLocalAwareness();
-  }
-  connect() {
-    this.conn.connect();
-  }
-  disconnect() {
-    this.conn.disconnect();
-  }
-  destroy() {
-    this.ydoc.off("update", this.updateHandler);
-    removeAwarenessStates(this.awareness, Array.from(this.awareness.getStates().keys()), this);
-    this.awareness.off("update", this.awarenessHandler);
-    this.awareness.destroy();
-    this.conn.unregister(this);
-    this.listeners.clear();
-  }
-  receive(message) {
-    const decoder = createDecoder(message);
-    const messageType = readVarUint(decoder);
-    if (messageType === MESSAGE_SYNC) {
-      const subtype = readVarUint(clone(decoder));
-      const encoder = createEncoder();
-      writeVarUint(encoder, MESSAGE_SYNC);
-      readSyncMessage(decoder, encoder, this.ydoc, this);
-      if (length(encoder) > 1) this.send(toUint8Array(encoder));
-      if (subtype === 1) this.setSynced(true);
-    } else if (messageType === MESSAGE_AWARENESS) {
-      applyAwarenessUpdate(this.awareness, readVarUint8Array(decoder), this);
-    }
-  }
-  sendSyncStep1() {
-    const encoder = createEncoder();
-    writeVarUint(encoder, MESSAGE_SYNC);
-    writeSyncStep1(encoder, this.ydoc);
-    this.send(toUint8Array(encoder));
-  }
-  flushLocalAwareness() {
-    const local = this.awareness.getLocalState();
-    if (!local) return;
-    const encoder = createEncoder();
-    writeVarUint(encoder, MESSAGE_AWARENESS);
-    writeVarUint8Array(
-      encoder,
-      encodeAwarenessUpdate(this.awareness, [this.awareness.clientID])
-    );
-    this.send(toUint8Array(encoder));
-  }
-  send(message) {
-    this.conn.send(this.roomName, message);
-  }
-};
-
-// src/collab/PresenceModel.ts
-function presenceKeyFromState(state, clientId) {
-  var _a2, _b2;
-  const uid = ((_a2 = state == null ? void 0 : state.user) == null ? void 0 : _a2.uid) || "unknown";
-  return `${uid}:${((_b2 = state == null ? void 0 : state.user) == null ? void 0 : _b2.deviceId) || clientId}`;
-}
-function deviceIdFromState(state, clientId) {
-  var _a2;
-  return ((_a2 = state == null ? void 0 : state.user) == null ? void 0 : _a2.deviceId) || String(clientId);
-}
-function presenceLabel(user) {
-  const device = user.device ? ` (${user.device})` : "";
-  const status = user.dimmed ? "open" : user.typing ? "typing" : user.hasCaret ? "editing" : "viewing";
-  return user.isSelf ? `${user.name}${device} (you) - ${status}` : `${user.name}${device} - ${status}`;
-}
-function presenceInitial(name) {
-  var _a2;
-  return (((_a2 = name == null ? void 0 : name.trim()) == null ? void 0 : _a2[0]) || "?").toUpperCase();
-}
-function collectPresenceDevices(args2) {
-  var _a2, _b2, _c, _d, _e;
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  const myClientId = (_a2 = args2.manifestAwareness) == null ? void 0 : _a2.clientID;
-  const visit = (state, clientId) => {
-    var _a3, _b3;
-    const user = state == null ? void 0 : state.user;
-    const presence = state == null ? void 0 : state.presence;
-    if (!(user == null ? void 0 : user.uid)) return;
-    const activeFile = (_a3 = presence == null ? void 0 : presence.activeFile) != null ? _a3 : null;
-    if (args2.relPath !== void 0 && activeFile !== args2.relPath) return;
-    const key = presenceKeyFromState(state, clientId);
-    if (seen.has(key)) return;
-    seen.add(key);
-    const baseColor = user.baseColor || user.color || "#888888";
-    const deviceId = deviceIdFromState(state, clientId);
-    const displayName = user.displayName || user.name || "Anonymous";
-    const color = user.baseColor ? user.color || deviceColor(baseColor, deviceId) : deviceColor(baseColor, deviceId);
-    out.push({
-      presenceKey: key,
-      uid: user.uid,
-      deviceId,
-      name: displayName,
-      color,
-      baseColor,
-      device: user.device,
-      activeFile,
-      typing: !!(presence == null ? void 0 : presence.typing),
-      hasCaret: !!((_b3 = args2.caretKeys) == null ? void 0 : _b3.has(key)),
-      isSelf: clientId === myClientId
-    });
-  };
-  (_c = (_b2 = args2.manifestAwareness) == null ? void 0 : _b2.getStates) == null ? void 0 : _c.call(_b2).forEach((state, clientId) => visit(state, clientId));
-  const localState = (_e = (_d = args2.manifestAwareness) == null ? void 0 : _d.getLocalState) == null ? void 0 : _e.call(_d);
-  if (localState && myClientId != null) visit(localState, myClientId);
-  return sortPresence(out);
-}
-function sortPresence(users) {
-  return [...users].sort((a, b) => {
-    if (a.isSelf !== b.isSelf) return a.isSelf ? -1 : 1;
-    const name = a.name.localeCompare(b.name);
-    if (name !== 0) return name;
-    return (a.device || "").localeCompare(b.device || "");
-  });
-}
-function deviceColor(baseColor, deviceId) {
-  const rgb = parseHex(baseColor);
-  if (!rgb) return baseColor;
-  const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
-  const jitter = hash(deviceId) % 37 - 18;
-  const saturation = clamp(hsl.s + (hash(deviceId + "s") % 15 - 5), 45, 88);
-  const lightness = clamp(hsl.l + (hash(deviceId + "l") % 17 - 8), 36, 66);
-  return hslToHex((hsl.h + jitter + 360) % 360, saturation, lightness);
-}
-function parseHex(hex) {
-  const clean2 = hex.trim().replace(/^#/, "");
-  if (!/^[0-9a-f]{6}$/i.test(clean2)) return null;
-  return {
-    r: parseInt(clean2.slice(0, 2), 16),
-    g: parseInt(clean2.slice(2, 4), 16),
-    b: parseInt(clean2.slice(4, 6), 16)
-  };
-}
-function rgbToHsl(r, g, b) {
-  r /= 255;
-  g /= 255;
-  b /= 255;
-  const max2 = Math.max(r, g, b);
-  const min2 = Math.min(r, g, b);
-  let h = 0;
-  let s = 0;
-  const l = (max2 + min2) / 2;
-  if (max2 !== min2) {
-    const d = max2 - min2;
-    s = l > 0.5 ? d / (2 - max2 - min2) : d / (max2 + min2);
-    switch (max2) {
-      case r:
-        h = (g - b) / d + (g < b ? 6 : 0);
-        break;
-      case g:
-        h = (b - r) / d + 2;
-        break;
-      case b:
-        h = (r - g) / d + 4;
-        break;
-    }
-    h *= 60;
-  }
-  return { h, s: s * 100, l: l * 100 };
-}
-function hslToHex(h, s, l) {
-  s /= 100;
-  l /= 100;
-  const c = (1 - Math.abs(2 * l - 1)) * s;
-  const x = c * (1 - Math.abs(h / 60 % 2 - 1));
-  const m = l - c / 2;
-  let r = 0, g = 0, b = 0;
-  if (h < 60) {
-    r = c;
-    g = x;
-  } else if (h < 120) {
-    r = x;
-    g = c;
-  } else if (h < 180) {
-    g = c;
-    b = x;
-  } else if (h < 240) {
-    g = x;
-    b = c;
-  } else if (h < 300) {
-    r = x;
-    b = c;
-  } else {
-    r = c;
-    b = x;
-  }
-  return `#${toHex((r + m) * 255)}${toHex((g + m) * 255)}${toHex((b + m) * 255)}`;
-}
-function toHex(n) {
-  return Math.round(n).toString(16).padStart(2, "0");
-}
-function hash(seed) {
-  let h = 2166136261;
-  for (let i = 0; i < seed.length; i++) {
-    h ^= seed.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-function clamp(n, min2, max2) {
-  return Math.max(min2, Math.min(max2, n));
-}
-
-// src/collab/YjsProvider.ts
-function detectDevice() {
-  if (import_obsidian.Platform.isMobile) return "mobile";
-  return "desktop";
-}
-function cursorDisplayName(name, device) {
-  const base = (name == null ? void 0 : name.trim()) || "Anonymous";
-  return device ? `${base} (${device})` : base;
-}
-var DEVICE_ID_KEY = "obsidian-collab-device-id";
-var cachedDeviceId = null;
-function installDeviceId() {
-  var _a2, _b2, _c, _d;
-  if (cachedDeviceId) return cachedDeviceId;
-  try {
-    const existing = (_a2 = globalThis.localStorage) == null ? void 0 : _a2.getItem(DEVICE_ID_KEY);
-    if (existing) {
-      cachedDeviceId = existing;
-      return existing;
-    }
-  } catch (e) {
-  }
-  const id2 = ((_c = (_b2 = globalThis.crypto) == null ? void 0 : _b2.randomUUID) == null ? void 0 : _c.call(_b2)) || `device-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  try {
-    (_d = globalThis.localStorage) == null ? void 0 : _d.setItem(DEVICE_ID_KEY, id2);
-  } catch (e) {
-  }
-  cachedDeviceId = id2;
-  return id2;
-}
-function deviceScopedColor(baseColor, deviceId = installDeviceId()) {
-  return deviceColor(baseColor || "#888888", deviceId);
-}
-function shareIdFromRoom(roomName) {
-  if (!roomName.startsWith("@")) return null;
-  const idx = roomName.indexOf(":");
-  return idx > 1 ? roomName.slice(1, idx) : null;
-}
-function createProvider(serverUrl, roomName, ydoc, token, userInfo, callbacks, authParams = {}) {
-  var _a2;
-  const device = detectDevice();
-  const deviceId = installDeviceId();
-  const displayName = ((_a2 = userInfo.name) == null ? void 0 : _a2.trim()) || "Anonymous";
-  const cursorName = cursorDisplayName(displayName, device);
-  const baseColor = userInfo.color || "#888888";
-  const scopedColor = deviceScopedColor(baseColor, deviceId);
-  const params2 = {
-    token,
-    uid: userInfo.uid,
-    name: cursorName,
-    color: scopedColor,
-    baseColor,
-    device,
-    deviceId,
-    ...userInfo.identityPublicKey && userInfo.identitySignature ? { identityKey: userInfo.identityPublicKey, identitySig: userInfo.identitySignature } : {},
-    ...authParams
-  };
-  const useMux = params2.__mux === "true";
-  delete params2.__mux;
-  const shareId = shareIdFromRoom(roomName);
-  const provider = useMux && shareId ? new MuxProvider({ serverUrl, shareId, roomName, ydoc, params: params2 }) : new WebsocketProvider(serverUrl, roomName, ydoc, {
-    params: params2,
-    connect: true,
-    // WebsocketProvider handles reconnection automatically
-    maxBackoffTime: 1e4
-  });
-  provider.awareness.setLocalStateField("user", {
-    uid: userInfo.uid,
-    deviceId,
-    name: cursorName,
-    displayName,
-    color: scopedColor,
-    colorLight: scopedColor + "33",
-    // 20% opacity version for selection
-    baseColor,
-    device
-  });
-  provider.on("status", (event) => {
-    switch (event.status) {
-      case "connecting":
-        callbacks.onStatus("connecting");
-        break;
-      case "connected":
-        callbacks.onStatus("connected");
-        break;
-      case "disconnected":
-        callbacks.onStatus("disconnected");
-        break;
-      default:
-        break;
-    }
-  });
-  provider.on("sync", (synced) => {
-    callbacks.onSynced(synced);
-  });
-  provider.on("connection-error", (error) => {
-    var _a3;
-    callbacks.onStatus("error");
-    (_a3 = callbacks.onError) == null ? void 0 : _a3.call(callbacks, error);
-  });
-  return provider;
-}
-
-// src/collab/FileProvider.ts
-var import_obsidian2 = require("obsidian");
-
-// node_modules/lib0/indexeddb.js
-var rtop = (request) => create4((resolve, reject) => {
-  request.onerror = (event) => reject(new Error(event.target.error));
-  request.onsuccess = (event) => resolve(event.target.result);
-});
-var openDB = (name, initDB) => create4((resolve, reject) => {
-  const request = indexedDB.open(name);
-  request.onupgradeneeded = (event) => initDB(event.target.result);
-  request.onerror = (event) => reject(create3(event.target.error));
-  request.onsuccess = (event) => {
-    const db = event.target.result;
-    db.onversionchange = () => {
-      db.close();
-    };
-    resolve(db);
-  };
-});
-var deleteDB = (name) => rtop(indexedDB.deleteDatabase(name));
-var createStores = (db, definitions) => definitions.forEach(
-  (d) => (
-    // @ts-ignore
-    db.createObjectStore.apply(db, d)
-  )
-);
-var transact2 = (db, stores, access = "readwrite") => {
-  const transaction = db.transaction(stores, access);
-  return stores.map((store) => getStore(transaction, store));
-};
-var count = (store, range) => rtop(store.count(range));
-var get = (store, key) => rtop(store.get(key));
-var del = (store, key) => rtop(store.delete(key));
-var put = (store, item, key) => rtop(store.put(item, key));
-var addAutoKey = (store, item) => rtop(store.add(item));
-var getAll = (store, range, limit) => rtop(store.getAll(range, limit));
-var queryFirst = (store, query, direction) => {
-  let first = null;
-  return iterateKeys(store, query, (key) => {
-    first = key;
-    return false;
-  }, direction).then(() => first);
-};
-var getLastKey = (store, range = null) => queryFirst(store, range, "prev");
-var iterateOnRequest = (request, f) => create4((resolve, reject) => {
-  request.onerror = reject;
-  request.onsuccess = async (event) => {
-    const cursor = event.target.result;
-    if (cursor === null || await f(cursor) === false) {
-      return resolve();
-    }
-    cursor.continue();
-  };
-});
-var iterateKeys = (store, keyrange, f, direction = "next") => iterateOnRequest(store.openKeyCursor(keyrange, direction), (cursor) => f(cursor.key));
-var getStore = (t, store) => t.objectStore(store);
-var createIDBKeyRangeUpperBound = (upper, upperOpen) => IDBKeyRange.upperBound(upper, upperOpen);
-var createIDBKeyRangeLowerBound = (lower2, lowerOpen) => IDBKeyRange.lowerBound(lower2, lowerOpen);
-
-// node_modules/y-indexeddb/src/y-indexeddb.js
-var customStoreName = "custom";
-var updatesStoreName = "updates";
-var PREFERRED_TRIM_SIZE = 500;
-var fetchUpdates = (idbPersistence, beforeApplyUpdatesCallback = () => {
-}, afterApplyUpdatesCallback = () => {
-}) => {
-  const [updatesStore] = transact2(
-    /** @type {IDBDatabase} */
-    idbPersistence.db,
-    [updatesStoreName]
-  );
-  return getAll(updatesStore, createIDBKeyRangeLowerBound(idbPersistence._dbref, false)).then((updates) => {
-    if (!idbPersistence._destroyed) {
-      beforeApplyUpdatesCallback(updatesStore);
-      transact(idbPersistence.doc, () => {
-        updates.forEach((val) => applyUpdate(idbPersistence.doc, val));
-      }, idbPersistence, false);
-      afterApplyUpdatesCallback(updatesStore);
-    }
-  }).then(() => getLastKey(updatesStore).then((lastKey) => {
-    idbPersistence._dbref = lastKey + 1;
-  })).then(() => count(updatesStore).then((cnt) => {
-    idbPersistence._dbsize = cnt;
-  })).then(() => updatesStore);
-};
-var storeState = (idbPersistence, forceStore = true) => fetchUpdates(idbPersistence).then((updatesStore) => {
-  if (forceStore || idbPersistence._dbsize >= PREFERRED_TRIM_SIZE) {
-    addAutoKey(updatesStore, encodeStateAsUpdate(idbPersistence.doc)).then(() => del(updatesStore, createIDBKeyRangeUpperBound(idbPersistence._dbref, true))).then(() => count(updatesStore).then((cnt) => {
-      idbPersistence._dbsize = cnt;
-    }));
-  }
-});
-var IndexeddbPersistence = class extends Observable {
-  /**
-   * @param {string} name
-   * @param {Y.Doc} doc
-   */
-  constructor(name, doc2) {
-    super();
-    this.doc = doc2;
-    this.name = name;
-    this._dbref = 0;
-    this._dbsize = 0;
-    this._destroyed = false;
-    this.db = null;
-    this.synced = false;
-    this._db = openDB(
-      name,
-      (db) => createStores(db, [
-        ["updates", { autoIncrement: true }],
-        ["custom"]
-      ])
-    );
-    this.whenSynced = create4((resolve) => this.on("synced", () => resolve(this)));
-    this._db.then((db) => {
-      this.db = db;
-      const beforeApplyUpdatesCallback = (updatesStore) => addAutoKey(updatesStore, encodeStateAsUpdate(doc2));
-      const afterApplyUpdatesCallback = () => {
-        if (this._destroyed) return this;
-        this.synced = true;
-        this.emit("synced", [this]);
-      };
-      fetchUpdates(this, beforeApplyUpdatesCallback, afterApplyUpdatesCallback);
-    });
-    this._storeTimeout = 1e3;
-    this._storeTimeoutId = null;
-    this._storeUpdate = (update, origin) => {
-      if (this.db && origin !== this) {
-        const [updatesStore] = transact2(
-          /** @type {IDBDatabase} */
-          this.db,
-          [updatesStoreName]
-        );
-        addAutoKey(updatesStore, update);
-        if (++this._dbsize >= PREFERRED_TRIM_SIZE) {
-          if (this._storeTimeoutId !== null) {
-            clearTimeout(this._storeTimeoutId);
-          }
-          this._storeTimeoutId = setTimeout(() => {
-            storeState(this, false);
-            this._storeTimeoutId = null;
-          }, this._storeTimeout);
-        }
-      }
-    };
-    doc2.on("update", this._storeUpdate);
-    this.destroy = this.destroy.bind(this);
-    doc2.on("destroy", this.destroy);
-  }
-  destroy() {
-    if (this._storeTimeoutId) {
-      clearTimeout(this._storeTimeoutId);
-    }
-    this.doc.off("update", this._storeUpdate);
-    this.doc.off("destroy", this.destroy);
-    this._destroyed = true;
-    return this._db.then((db) => {
-      db.close();
-    });
-  }
-  /**
-   * Destroys this instance and removes all data from indexeddb.
-   *
-   * @return {Promise<void>}
-   */
-  clearData() {
-    return this.destroy().then(() => {
-      deleteDB(this.name);
-    });
-  }
-  /**
-   * @param {String | number | ArrayBuffer | Date} key
-   * @return {Promise<String | number | ArrayBuffer | Date | any>}
-   */
-  get(key) {
-    return this._db.then((db) => {
-      const [custom] = transact2(db, [customStoreName], "readonly");
-      return get(custom, key);
-    });
-  }
-  /**
-   * @param {String | number | ArrayBuffer | Date} key
-   * @param {String | number | ArrayBuffer | Date} value
-   * @return {Promise<String | number | ArrayBuffer | Date>}
-   */
-  set(key, value) {
-    return this._db.then((db) => {
-      const [custom] = transact2(db, [customStoreName]);
-      return put(custom, value, key);
-    });
-  }
-  /**
-   * @param {String | number | ArrayBuffer | Date} key
-   * @return {Promise<undefined>}
-   */
-  del(key) {
-    return this._db.then((db) => {
-      const [custom] = transact2(db, [customStoreName]);
-      return del(custom, key);
-    });
-  }
-};
-
 // src/utils/pluginPaths.ts
 var PLUGIN_ID = "live-collab";
 var LEGACY_PLUGIN_ID = "obsidian-collab";
@@ -10842,6 +10111,776 @@ function tracePath() {
 function stamp() {
   return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
 }
+
+// src/collab/MuxProvider.ts
+var MESSAGE_SYNC = 0;
+var MESSAGE_AWARENESS = 1;
+var MESSAGE_MUX = 6;
+var MESSAGE_MUX_LEAVE = 7;
+var MUX_RECONNECT_BASE_MS = 500;
+var MUX_RECONNECT_MAX_MS = 1e4;
+var MUX_RECONNECT_MIN_MS = 250;
+var MUX_RECONNECT_JITTER_RATIO = 0.4;
+var connections = /* @__PURE__ */ new Map();
+function paramsKey(params2) {
+  return Object.entries(params2).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
+}
+function muxKey(args2) {
+  return `${args2.serverUrl}|${args2.shareId}|${paramsKey(args2.params)}`;
+}
+function muxUrl(args2) {
+  const base = args2.serverUrl.replace(/\/$/, "");
+  const q = new URLSearchParams(args2.params);
+  return `${base}/${encodeURIComponent(`@${args2.shareId}:__mux__`)}?${q.toString()}`;
+}
+function reconnectDelayForAttempt(attempt, random2 = Math.random) {
+  const base = Math.min(MUX_RECONNECT_MAX_MS, MUX_RECONNECT_BASE_MS * Math.pow(2, Math.max(0, attempt)));
+  const jitter = base * MUX_RECONNECT_JITTER_RATIO * (random2() * 2 - 1);
+  return Math.max(MUX_RECONNECT_MIN_MS, Math.min(MUX_RECONNECT_MAX_MS, Math.round(base + jitter)));
+}
+function toBytes(data) {
+  return data instanceof Uint8Array ? data : new Uint8Array(data);
+}
+var MuxConnection = class {
+  constructor(args2) {
+    this.args = args2;
+    this.ws = null;
+    this.providers = /* @__PURE__ */ new Map();
+    this.reconnectTimer = null;
+    this.attempts = 0;
+    this.shouldConnect = true;
+    this.connect();
+  }
+  get connected() {
+    var _a2;
+    return ((_a2 = this.ws) == null ? void 0 : _a2.readyState) === WebSocket.OPEN;
+  }
+  register(provider) {
+    let set = this.providers.get(provider.roomName);
+    if (!set) {
+      set = /* @__PURE__ */ new Set();
+      this.providers.set(provider.roomName, set);
+    }
+    set.add(provider);
+    provider.setConnected(this.connected);
+    if (this.connected) provider.onSocketOpen();
+  }
+  unregister(provider) {
+    var _a2;
+    const set = this.providers.get(provider.roomName);
+    set == null ? void 0 : set.delete(provider);
+    if (set && set.size === 0) {
+      this.leave(provider.roomName);
+      this.providers.delete(provider.roomName);
+    }
+    if (this.providers.size === 0) {
+      this.shouldConnect = false;
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      (_a2 = this.ws) == null ? void 0 : _a2.close();
+      connections.delete(muxKey(this.args));
+    }
+  }
+  connect() {
+    this.shouldConnect = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
+    this.providers.forEach((set) => set.forEach((p) => p.emitStatus("connecting")));
+    const ws = new WebSocket(muxUrl(this.args));
+    ws.binaryType = "arraybuffer";
+    this.ws = ws;
+    ws.onopen = () => {
+      if (this.ws !== ws) return;
+      this.attempts = 0;
+      this.providers.forEach((set) => set.forEach((p) => {
+        p.setConnected(true);
+        p.emitStatus("connected");
+        p.onSocketOpen();
+      }));
+    };
+    ws.onclose = () => this.handleClosed(ws);
+    ws.onerror = () => {
+      if (this.ws !== ws) return;
+      this.providers.forEach((set) => set.forEach((p) => p.emit("connection-error")));
+    };
+    ws.onmessage = (event) => {
+      if (this.ws !== ws) return;
+      this.handleMessage(event.data);
+    };
+  }
+  disconnect() {
+    var _a2;
+    this.shouldConnect = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    (_a2 = this.ws) == null ? void 0 : _a2.close();
+  }
+  send(roomName, inner) {
+    if (!this.connected || !this.ws) return;
+    const encoder = createEncoder();
+    writeVarUint(encoder, MESSAGE_MUX);
+    writeVarString(encoder, roomName);
+    writeVarUint8Array(encoder, inner);
+    this.ws.send(toUint8Array(encoder));
+  }
+  leave(roomName) {
+    if (!this.connected || !this.ws) return;
+    const encoder = createEncoder();
+    writeVarUint(encoder, MESSAGE_MUX_LEAVE);
+    writeVarString(encoder, roomName);
+    this.ws.send(toUint8Array(encoder));
+  }
+  handleClosed(ws) {
+    if (this.ws !== ws) return;
+    this.ws = null;
+    this.providers.forEach((set) => set.forEach((p) => {
+      p.setConnected(false);
+      p.setSynced(false);
+      p.emitStatus("disconnected");
+    }));
+    if (!this.shouldConnect || this.providers.size === 0) return;
+    const delay = reconnectDelayForAttempt(this.attempts++);
+    this.reconnectTimer = setTimeout(() => this.connect(), delay);
+  }
+  handleMessage(raw) {
+    const bytes = raw instanceof ArrayBuffer ? new Uint8Array(raw) : toBytes(raw);
+    const decoder = createDecoder(bytes);
+    const outerType = readVarUint(decoder);
+    if (outerType !== MESSAGE_MUX) return;
+    const roomName = readVarString(decoder);
+    const inner = readVarUint8Array(decoder);
+    const set = this.providers.get(roomName);
+    if (!set) return;
+    for (const provider of set) provider.receive(inner);
+  }
+};
+function sharedConnection(args2) {
+  const key = muxKey(args2);
+  let conn = connections.get(key);
+  if (!conn) {
+    conn = new MuxConnection(args2);
+    connections.set(key, conn);
+  }
+  return conn;
+}
+var MuxProvider = class {
+  constructor(args2) {
+    this.wsconnected = false;
+    this.listeners = /* @__PURE__ */ new Map();
+    this.synced = false;
+    this.roomName = args2.roomName;
+    this.ydoc = args2.ydoc;
+    this.awareness = new Awareness(this.ydoc);
+    this.conn = sharedConnection(args2);
+    this.ws = { send: (data) => this.conn.send(this.roomName, data) };
+    this.updateHandler = (update, origin) => {
+      if (origin === this) return;
+      const encoder = createEncoder();
+      writeVarUint(encoder, MESSAGE_SYNC);
+      writeUpdate(encoder, update);
+      this.send(toUint8Array(encoder));
+    };
+    this.ydoc.on("update", this.updateHandler);
+    this.awarenessHandler = ({ added, updated, removed }, origin) => {
+      if (origin === this) {
+        trace("awareness", "mux-remote-applied", {
+          room: this.roomName,
+          added: added.length,
+          updated: updated.length,
+          removed: removed.length,
+          states: this.awareness.getStates().size
+        });
+        return;
+      }
+      const changedClients = added.concat(updated, removed);
+      const local = this.awareness.getLocalState();
+      trace("awareness", "mux-send", {
+        room: this.roomName,
+        added: added.length,
+        updated: updated.length,
+        removed: removed.length,
+        hasLocalUser: !!(local == null ? void 0 : local.user),
+        hasLocalCursor: !!(local == null ? void 0 : local.cursor),
+        clients: changedClients.length
+      });
+      const encoder = createEncoder();
+      writeVarUint(encoder, MESSAGE_AWARENESS);
+      writeVarUint8Array(
+        encoder,
+        encodeAwarenessUpdate(this.awareness, changedClients)
+      );
+      this.send(toUint8Array(encoder));
+    };
+    this.awareness.on("update", this.awarenessHandler);
+    this.conn.register(this);
+  }
+  on(event, listener) {
+    let set = this.listeners.get(event);
+    if (!set) {
+      set = /* @__PURE__ */ new Set();
+      this.listeners.set(event, set);
+    }
+    set.add(listener);
+  }
+  off(event, listener) {
+    var _a2;
+    (_a2 = this.listeners.get(event)) == null ? void 0 : _a2.delete(listener);
+  }
+  emit(event, ...args2) {
+    var _a2;
+    (_a2 = this.listeners.get(event)) == null ? void 0 : _a2.forEach((listener) => listener(...args2));
+  }
+  emitStatus(status) {
+    this.emit("status", { status });
+  }
+  setConnected(connected) {
+    this.wsconnected = connected;
+  }
+  setSynced(synced) {
+    if (this.synced === synced) return;
+    this.synced = synced;
+    this.emit("sync", synced);
+  }
+  onSocketOpen() {
+    this.sendSyncStep1();
+    this.flushLocalAwareness();
+  }
+  connect() {
+    this.conn.connect();
+  }
+  disconnect() {
+    this.conn.disconnect();
+  }
+  destroy() {
+    this.ydoc.off("update", this.updateHandler);
+    removeAwarenessStates(this.awareness, [this.awareness.clientID], "destroy");
+    this.awareness.off("update", this.awarenessHandler);
+    this.awareness.destroy();
+    this.conn.unregister(this);
+    this.listeners.clear();
+  }
+  receive(message) {
+    const decoder = createDecoder(message);
+    const messageType = readVarUint(decoder);
+    if (messageType === MESSAGE_SYNC) {
+      const subtype = readVarUint(clone(decoder));
+      const encoder = createEncoder();
+      writeVarUint(encoder, MESSAGE_SYNC);
+      readSyncMessage(decoder, encoder, this.ydoc, this);
+      if (length(encoder) > 1) this.send(toUint8Array(encoder));
+      if (subtype === 1) this.setSynced(true);
+    } else if (messageType === MESSAGE_AWARENESS) {
+      const update = readVarUint8Array(decoder);
+      trace("awareness", "mux-receive", {
+        room: this.roomName,
+        bytes: update.byteLength,
+        statesBefore: this.awareness.getStates().size
+      });
+      applyAwarenessUpdate(this.awareness, update, this);
+    }
+  }
+  sendSyncStep1() {
+    const encoder = createEncoder();
+    writeVarUint(encoder, MESSAGE_SYNC);
+    writeSyncStep1(encoder, this.ydoc);
+    this.send(toUint8Array(encoder));
+  }
+  flushLocalAwareness() {
+    const local = this.awareness.getLocalState();
+    if (!local) return;
+    trace("awareness", "mux-flush-local", {
+      room: this.roomName,
+      hasLocalUser: !!local.user,
+      hasLocalCursor: !!local.cursor,
+      states: this.awareness.getStates().size
+    });
+    const encoder = createEncoder();
+    writeVarUint(encoder, MESSAGE_AWARENESS);
+    writeVarUint8Array(
+      encoder,
+      encodeAwarenessUpdate(this.awareness, [this.awareness.clientID])
+    );
+    this.send(toUint8Array(encoder));
+  }
+  send(message) {
+    this.conn.send(this.roomName, message);
+  }
+};
+
+// src/collab/PresenceModel.ts
+function presenceKeyFromState(state, clientId) {
+  var _a2, _b2;
+  const uid = ((_a2 = state == null ? void 0 : state.user) == null ? void 0 : _a2.uid) || "unknown";
+  return `${uid}:${((_b2 = state == null ? void 0 : state.user) == null ? void 0 : _b2.deviceId) || clientId}`;
+}
+function deviceIdFromState(state, clientId) {
+  var _a2;
+  return ((_a2 = state == null ? void 0 : state.user) == null ? void 0 : _a2.deviceId) || String(clientId);
+}
+function presenceLabel(user) {
+  const device = user.device ? ` (${user.device})` : "";
+  const status = user.dimmed ? "open" : user.typing ? "typing" : user.hasCaret ? "editing" : "viewing";
+  return user.isSelf ? `${user.name}${device} (you) - ${status}` : `${user.name}${device} - ${status}`;
+}
+function presenceInitial(name) {
+  var _a2;
+  return (((_a2 = name == null ? void 0 : name.trim()) == null ? void 0 : _a2[0]) || "?").toUpperCase();
+}
+function collectPresenceDevices(args2) {
+  var _a2, _b2, _c, _d, _e;
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const myClientId = (_a2 = args2.manifestAwareness) == null ? void 0 : _a2.clientID;
+  const visit = (state, clientId) => {
+    var _a3, _b3;
+    const user = state == null ? void 0 : state.user;
+    const presence = state == null ? void 0 : state.presence;
+    if (!(user == null ? void 0 : user.uid)) return;
+    const activeFile = (_a3 = presence == null ? void 0 : presence.activeFile) != null ? _a3 : null;
+    if (args2.relPath !== void 0 && activeFile !== args2.relPath) return;
+    const key = presenceKeyFromState(state, clientId);
+    if (seen.has(key)) return;
+    seen.add(key);
+    const baseColor = user.baseColor || user.color || "#888888";
+    const deviceId = deviceIdFromState(state, clientId);
+    const displayName = user.displayName || user.name || "Anonymous";
+    const color = user.baseColor ? user.color || deviceColor(baseColor, deviceId) : deviceColor(baseColor, deviceId);
+    out.push({
+      presenceKey: key,
+      uid: user.uid,
+      deviceId,
+      name: displayName,
+      color,
+      baseColor,
+      device: user.device,
+      activeFile,
+      typing: !!(presence == null ? void 0 : presence.typing),
+      hasCaret: !!((_b3 = args2.caretKeys) == null ? void 0 : _b3.has(key)),
+      isSelf: clientId === myClientId
+    });
+  };
+  (_c = (_b2 = args2.manifestAwareness) == null ? void 0 : _b2.getStates) == null ? void 0 : _c.call(_b2).forEach((state, clientId) => visit(state, clientId));
+  const localState = (_e = (_d = args2.manifestAwareness) == null ? void 0 : _d.getLocalState) == null ? void 0 : _e.call(_d);
+  if (localState && myClientId != null) visit(localState, myClientId);
+  return sortPresence(out);
+}
+function sortPresence(users) {
+  return [...users].sort((a, b) => {
+    if (a.isSelf !== b.isSelf) return a.isSelf ? -1 : 1;
+    const name = a.name.localeCompare(b.name);
+    if (name !== 0) return name;
+    return (a.device || "").localeCompare(b.device || "");
+  });
+}
+function deviceColor(baseColor, deviceId) {
+  const rgb = parseHex(baseColor);
+  if (!rgb) return baseColor;
+  const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+  const jitter = hash(deviceId) % 37 - 18;
+  const saturation = clamp(hsl.s + (hash(deviceId + "s") % 15 - 5), 45, 88);
+  const lightness = clamp(hsl.l + (hash(deviceId + "l") % 17 - 8), 36, 66);
+  return hslToHex((hsl.h + jitter + 360) % 360, saturation, lightness);
+}
+function parseHex(hex) {
+  const clean2 = hex.trim().replace(/^#/, "");
+  if (!/^[0-9a-f]{6}$/i.test(clean2)) return null;
+  return {
+    r: parseInt(clean2.slice(0, 2), 16),
+    g: parseInt(clean2.slice(2, 4), 16),
+    b: parseInt(clean2.slice(4, 6), 16)
+  };
+}
+function rgbToHsl(r, g, b) {
+  r /= 255;
+  g /= 255;
+  b /= 255;
+  const max2 = Math.max(r, g, b);
+  const min2 = Math.min(r, g, b);
+  let h = 0;
+  let s = 0;
+  const l = (max2 + min2) / 2;
+  if (max2 !== min2) {
+    const d = max2 - min2;
+    s = l > 0.5 ? d / (2 - max2 - min2) : d / (max2 + min2);
+    switch (max2) {
+      case r:
+        h = (g - b) / d + (g < b ? 6 : 0);
+        break;
+      case g:
+        h = (b - r) / d + 2;
+        break;
+      case b:
+        h = (r - g) / d + 4;
+        break;
+    }
+    h *= 60;
+  }
+  return { h, s: s * 100, l: l * 100 };
+}
+function hslToHex(h, s, l) {
+  s /= 100;
+  l /= 100;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(h / 60 % 2 - 1));
+  const m = l - c / 2;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) {
+    r = c;
+    g = x;
+  } else if (h < 120) {
+    r = x;
+    g = c;
+  } else if (h < 180) {
+    g = c;
+    b = x;
+  } else if (h < 240) {
+    g = x;
+    b = c;
+  } else if (h < 300) {
+    r = x;
+    b = c;
+  } else {
+    r = c;
+    b = x;
+  }
+  return `#${toHex((r + m) * 255)}${toHex((g + m) * 255)}${toHex((b + m) * 255)}`;
+}
+function toHex(n) {
+  return Math.round(n).toString(16).padStart(2, "0");
+}
+function hash(seed) {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function clamp(n, min2, max2) {
+  return Math.max(min2, Math.min(max2, n));
+}
+
+// src/collab/YjsProvider.ts
+function detectDevice() {
+  if (import_obsidian.Platform.isMobile) return "mobile";
+  return "desktop";
+}
+function cursorDisplayName(name, device) {
+  const base = (name == null ? void 0 : name.trim()) || "Anonymous";
+  return device ? `${base} (${device})` : base;
+}
+var DEVICE_ID_KEY = "obsidian-collab-device-id";
+var cachedDeviceId = null;
+function installDeviceId() {
+  var _a2, _b2, _c, _d;
+  if (cachedDeviceId) return cachedDeviceId;
+  try {
+    const existing = (_a2 = globalThis.localStorage) == null ? void 0 : _a2.getItem(DEVICE_ID_KEY);
+    if (existing) {
+      cachedDeviceId = existing;
+      return existing;
+    }
+  } catch (e) {
+  }
+  const id2 = ((_c = (_b2 = globalThis.crypto) == null ? void 0 : _b2.randomUUID) == null ? void 0 : _c.call(_b2)) || `device-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  try {
+    (_d = globalThis.localStorage) == null ? void 0 : _d.setItem(DEVICE_ID_KEY, id2);
+  } catch (e) {
+  }
+  cachedDeviceId = id2;
+  return id2;
+}
+function deviceScopedColor(baseColor, deviceId = installDeviceId()) {
+  return deviceColor(baseColor || "#888888", deviceId);
+}
+function shareIdFromRoom(roomName) {
+  if (!roomName.startsWith("@")) return null;
+  const idx = roomName.indexOf(":");
+  return idx > 1 ? roomName.slice(1, idx) : null;
+}
+function createProvider(serverUrl, roomName, ydoc, token, userInfo, callbacks, authParams = {}) {
+  var _a2, _b2, _c;
+  const device = detectDevice();
+  const deviceId = installDeviceId();
+  const displayName = ((_a2 = userInfo.name) == null ? void 0 : _a2.trim()) || "Anonymous";
+  const cursorName = cursorDisplayName(displayName, device);
+  const baseColor = userInfo.color || "#888888";
+  const scopedColor = deviceScopedColor(baseColor, deviceId);
+  const params2 = {
+    token,
+    uid: userInfo.uid,
+    name: cursorName,
+    color: scopedColor,
+    baseColor,
+    device,
+    deviceId,
+    ...userInfo.identityPublicKey && userInfo.identitySignature ? { identityKey: userInfo.identityPublicKey, identitySig: userInfo.identitySignature } : {},
+    ...authParams
+  };
+  const useMux = params2.__mux === "true";
+  delete params2.__mux;
+  const shareId = shareIdFromRoom(roomName);
+  const provider = useMux && shareId ? new MuxProvider({ serverUrl, shareId, roomName, ydoc, params: params2 }) : new WebsocketProvider(serverUrl, roomName, ydoc, {
+    params: params2,
+    connect: true,
+    // WebsocketProvider handles reconnection automatically
+    maxBackoffTime: 1e4
+  });
+  provider.awareness.setLocalStateField("user", {
+    uid: userInfo.uid,
+    deviceId,
+    name: cursorName,
+    displayName,
+    color: scopedColor,
+    colorLight: scopedColor + "33",
+    // 20% opacity version for selection
+    baseColor,
+    device
+  });
+  const localAwareness = (_c = (_b2 = provider.awareness).getLocalState) == null ? void 0 : _c.call(_b2);
+  trace("awareness", "provider-user-state", {
+    room: roomName,
+    useMux,
+    hasLocalState: !!localAwareness,
+    hasUser: !!(localAwareness == null ? void 0 : localAwareness.user),
+    clientId: provider.awareness.clientID
+  });
+  provider.on("status", (event) => {
+    switch (event.status) {
+      case "connecting":
+        callbacks.onStatus("connecting");
+        break;
+      case "connected":
+        callbacks.onStatus("connected");
+        break;
+      case "disconnected":
+        callbacks.onStatus("disconnected");
+        break;
+      default:
+        break;
+    }
+  });
+  provider.on("sync", (synced) => {
+    callbacks.onSynced(synced);
+  });
+  provider.on("connection-error", (error) => {
+    var _a3;
+    callbacks.onStatus("error");
+    (_a3 = callbacks.onError) == null ? void 0 : _a3.call(callbacks, error);
+  });
+  return provider;
+}
+
+// src/collab/FileProvider.ts
+var import_obsidian2 = require("obsidian");
+
+// node_modules/lib0/indexeddb.js
+var rtop = (request) => create4((resolve, reject) => {
+  request.onerror = (event) => reject(new Error(event.target.error));
+  request.onsuccess = (event) => resolve(event.target.result);
+});
+var openDB = (name, initDB) => create4((resolve, reject) => {
+  const request = indexedDB.open(name);
+  request.onupgradeneeded = (event) => initDB(event.target.result);
+  request.onerror = (event) => reject(create3(event.target.error));
+  request.onsuccess = (event) => {
+    const db = event.target.result;
+    db.onversionchange = () => {
+      db.close();
+    };
+    resolve(db);
+  };
+});
+var deleteDB = (name) => rtop(indexedDB.deleteDatabase(name));
+var createStores = (db, definitions) => definitions.forEach(
+  (d) => (
+    // @ts-ignore
+    db.createObjectStore.apply(db, d)
+  )
+);
+var transact2 = (db, stores, access = "readwrite") => {
+  const transaction = db.transaction(stores, access);
+  return stores.map((store) => getStore(transaction, store));
+};
+var count = (store, range) => rtop(store.count(range));
+var get = (store, key) => rtop(store.get(key));
+var del = (store, key) => rtop(store.delete(key));
+var put = (store, item, key) => rtop(store.put(item, key));
+var addAutoKey = (store, item) => rtop(store.add(item));
+var getAll = (store, range, limit) => rtop(store.getAll(range, limit));
+var queryFirst = (store, query, direction) => {
+  let first = null;
+  return iterateKeys(store, query, (key) => {
+    first = key;
+    return false;
+  }, direction).then(() => first);
+};
+var getLastKey = (store, range = null) => queryFirst(store, range, "prev");
+var iterateOnRequest = (request, f) => create4((resolve, reject) => {
+  request.onerror = reject;
+  request.onsuccess = async (event) => {
+    const cursor = event.target.result;
+    if (cursor === null || await f(cursor) === false) {
+      return resolve();
+    }
+    cursor.continue();
+  };
+});
+var iterateKeys = (store, keyrange, f, direction = "next") => iterateOnRequest(store.openKeyCursor(keyrange, direction), (cursor) => f(cursor.key));
+var getStore = (t, store) => t.objectStore(store);
+var createIDBKeyRangeUpperBound = (upper, upperOpen) => IDBKeyRange.upperBound(upper, upperOpen);
+var createIDBKeyRangeLowerBound = (lower2, lowerOpen) => IDBKeyRange.lowerBound(lower2, lowerOpen);
+
+// node_modules/y-indexeddb/src/y-indexeddb.js
+var customStoreName = "custom";
+var updatesStoreName = "updates";
+var PREFERRED_TRIM_SIZE = 500;
+var fetchUpdates = (idbPersistence, beforeApplyUpdatesCallback = () => {
+}, afterApplyUpdatesCallback = () => {
+}) => {
+  const [updatesStore] = transact2(
+    /** @type {IDBDatabase} */
+    idbPersistence.db,
+    [updatesStoreName]
+  );
+  return getAll(updatesStore, createIDBKeyRangeLowerBound(idbPersistence._dbref, false)).then((updates) => {
+    if (!idbPersistence._destroyed) {
+      beforeApplyUpdatesCallback(updatesStore);
+      transact(idbPersistence.doc, () => {
+        updates.forEach((val) => applyUpdate(idbPersistence.doc, val));
+      }, idbPersistence, false);
+      afterApplyUpdatesCallback(updatesStore);
+    }
+  }).then(() => getLastKey(updatesStore).then((lastKey) => {
+    idbPersistence._dbref = lastKey + 1;
+  })).then(() => count(updatesStore).then((cnt) => {
+    idbPersistence._dbsize = cnt;
+  })).then(() => updatesStore);
+};
+var storeState = (idbPersistence, forceStore = true) => fetchUpdates(idbPersistence).then((updatesStore) => {
+  if (forceStore || idbPersistence._dbsize >= PREFERRED_TRIM_SIZE) {
+    addAutoKey(updatesStore, encodeStateAsUpdate(idbPersistence.doc)).then(() => del(updatesStore, createIDBKeyRangeUpperBound(idbPersistence._dbref, true))).then(() => count(updatesStore).then((cnt) => {
+      idbPersistence._dbsize = cnt;
+    }));
+  }
+});
+var IndexeddbPersistence = class extends Observable {
+  /**
+   * @param {string} name
+   * @param {Y.Doc} doc
+   */
+  constructor(name, doc2) {
+    super();
+    this.doc = doc2;
+    this.name = name;
+    this._dbref = 0;
+    this._dbsize = 0;
+    this._destroyed = false;
+    this.db = null;
+    this.synced = false;
+    this._db = openDB(
+      name,
+      (db) => createStores(db, [
+        ["updates", { autoIncrement: true }],
+        ["custom"]
+      ])
+    );
+    this.whenSynced = create4((resolve) => this.on("synced", () => resolve(this)));
+    this._db.then((db) => {
+      this.db = db;
+      const beforeApplyUpdatesCallback = (updatesStore) => addAutoKey(updatesStore, encodeStateAsUpdate(doc2));
+      const afterApplyUpdatesCallback = () => {
+        if (this._destroyed) return this;
+        this.synced = true;
+        this.emit("synced", [this]);
+      };
+      fetchUpdates(this, beforeApplyUpdatesCallback, afterApplyUpdatesCallback);
+    });
+    this._storeTimeout = 1e3;
+    this._storeTimeoutId = null;
+    this._storeUpdate = (update, origin) => {
+      if (this.db && origin !== this) {
+        const [updatesStore] = transact2(
+          /** @type {IDBDatabase} */
+          this.db,
+          [updatesStoreName]
+        );
+        addAutoKey(updatesStore, update);
+        if (++this._dbsize >= PREFERRED_TRIM_SIZE) {
+          if (this._storeTimeoutId !== null) {
+            clearTimeout(this._storeTimeoutId);
+          }
+          this._storeTimeoutId = setTimeout(() => {
+            storeState(this, false);
+            this._storeTimeoutId = null;
+          }, this._storeTimeout);
+        }
+      }
+    };
+    doc2.on("update", this._storeUpdate);
+    this.destroy = this.destroy.bind(this);
+    doc2.on("destroy", this.destroy);
+  }
+  destroy() {
+    if (this._storeTimeoutId) {
+      clearTimeout(this._storeTimeoutId);
+    }
+    this.doc.off("update", this._storeUpdate);
+    this.doc.off("destroy", this.destroy);
+    this._destroyed = true;
+    return this._db.then((db) => {
+      db.close();
+    });
+  }
+  /**
+   * Destroys this instance and removes all data from indexeddb.
+   *
+   * @return {Promise<void>}
+   */
+  clearData() {
+    return this.destroy().then(() => {
+      deleteDB(this.name);
+    });
+  }
+  /**
+   * @param {String | number | ArrayBuffer | Date} key
+   * @return {Promise<String | number | ArrayBuffer | Date | any>}
+   */
+  get(key) {
+    return this._db.then((db) => {
+      const [custom] = transact2(db, [customStoreName], "readonly");
+      return get(custom, key);
+    });
+  }
+  /**
+   * @param {String | number | ArrayBuffer | Date} key
+   * @param {String | number | ArrayBuffer | Date} value
+   * @return {Promise<String | number | ArrayBuffer | Date>}
+   */
+  set(key, value) {
+    return this._db.then((db) => {
+      const [custom] = transact2(db, [customStoreName]);
+      return put(custom, value, key);
+    });
+  }
+  /**
+   * @param {String | number | ArrayBuffer | Date} key
+   * @return {Promise<undefined>}
+   */
+  del(key) {
+    return this._db.then((db) => {
+      const [custom] = transact2(db, [customStoreName]);
+      return del(custom, key);
+    });
+  }
+};
 
 // src/collab/EchoGuard.ts
 var CREATED = "~created~";

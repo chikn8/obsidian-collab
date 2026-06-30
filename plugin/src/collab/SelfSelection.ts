@@ -36,12 +36,20 @@ const selfSelectionTheme = EditorView.baseTheme({
     display: "inline-block",
     position: "relative",
     width: "0",
-    height: "1.15em",
-    borderLeft: "2px solid",
+    height: "0",
+    lineHeight: "0",
     marginLeft: "-1px",
     marginRight: "-1px",
     verticalAlign: "text-top",
     pointerEvents: "none",
+    overflow: "visible",
+  },
+  ".cm-collab-self-caret-line": {
+    position: "absolute",
+    left: "0",
+    top: "0",
+    height: "1.15em",
+    borderLeft: "2px solid",
   },
   ".cm-collab-self-caret-label": {
     position: "absolute",
@@ -77,12 +85,6 @@ class SelfSelectionPlugin {
     const sel = view.state.selection.main;
     const overlay = selfSelectionOverlay(sel.anchor, sel.head);
     const color = this.user.color || "var(--interactive-accent)";
-    if (overlay.selection) {
-      builder.add(overlay.selection.from, overlay.selection.to, Decoration.mark({
-        class: "cm-collab-self-selection",
-        attributes: { style: `background-color: ${alphaColor(color, "44")}` },
-      }));
-    }
     builder.add(overlay.caret.pos, overlay.caret.pos, Decoration.widget({
       side: overlay.caret.side,
       widget: new SelfCaretWidget(this.user.name || "You", color),
@@ -96,8 +98,8 @@ class SelfCaretWidget extends WidgetType {
     super();
   }
 
-  toDOM(): HTMLElement {
-    return renderSelfCaret(document, this.name, this.color);
+  toDOM(view: EditorView): HTMLElement {
+    return renderSelfCaret(view.dom.ownerDocument || document, this.name, this.color);
   }
 
   eq(other: SelfCaretWidget): boolean {
@@ -112,16 +114,14 @@ class SelfCaretWidget extends WidgetType {
 export function renderSelfCaret(doc: Document, name: string, color: string): HTMLElement {
   const el = doc.createElement("span");
   el.className = "cm-collab-self-caret";
-  el.style.borderColor = color;
+  const line = doc.createElement("span");
+  line.className = "cm-collab-self-caret-line";
+  line.style.borderColor = color;
+  el.appendChild(line);
   const label = doc.createElement("span");
   label.className = "cm-collab-self-caret-label";
   label.style.backgroundColor = color;
   label.textContent = name;
   el.appendChild(label);
   return el;
-}
-
-function alphaColor(color: string, alphaHex: string): string {
-  if (/^#[0-9a-f]{6}$/i.test(color)) return `${color}${alphaHex}`;
-  return color;
 }

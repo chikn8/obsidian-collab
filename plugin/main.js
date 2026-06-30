@@ -15433,6 +15433,7 @@ var yCollab = (ytext, awareness, { undoManager = new UndoManager(ytext) } = {}) 
 var import_state = require("@codemirror/state");
 var import_view = require("@codemirror/view");
 var refreshRemoteCursors = import_state.StateEffect.define();
+var MAX_REMOTE_SELECTION_CHARS = 2e3;
 function cursorAwarenessExtension(ytext, awareness, options = {}) {
   return [
     import_view.ViewPlugin.define((view) => new CursorAwarenessPlugin(view, ytext, awareness, options.label), {
@@ -15545,7 +15546,7 @@ var CursorAwarenessPlugin = class {
       const colorLight = validColorLight((_b3 = state == null ? void 0 : state.user) == null ? void 0 : _b3.colorLight) || `${color}33`;
       const name = ((_c2 = state == null ? void 0 : state.user) == null ? void 0 : _c2.name) || ((_d = state == null ? void 0 : state.user) == null ? void 0 : _d.displayName) || "Anonymous";
       const key = `${((_e = state == null ? void 0 : state.user) == null ? void 0 : _e.uid) || clientId}:${((_f = state == null ? void 0 : state.user) == null ? void 0 : _f.deviceId) || clientId}`;
-      if (start < end) {
+      if (start < end && end - start <= MAX_REMOTE_SELECTION_CHARS) {
         ranges.push(import_view.Decoration.mark({
           class: "cm-ySelection",
           attributes: { style: `background-color: ${colorLight}` }
@@ -15579,23 +15580,7 @@ var RemoteCaretWidget = class extends import_view.WidgetType {
     this.key = key;
   }
   toDOM(view) {
-    const doc2 = view.dom.ownerDocument || document;
-    const el = doc2.createElement("span");
-    el.className = "cm-ySelectionCaret";
-    el.style.backgroundColor = this.color;
-    el.style.borderColor = this.color;
-    el.dataset.collabCursorKey = this.key;
-    el.appendChild(doc2.createTextNode("\u2060"));
-    const dot = doc2.createElement("span");
-    dot.className = "cm-ySelectionCaretDot";
-    el.appendChild(dot);
-    el.appendChild(doc2.createTextNode("\u2060"));
-    const info = doc2.createElement("span");
-    info.className = "cm-ySelectionInfo";
-    info.textContent = this.name;
-    el.appendChild(info);
-    el.appendChild(doc2.createTextNode("\u2060"));
-    return el;
+    return renderRemoteCaret(view.dom.ownerDocument || document, this.color, this.name, this.key);
   }
   eq(other) {
     return this.color === other.color && this.name === other.name && this.key === other.key;
@@ -15604,6 +15589,23 @@ var RemoteCaretWidget = class extends import_view.WidgetType {
     return true;
   }
 };
+function renderRemoteCaret(doc2, color, name, key) {
+  const el = doc2.createElement("span");
+  el.className = "cm-ySelectionCaret";
+  el.style.setProperty("--collab-cursor-color", color);
+  el.dataset.collabCursorKey = key;
+  const line = doc2.createElement("span");
+  line.className = "cm-ySelectionCaretLine";
+  el.appendChild(line);
+  const dot = doc2.createElement("span");
+  dot.className = "cm-ySelectionCaretDot";
+  el.appendChild(dot);
+  const info = doc2.createElement("span");
+  info.className = "cm-ySelectionInfo";
+  info.textContent = name;
+  el.appendChild(info);
+  return el;
+}
 function sameStoredCursor(cursor, anchor, head) {
   if (!(cursor == null ? void 0 : cursor.anchor) || !(cursor == null ? void 0 : cursor.head)) return false;
   const currentAnchor = storedRelativePosition(cursor.anchor);
@@ -16167,12 +16169,20 @@ var selfSelectionTheme = import_view5.EditorView.baseTheme({
     display: "inline-block",
     position: "relative",
     width: "0",
-    height: "1.15em",
-    borderLeft: "2px solid",
+    height: "0",
+    lineHeight: "0",
     marginLeft: "-1px",
     marginRight: "-1px",
     verticalAlign: "text-top",
-    pointerEvents: "none"
+    pointerEvents: "none",
+    overflow: "visible"
+  },
+  ".cm-collab-self-caret-line": {
+    position: "absolute",
+    left: "0",
+    top: "0",
+    height: "1.15em",
+    borderLeft: "2px solid"
   },
   ".cm-collab-self-caret-label": {
     position: "absolute",
@@ -16205,12 +16215,6 @@ var SelfSelectionPlugin = class {
     const sel = view.state.selection.main;
     const overlay = selfSelectionOverlay(sel.anchor, sel.head);
     const color = this.user.color || "var(--interactive-accent)";
-    if (overlay.selection) {
-      builder.add(overlay.selection.from, overlay.selection.to, import_view5.Decoration.mark({
-        class: "cm-collab-self-selection",
-        attributes: { style: `background-color: ${alphaColor(color, "44")}` }
-      }));
-    }
     builder.add(overlay.caret.pos, overlay.caret.pos, import_view5.Decoration.widget({
       side: overlay.caret.side,
       widget: new SelfCaretWidget(this.user.name || "You", color)
@@ -16224,8 +16228,8 @@ var SelfCaretWidget = class extends import_view5.WidgetType {
     this.name = name;
     this.color = color;
   }
-  toDOM() {
-    return renderSelfCaret(document, this.name, this.color);
+  toDOM(view) {
+    return renderSelfCaret(view.dom.ownerDocument || document, this.name, this.color);
   }
   eq(other) {
     return this.name === other.name && this.color === other.color;
@@ -16237,17 +16241,16 @@ var SelfCaretWidget = class extends import_view5.WidgetType {
 function renderSelfCaret(doc2, name, color) {
   const el = doc2.createElement("span");
   el.className = "cm-collab-self-caret";
-  el.style.borderColor = color;
+  const line = doc2.createElement("span");
+  line.className = "cm-collab-self-caret-line";
+  line.style.borderColor = color;
+  el.appendChild(line);
   const label = doc2.createElement("span");
   label.className = "cm-collab-self-caret-label";
   label.style.backgroundColor = color;
   label.textContent = name;
   el.appendChild(label);
   return el;
-}
-function alphaColor(color, alphaHex) {
-  if (/^#[0-9a-f]{6}$/i.test(color)) return `${color}${alphaHex}`;
-  return color;
 }
 
 // src/ui/CommentsView.ts

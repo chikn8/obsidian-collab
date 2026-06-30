@@ -5,6 +5,7 @@ import type { Awareness } from "y-protocols/awareness";
 import { trace } from "../utils/log";
 
 const refreshRemoteCursors = StateEffect.define<void>();
+const MAX_REMOTE_SELECTION_CHARS = 2000;
 
 export function cursorAwarenessExtension(
   ytext: Y.Text,
@@ -137,7 +138,7 @@ class CursorAwarenessPlugin {
       const name = state?.user?.name || state?.user?.displayName || "Anonymous";
       const key = `${state?.user?.uid || clientId}:${state?.user?.deviceId || clientId}`;
 
-      if (start < end) {
+      if (start < end && end - start <= MAX_REMOTE_SELECTION_CHARS) {
         ranges.push(Decoration.mark({
           class: "cm-ySelection",
           attributes: { style: `background-color: ${colorLight}` },
@@ -175,23 +176,7 @@ class RemoteCaretWidget extends WidgetType {
   }
 
   toDOM(view: EditorView): HTMLElement {
-    const doc = view.dom.ownerDocument || document;
-    const el = doc.createElement("span");
-    el.className = "cm-ySelectionCaret";
-    el.style.backgroundColor = this.color;
-    el.style.borderColor = this.color;
-    el.dataset.collabCursorKey = this.key;
-    el.appendChild(doc.createTextNode("\u2060"));
-    const dot = doc.createElement("span");
-    dot.className = "cm-ySelectionCaretDot";
-    el.appendChild(dot);
-    el.appendChild(doc.createTextNode("\u2060"));
-    const info = doc.createElement("span");
-    info.className = "cm-ySelectionInfo";
-    info.textContent = this.name;
-    el.appendChild(info);
-    el.appendChild(doc.createTextNode("\u2060"));
-    return el;
+    return renderRemoteCaret(view.dom.ownerDocument || document, this.color, this.name, this.key);
   }
 
   eq(other: RemoteCaretWidget): boolean {
@@ -201,6 +186,28 @@ class RemoteCaretWidget extends WidgetType {
   ignoreEvent(): boolean {
     return true;
   }
+}
+
+export function renderRemoteCaret(doc: Document, color: string, name: string, key: string): HTMLElement {
+  const el = doc.createElement("span");
+  el.className = "cm-ySelectionCaret";
+  el.style.setProperty("--collab-cursor-color", color);
+  el.dataset.collabCursorKey = key;
+
+  const line = doc.createElement("span");
+  line.className = "cm-ySelectionCaretLine";
+  el.appendChild(line);
+
+  const dot = doc.createElement("span");
+  dot.className = "cm-ySelectionCaretDot";
+  el.appendChild(dot);
+
+  const info = doc.createElement("span");
+  info.className = "cm-ySelectionInfo";
+  info.textContent = name;
+  el.appendChild(info);
+
+  return el;
 }
 
 function sameStoredCursor(cursor: any, anchor: Y.RelativePosition, head: Y.RelativePosition): boolean {

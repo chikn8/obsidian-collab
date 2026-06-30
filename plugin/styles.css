@@ -1,11 +1,24 @@
 /* Remote cursor caret */
 .cm-ySelectionCaret {
+  display: inline-block;
   position: relative;
-  border-left: 2px solid;
-  border-color: inherit;
+  width: 0;
+  height: 0;
+  line-height: 0;
   margin-left: -1px;
   margin-right: -1px;
   box-sizing: border-box;
+  overflow: visible;
+  vertical-align: text-top;
+  pointer-events: none;
+}
+
+.cm-ySelectionCaretLine {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 1.15em;
+  border-left: 2px solid var(--collab-cursor-color, #30bced);
 }
 
 /* Colored dot at top of cursor */
@@ -16,7 +29,7 @@
   top: -4px;
   left: -3px;
   border-radius: 50%;
-  background-color: inherit;
+  background-color: var(--collab-cursor-color, #30bced);
 }
 
 /* Username tooltip on hover */
@@ -31,6 +44,7 @@
   line-height: 1;
   padding: 1px 4px;
   border-radius: 3px 3px 3px 0;
+  background: var(--collab-cursor-color, #30bced);
   color: white;
   white-space: nowrap;
   opacity: 0.9;

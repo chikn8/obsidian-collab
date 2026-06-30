@@ -173,6 +173,12 @@ export default class CollabPlugin extends Plugin {
       this.app.workspace.on("active-leaf-change", () => void this.handleActiveLeafChange())
     );
     this.registerEvent(
+      this.app.workspace.on("file-open", () => {
+        void this.handleActiveLeafChange();
+        setTimeout(() => this.eachManager((m) => m.refreshPresenceUi()), 150);
+      })
+    );
+    this.registerEvent(
       this.app.workspace.on("layout-change", () => {
         trace("presence", "layout-change-refresh", { managers: this.syncManagers.size });
         this.eachManager((m) => m.refreshPresenceUi());
@@ -504,6 +510,7 @@ export default class CollabPlugin extends Plugin {
     bindEditor(ev, ytext, awareness, extras);
     session.attach(ev);
     presence?.start();
+    manager?.refreshPresenceUi();
 
     this.boundView = ev;
     this.boundProvider = provider;

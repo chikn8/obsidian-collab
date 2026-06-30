@@ -16760,6 +16760,12 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       this.app.workspace.on("active-leaf-change", () => void this.handleActiveLeafChange())
     );
     this.registerEvent(
+      this.app.workspace.on("file-open", () => {
+        void this.handleActiveLeafChange();
+        setTimeout(() => this.eachManager((m) => m.refreshPresenceUi()), 150);
+      })
+    );
+    this.registerEvent(
       this.app.workspace.on("layout-change", () => {
         trace("presence", "layout-change-refresh", { managers: this.syncManagers.size });
         this.eachManager((m) => m.refreshPresenceUi());
@@ -17046,6 +17052,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     bindEditor(ev, ytext, awareness, extras);
     session.attach(ev);
     presence == null ? void 0 : presence.start();
+    manager == null ? void 0 : manager.refreshPresenceUi();
     this.boundView = ev;
     this.boundProvider = provider;
     this.boundPath = path;

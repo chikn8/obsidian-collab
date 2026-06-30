@@ -3,7 +3,7 @@ import {
   deviceColor,
   presenceLabel,
 } from "../src/collab/PresenceModel.ts";
-import { PresenceController, isTypingInputType } from "../src/collab/Presence.ts";
+import { PresenceController, isTypingInputType, isTypingUserEvent } from "../src/collab/Presence.ts";
 
 let failures = 0;
 function check(name, cond, extra = "") {
@@ -153,6 +153,9 @@ console.log("presence model\n");
   check("delete input counts as typing", isTypingInputType("deleteContentBackward") === true);
   check("history input counts as typing", isTypingInputType("historyUndo") === true);
   check("format input does not count as typing", isTypingInputType("formatBold") === false);
+  check("codemirror input user event counts as typing", isTypingUserEvent("input.type") === true);
+  check("codemirror delete user event counts as typing", isTypingUserEvent("delete.selection") === true);
+  check("codemirror select user event does not count as typing", isTypingUserEvent("select.pointer") === false);
 }
 
 console.log("");

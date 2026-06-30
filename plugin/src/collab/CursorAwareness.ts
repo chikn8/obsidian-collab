@@ -69,9 +69,11 @@ class CursorAwarenessPlugin {
     const local = this.awareness.getLocalState?.();
     if (!local) return;
 
-    const hasFocus = !!view.hasFocus && !!view.dom.ownerDocument?.hasFocus?.();
-    if (!hasFocus) {
-      this.clearLocalCursor(reason);
+    if (reason === "focus" && !view.hasFocus) {
+      trace("awareness", "cursor-focus-lost-retained", {
+        label: this.label,
+        clientId: this.awareness.clientID,
+      });
       return;
     }
 

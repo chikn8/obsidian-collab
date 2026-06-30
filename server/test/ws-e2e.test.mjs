@@ -258,7 +258,7 @@ class SyncClient {
 }
 
 class MuxClient {
-  constructor(wsBase, shareId, rooms, params) {
+  constructor(wsBase, shareId, rooms, params, options = {}) {
     this.shareId = shareId;
     this.docs = new Map();
     this.awareness = new Map();
@@ -268,6 +268,8 @@ class MuxClient {
     this.ws = new WebSocket(url);
     for (const room of rooms) {
       const doc = new Y.Doc();
+      const fixedClientId = options.clientIds?.[room] ?? options.clientId;
+      if (fixedClientId != null) doc.clientID = fixedClientId;
       const awareness = new awarenessProtocol.Awareness(doc);
       this.docs.set(room, doc);
       this.awareness.set(room, awareness);
@@ -638,6 +640,64 @@ try {
     check("server sees two mux sockets", metrics.muxConnections === 2, `muxConnections=${metrics.muxConnections}`);
     await A.close();
     await B.close();
+  }
+
+  console.log("Mux awareness same-device reconnect takes over stale client ids");
+  {
+    const shareId = "e2e-mux-awareness-reconnect";
+    const room = roomName(shareId, "reconnect.md");
+    const fixedClientId = 42424242;
+    const oldParams = {
+      ...authParams("editor", 1, shareId),
+      uid: "same-device-user",
+      name: "Old socket",
+      device: "desktop",
+      deviceId: "same-device",
+    };
+    const newParams = {
+      ...authParams("editor", 1, shareId),
+      uid: "same-device-user",
+      name: "New socket",
+      device: "desktop",
+      deviceId: "same-device",
+    };
+    const observerParams = authParams("editor", 1, shareId);
+    const oldClient = new MuxClient(server.wsBase, shareId, [room], oldParams, { clientId: fixedClientId });
+    const observer = new MuxClient(server.wsBase, shareId, [room], observerParams);
+    await Promise.all([oldClient.ready, observer.ready]);
+    oldClient.setText(room, "same client id reconnect");
+    await observer.waitForText(room, "same client id reconnect");
+
+    const oldCursor = Y.createRelativePositionFromTypeIndex(oldClient.docs.get(room).getText("codemirror"), 4);
+    oldClient.setAwareness(room, {
+      user: { uid: "forged-old", name: "forged", color: "#ff0000" },
+      cursor: { anchor: oldCursor, head: oldCursor },
+    });
+    await observer.waitForAwareness(room, (states) =>
+      states.some(([clientId, state]) => clientId === fixedClientId && state?.user?.name === "Old socket")
+    );
+
+    const newClient = new MuxClient(server.wsBase, shareId, [room], newParams, { clientId: fixedClientId });
+    await newClient.ready;
+    await newClient.waitForText(room, "same client id reconnect");
+    const newCursor = Y.createRelativePositionFromTypeIndex(newClient.docs.get(room).getText("codemirror"), 9);
+    newClient.setAwareness(room, {
+      user: { uid: "forged-new", name: "forged", color: "#00ff00" },
+      cursor: { anchor: newCursor, head: newCursor },
+    });
+    await observer.waitForAwareness(room, (states) =>
+      states.some(([clientId, state]) => clientId === fixedClientId && state?.user?.name === "New socket" && state?.user?.uid === "same-device-user")
+    );
+    check("same-device reconnect can replace stale awareness owner",
+      observer.awarenessStates(room).some(([clientId, state]) =>
+        clientId === fixedClientId &&
+        state?.user?.name === "New socket" &&
+        state?.user?.uid === "same-device-user"
+      ),
+      JSON.stringify(observer.awarenessStates(room)));
+    await newClient.close();
+    await oldClient.close();
+    await observer.close();
   }
 
   console.log("Viewer writes are rejected server-side");

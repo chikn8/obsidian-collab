@@ -193,6 +193,42 @@ function ownerOfAwarenessClient(doc: WSSharedDoc, clientId: number): WebSocket |
   return null;
 }
 
+function sameAwarenessDevice(a: WebSocket, b: WebSocket): boolean {
+  const aIdentity = (a as any).collabIdentity as CollabIdentity | undefined;
+  const bIdentity = (b as any).collabIdentity as CollabIdentity | undefined;
+  if (!aIdentity?.uid || !bIdentity?.uid || aIdentity.uid !== bIdentity.uid) return false;
+  const aDeviceId = aIdentity.deviceId || "";
+  const bDeviceId = bIdentity.deviceId || "";
+  if (aDeviceId || bDeviceId) return aDeviceId === bDeviceId;
+  return (aIdentity.device || "") === (bIdentity.device || "");
+}
+
+function awarenessClock(doc: WSSharedDoc, clientId: number): number {
+  const meta = (doc.awareness as any).meta;
+  return Number(meta?.get?.(clientId)?.clock ?? 0);
+}
+
+function takeoverAwarenessClient(
+  doc: WSSharedDoc,
+  oldOwner: WebSocket,
+  newOwner: WebSocket,
+  clientId: number
+): number {
+  doc.conns.get(oldOwner)?.delete(clientId);
+  const nextClock = awarenessClock(doc, clientId) + 1;
+  logEvent("info", "awareness.same_identity_takeover", {
+    room: doc.name,
+    ...roomInfo(doc.name),
+    oldConnId: (oldOwner as any).collabConnId,
+    newConnId: (newOwner as any).collabConnId,
+    uid: (newOwner as any).collabIdentity?.uid,
+    deviceId: (newOwner as any).collabIdentity?.deviceId,
+    clientId,
+    nextClock,
+  });
+  return nextClock;
+}
+
 function filterAndStampAwarenessUpdate(
   doc: WSSharedDoc,
   conn: WebSocket,
@@ -207,32 +243,50 @@ function filterAndStampAwarenessUpdate(
   const entries: { clientId: number; clock: number; state: any }[] = [];
   for (let i = 0; i < len; i++) {
     const clientId = decoding.readVarUint(decoder);
-    const clock = decoding.readVarUint(decoder);
+    let clock = decoding.readVarUint(decoder);
     const state = JSON.parse(decoding.readVarString(decoder));
     const owner = ownerOfAwarenessClient(doc, clientId);
     const owns = controlled.has(clientId);
 
     if (state === null) {
-      if (owns) entries.push({ clientId, clock, state });
+      if (owns) {
+        entries.push({ clientId, clock, state });
+      } else if (owner && owner !== conn && sameAwarenessDevice(owner, conn)) {
+        clock = Math.max(clock, takeoverAwarenessClient(doc, owner, conn, clientId));
+        entries.push({ clientId, clock, state });
+      }
       continue;
     }
 
     if (owner && owner !== conn) {
-      incMetric("rejected_awareness");
-      logEvent("warn", "awareness.rejected_foreign_client", {
-        room: doc.name,
-        ...roomInfo(doc.name),
-        connId: (conn as any).collabConnId,
-        clientId,
-      });
-      void auditEvent("awareness.rejected_foreign_client", {
-        room: doc.name,
-        ...roomInfo(doc.name),
-        connId: (conn as any).collabConnId,
-        uid: (conn as any).collabIdentity?.uid,
-        clientId,
-      });
-      continue;
+      if (sameAwarenessDevice(owner, conn)) {
+        clock = Math.max(clock, takeoverAwarenessClient(doc, owner, conn, clientId));
+      } else {
+        incMetric("rejected_awareness");
+        logEvent("warn", "awareness.rejected_foreign_client", {
+          room: doc.name,
+          ...roomInfo(doc.name),
+          connId: (conn as any).collabConnId,
+          uid: (conn as any).collabIdentity?.uid,
+          deviceId: (conn as any).collabIdentity?.deviceId,
+          ownerConnId: (owner as any).collabConnId,
+          ownerUid: (owner as any).collabIdentity?.uid,
+          ownerDeviceId: (owner as any).collabIdentity?.deviceId,
+          clientId,
+        });
+        void auditEvent("awareness.rejected_foreign_client", {
+          room: doc.name,
+          ...roomInfo(doc.name),
+          connId: (conn as any).collabConnId,
+          uid: (conn as any).collabIdentity?.uid,
+          deviceId: (conn as any).collabIdentity?.deviceId,
+          ownerConnId: (owner as any).collabConnId,
+          ownerUid: (owner as any).collabIdentity?.uid,
+          ownerDeviceId: (owner as any).collabIdentity?.deviceId,
+          clientId,
+        });
+        continue;
+      }
     }
 
     entries.push({ clientId, clock, state: sanitizeAwarenessStateForTest(state, identity) });

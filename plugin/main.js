@@ -15478,12 +15478,14 @@ var CursorAwarenessPlugin = class {
     this.clearLocalCursor("destroy");
   }
   publishLocalCursor(view, reason) {
-    var _a2, _b2, _c, _d;
+    var _a2, _b2;
     const local = (_b2 = (_a2 = this.awareness).getLocalState) == null ? void 0 : _b2.call(_a2);
     if (!local) return;
-    const hasFocus = !!view.hasFocus && !!((_d = (_c = view.dom.ownerDocument) == null ? void 0 : _c.hasFocus) == null ? void 0 : _d.call(_c));
-    if (!hasFocus) {
-      this.clearLocalCursor(reason);
+    if (reason === "focus" && !view.hasFocus) {
+      trace("awareness", "cursor-focus-lost-retained", {
+        label: this.label,
+        clientId: this.awareness.clientID
+      });
       return;
     }
     const sel = view.state.selection.main;
@@ -16029,6 +16031,9 @@ var PresenceController = class {
           this.bumpTyping();
           return false;
         }
+      }),
+      import_view4.EditorView.updateListener.of((update) => {
+        if (isLocalTypingUpdate(update)) this.bumpTyping();
       })
     ];
   }
@@ -16102,6 +16107,19 @@ var PresenceController = class {
 function isTypingInputType(inputType) {
   if (!inputType) return true;
   return inputType.startsWith("insert") || inputType.startsWith("delete") || inputType === "historyUndo" || inputType === "historyRedo";
+}
+function isTypingUserEvent(event) {
+  if (!event) return false;
+  return event === "input" || event.startsWith("input.") || event === "delete" || event.startsWith("delete.") || event === "paste" || event.startsWith("paste.") || event === "cut" || event.startsWith("cut.") || event === "undo" || event === "redo" || event === "historyUndo" || event === "historyRedo";
+}
+function isLocalTypingUpdate(update) {
+  if (!update.docChanged) return false;
+  return update.transactions.some((tr) => {
+    const event = typeof tr.annotation === "function" ? tr.annotation(import_state4.Transaction.userEvent) : null;
+    if (isTypingUserEvent(event)) return true;
+    if (typeof tr.isUserEvent !== "function") return false;
+    return tr.isUserEvent("input") || tr.isUserEvent("delete") || tr.isUserEvent("paste") || tr.isUserEvent("cut") || tr.isUserEvent("undo") || tr.isUserEvent("redo");
+  });
 }
 function resolveAwarenessCursor(rel, doc2) {
   if (rel == null) return null;

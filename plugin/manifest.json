@@ -1,7 +1,7 @@
 {
   "id": "live-collab",
   "name": "Real-Time Collaboration",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "minAppVersion": "1.4.0",
   "description": "Real-time collaborative editing via Yjs CRDTs with cursor awareness.",
   "author": "Saket Sambaraju",

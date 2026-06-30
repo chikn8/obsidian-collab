@@ -1,5 +1,5 @@
-import { EditorView, showPanel, Panel } from "@codemirror/view";
-import { StateEffect, Extension } from "@codemirror/state";
+import { EditorView, showPanel, Panel, type ViewUpdate } from "@codemirror/view";
+import { StateEffect, Extension, Transaction } from "@codemirror/state";
 import * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 import {
@@ -114,6 +114,9 @@ export class PresenceController {
           return false;
         },
       }),
+      EditorView.updateListener.of((update) => {
+        if (isLocalTypingUpdate(update)) this.bumpTyping();
+      }),
     ];
   }
 
@@ -193,6 +196,43 @@ export function isTypingInputType(inputType: string | null | undefined): boolean
     inputType === "historyUndo" ||
     inputType === "historyRedo"
   );
+}
+
+export function isTypingUserEvent(event: string | null | undefined): boolean {
+  if (!event) return false;
+  return (
+    event === "input" ||
+    event.startsWith("input.") ||
+    event === "delete" ||
+    event.startsWith("delete.") ||
+    event === "paste" ||
+    event.startsWith("paste.") ||
+    event === "cut" ||
+    event.startsWith("cut.") ||
+    event === "undo" ||
+    event === "redo" ||
+    event === "historyUndo" ||
+    event === "historyRedo"
+  );
+}
+
+export function isLocalTypingUpdate(update: Pick<ViewUpdate, "docChanged" | "transactions">): boolean {
+  if (!update.docChanged) return false;
+  return update.transactions.some((tr: any) => {
+    const event = typeof tr.annotation === "function"
+      ? tr.annotation(Transaction.userEvent)
+      : null;
+    if (isTypingUserEvent(event)) return true;
+    if (typeof tr.isUserEvent !== "function") return false;
+    return (
+      tr.isUserEvent("input") ||
+      tr.isUserEvent("delete") ||
+      tr.isUserEvent("paste") ||
+      tr.isUserEvent("cut") ||
+      tr.isUserEvent("undo") ||
+      tr.isUserEvent("redo")
+    );
+  });
 }
 
 /** Resolve a yCollab awareness cursor (a relative position) to an absolute index. */

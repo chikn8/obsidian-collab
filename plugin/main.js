@@ -15695,23 +15695,30 @@ function originName2(origin) {
 
 // src/collab/EditorBinding.ts
 var collabCompartment = new import_state2.Compartment();
+var collabBindingPath = import_state2.Facet.define({
+  combine: (values) => values[values.length - 1] || ""
+});
 var collabEditorExtension = collabCompartment.of([]);
 function getEditorView(markdownView) {
   var _a2;
   const cm = (_a2 = markdownView == null ? void 0 : markdownView.editor) == null ? void 0 : _a2.cm;
   return cm instanceof import_view2.EditorView ? cm : cm != null ? cm : null;
 }
-function bindEditor(view, ytext, awareness, label, extra = []) {
+function bindEditor(view, ytext, awareness, path, extra = []) {
   view.dispatch({
     effects: collabCompartment.reconfigure([
+      collabBindingPath.of(path || ""),
       yCollab(ytext, null),
-      cursorAwarenessExtension(ytext, awareness, { label }),
+      cursorAwarenessExtension(ytext, awareness, { label: path }),
       ...extra
     ])
   });
 }
 function unbindEditor(view) {
   view.dispatch({ effects: collabCompartment.reconfigure([]) });
+}
+function currentCollabBindingPath(view) {
+  return view.state.facet(collabBindingPath) || null;
 }
 function readOnlyExtension() {
   return [import_state2.EditorState.readOnly.of(true), import_view2.EditorView.editable.of(false)];
@@ -17199,6 +17206,8 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     this.boundStore = null;
     this.boundSession = null;
     this.boundPresence = null;
+    this.bindWatchdogTimer = null;
+    this.bindWatchdogUntil = 0;
   }
   async onload() {
     var _a2;
@@ -17244,6 +17253,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     await this.startAllShares();
     this.startPresenceDomObserver();
     void this.handleActiveLeafChange();
+    this.startBindWatchdog("plugin-load", 12e3);
     this.registerEvent(
       this.app.vault.on("create", (file) => {
         trace("vault", "create", { path: file.path, kind: file instanceof import_obsidian11.TFile ? "file" : file instanceof import_obsidian11.TFolder ? "folder" : "other" });
@@ -17283,11 +17293,15 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       })
     );
     this.registerEvent(
-      this.app.workspace.on("active-leaf-change", () => void this.handleActiveLeafChange())
+      this.app.workspace.on("active-leaf-change", () => {
+        void this.handleActiveLeafChange();
+        this.startBindWatchdog("active-leaf-change", 6e3);
+      })
     );
     this.registerEvent(
       this.app.workspace.on("file-open", () => {
         void this.handleActiveLeafChange();
+        this.startBindWatchdog("file-open", 8e3);
         setTimeout(() => this.eachManager((m) => m.refreshPresenceUi()), 150);
       })
     );
@@ -17295,12 +17309,17 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       this.app.workspace.on("layout-change", () => {
         trace("presence", "layout-change-refresh", { managers: this.syncManagers.size });
         this.eachManager((m) => m.refreshPresenceUi());
+        this.startBindWatchdog("layout-change", 5e3);
       })
     );
     this.registerDomEvent(document, "visibilitychange", () => {
       if (document.visibilityState === "hidden") void this.flushActiveEditorForLifecycle("visibility-hidden");
-      else if (document.visibilityState === "visible") this.reconnectAll("visibility-visible");
+      else if (document.visibilityState === "visible") {
+        this.reconnectAll("visibility-visible");
+        this.startBindWatchdog("visibility-visible", 8e3);
+      }
     });
+    this.registerDomEvent(window, "focus", () => this.startBindWatchdog("window-focus", 5e3));
     this.registerDomEvent(window, "pagehide", () => void this.flushActiveEditorForLifecycle("pagehide"));
     this.registerDomEvent(window, "beforeunload", () => void this.flushActiveEditorForLifecycle("beforeunload"));
     this.registerEvent(
@@ -17444,13 +17463,17 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       (status, fileCount, pending) => this.statusBar.setShare(share.id, { label: share.label, status, fileCount, pending }),
       (_users) => {
       },
-      () => this.debouncedActiveEditorRefresh("file-provider-ready")
+      () => {
+        this.debouncedActiveEditorRefresh("file-provider-ready");
+        this.startBindWatchdog("file-provider-ready", 6e3);
+      }
     );
     this.syncManagers.set(share.id, m);
     try {
       await m.start();
       log("share", "started", share.legacy ? "legacy" : share.id, "->", share.localFolder);
       this.debouncedActiveEditorRefresh("share-started");
+      this.startBindWatchdog("share-started", 6e3);
     } catch (e) {
       this.syncManagers.delete(share.id);
       this.statusBar.setShare(share.id, { label: share.label, status: "error", fileCount: 0, pending: 0 });
@@ -17523,6 +17546,50 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     const activeView = (_a2 = this.app.workspace.activeLeaf) == null ? void 0 : _a2.view;
     return (activeView == null ? void 0 : activeView.file) instanceof import_obsidian11.TFile ? activeView.file : null;
   }
+  startBindWatchdog(reason, durationMs) {
+    this.bindWatchdogUntil = Math.max(this.bindWatchdogUntil, Date.now() + durationMs);
+    void this.verifyActiveEditorBinding(`start:${reason}`);
+    if (this.bindWatchdogTimer != null) return;
+    const id2 = window.setInterval(() => {
+      if (Date.now() > this.bindWatchdogUntil) {
+        if (this.bindWatchdogTimer != null) {
+          window.clearInterval(this.bindWatchdogTimer);
+          this.bindWatchdogTimer = null;
+        }
+        return;
+      }
+      void this.verifyActiveEditorBinding(`tick:${reason}`);
+    }, 1e3);
+    this.bindWatchdogTimer = id2;
+    this.registerInterval(id2);
+  }
+  async verifyActiveEditorBinding(reason) {
+    var _a2, _b2;
+    const markdownView = this.app.workspace.getActiveViewOfType(import_obsidian11.MarkdownView);
+    const activeFile = (_a2 = markdownView == null ? void 0 : markdownView.file) != null ? _a2 : null;
+    const ev = markdownView ? getEditorView(markdownView) : null;
+    const path = (_b2 = activeFile == null ? void 0 : activeFile.path) != null ? _b2 : null;
+    if (!path || !activeFile) return;
+    const manager = this.managerOwning(path);
+    if (!manager) return;
+    if (!ev) {
+      trace("bind", "watchdog-missing-editor-view", { path, reason });
+      void this.bindActiveEditor(activeFile, 0);
+      return;
+    }
+    const marker = currentCollabBindingPath(ev);
+    const current = this.boundPath === path && this.boundView === ev && marker === path;
+    if (current) return;
+    trace("bind", "watchdog-rebind-needed", {
+      path,
+      reason,
+      marker,
+      boundPath: this.boundPath,
+      sameView: this.boundView === ev,
+      hasProvider: !!manager.getFileProvider(path)
+    });
+    await this.bindActiveEditor(activeFile, 0);
+  }
   async handleActiveLeafChange() {
     var _a2, _b2;
     const activeFile = this.activeFocusedFile();
@@ -17540,15 +17607,24 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     const view = this.app.workspace.getActiveViewOfType(import_obsidian11.MarkdownView);
     const ev = view ? getEditorView(view) : null;
     const path = (_d = activeFile == null ? void 0 : activeFile.path) != null ? _d : null;
-    trace("bind", "active-leaf", { path, attempt, hasEditorView: !!ev });
+    const marker = ev ? currentCollabBindingPath(ev) : null;
+    trace("bind", "active-leaf", { path, attempt, hasEditorView: !!ev, marker });
     if ((this.boundView || this.boundProvider) && (this.boundPath !== path || this.boundView !== ev)) {
       await this.unbindActiveEditor("active-leaf-change", path, ev);
     }
     if (!ev || !path || !activeFile) {
+      if (!ev && path && activeFile && this.managerOwning(path) && attempt < 20) {
+        trace("bind", "editor-view-not-ready", { path, attempt });
+        setTimeout(() => void this.bindActiveEditor(activeFile, attempt + 1), 300);
+      }
       this.refreshCommentsContext();
       return;
     }
-    if (this.boundPath === path) return;
+    if (this.boundPath === path && this.boundView === ev && marker === path) return;
+    if (this.boundPath === path && this.boundView === ev && marker !== path) {
+      trace("bind", "binding-marker-missing", { path, marker });
+      await this.unbindActiveEditor("binding-marker-missing", path, ev);
+    }
     let provider = null;
     for (const m of this.syncManagers.values()) {
       provider = m.getFileProvider(path);

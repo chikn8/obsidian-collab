@@ -5,7 +5,7 @@ import { FileProvider } from "./collab/FileProvider";
 import { InstanceWatch } from "./collab/InstanceWatch";
 import { StatusBarWidget } from "./ui/StatusBarWidget";
 import { CollabSettingsTab } from "./ui/SettingsTab";
-import { collabEditorExtension, getEditorView, bindEditor, unbindEditor, readOnlyExtension } from "./collab/EditorBinding";
+import { collabEditorExtension, getEditorView, bindEditor, unbindEditor, readOnlyExtension, currentCollabBindingPath } from "./collab/EditorBinding";
 import { CommentStore, type ThreadView } from "./collab/CommentStore";
 import { CommentSession } from "./collab/CommentLayer";
 import { PresenceController } from "./collab/Presence";
@@ -64,6 +64,8 @@ export default class CollabPlugin extends Plugin {
   private boundStore: CommentStore | null = null;
   private boundSession: CommentSession | null = null;
   private boundPresence: PresenceController | null = null;
+  private bindWatchdogTimer: number | null = null;
+  private bindWatchdogUntil = 0;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -127,6 +129,7 @@ export default class CollabPlugin extends Plugin {
     // Bind the already-open editor (if any). Providers connect async, so the
     // retry loop in bindActiveEditor waits for the owning provider to be ready.
     void this.handleActiveLeafChange();
+    this.startBindWatchdog("plugin-load", 12000);
 
     // Vault events — routed to every manager (each ignores paths outside its folder)
     this.registerEvent(
@@ -171,11 +174,15 @@ export default class CollabPlugin extends Plugin {
       })
     );
     this.registerEvent(
-      this.app.workspace.on("active-leaf-change", () => void this.handleActiveLeafChange())
+      this.app.workspace.on("active-leaf-change", () => {
+        void this.handleActiveLeafChange();
+        this.startBindWatchdog("active-leaf-change", 6000);
+      })
     );
     this.registerEvent(
       this.app.workspace.on("file-open", () => {
         void this.handleActiveLeafChange();
+        this.startBindWatchdog("file-open", 8000);
         setTimeout(() => this.eachManager((m) => m.refreshPresenceUi()), 150);
       })
     );
@@ -183,12 +190,17 @@ export default class CollabPlugin extends Plugin {
       this.app.workspace.on("layout-change", () => {
         trace("presence", "layout-change-refresh", { managers: this.syncManagers.size });
         this.eachManager((m) => m.refreshPresenceUi());
+        this.startBindWatchdog("layout-change", 5000);
       })
     );
     this.registerDomEvent(document, "visibilitychange", () => {
       if (document.visibilityState === "hidden") void this.flushActiveEditorForLifecycle("visibility-hidden");
-      else if (document.visibilityState === "visible") this.reconnectAll("visibility-visible");
+      else if (document.visibilityState === "visible") {
+        this.reconnectAll("visibility-visible");
+        this.startBindWatchdog("visibility-visible", 8000);
+      }
     });
+    this.registerDomEvent(window, "focus", () => this.startBindWatchdog("window-focus", 5000));
     this.registerDomEvent(window, "pagehide", () => void this.flushActiveEditorForLifecycle("pagehide"));
     this.registerDomEvent(window, "beforeunload", () => void this.flushActiveEditorForLifecycle("beforeunload"));
 
@@ -349,13 +361,17 @@ export default class CollabPlugin extends Plugin {
       (status: SyncStatus, fileCount: number, pending: number) =>
         this.statusBar.setShare(share.id, { label: share.label, status, fileCount, pending }),
       (_users: ConnectedUser[]) => {},
-      () => this.debouncedActiveEditorRefresh("file-provider-ready")
+      () => {
+        this.debouncedActiveEditorRefresh("file-provider-ready");
+        this.startBindWatchdog("file-provider-ready", 6000);
+      }
     );
     this.syncManagers.set(share.id, m);
     try {
       await m.start();
       log("share", "started", share.legacy ? "legacy" : share.id, "->", share.localFolder);
       this.debouncedActiveEditorRefresh("share-started");
+      this.startBindWatchdog("share-started", 6000);
     } catch (e) {
       this.syncManagers.delete(share.id);
       this.statusBar.setShare(share.id, { label: share.label, status: "error", fileCount: 0, pending: 0 });
@@ -443,6 +459,58 @@ export default class CollabPlugin extends Plugin {
     return activeView?.file instanceof TFile ? activeView.file : null;
   }
 
+  private startBindWatchdog(reason: string, durationMs: number): void {
+    this.bindWatchdogUntil = Math.max(this.bindWatchdogUntil, Date.now() + durationMs);
+    void this.verifyActiveEditorBinding(`start:${reason}`);
+    if (this.bindWatchdogTimer != null) return;
+    const id = window.setInterval(() => {
+      if (Date.now() > this.bindWatchdogUntil) {
+        if (this.bindWatchdogTimer != null) {
+          window.clearInterval(this.bindWatchdogTimer);
+          this.bindWatchdogTimer = null;
+        }
+        return;
+      }
+      void this.verifyActiveEditorBinding(`tick:${reason}`);
+    }, 1000);
+    this.bindWatchdogTimer = id;
+    this.registerInterval(id);
+  }
+
+  private async verifyActiveEditorBinding(reason: string): Promise<void> {
+    const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const activeFile = markdownView?.file ?? null;
+    const ev = markdownView ? getEditorView(markdownView) : null;
+    const path = activeFile?.path ?? null;
+    if (!path || !activeFile) return;
+
+    const manager = this.managerOwning(path);
+    if (!manager) return;
+
+    if (!ev) {
+      trace("bind", "watchdog-missing-editor-view", { path, reason });
+      void this.bindActiveEditor(activeFile, 0);
+      return;
+    }
+
+    const marker = currentCollabBindingPath(ev);
+    const current =
+      this.boundPath === path &&
+      this.boundView === ev &&
+      marker === path;
+    if (current) return;
+
+    trace("bind", "watchdog-rebind-needed", {
+      path,
+      reason,
+      marker,
+      boundPath: this.boundPath,
+      sameView: this.boundView === ev,
+      hasProvider: !!manager.getFileProvider(path),
+    });
+    await this.bindActiveEditor(activeFile, 0);
+  }
+
   private async handleActiveLeafChange(): Promise<void> {
     // Presence follows the actively focused file view (Markdown, Canvas, etc.).
     // Editor binding still only attaches to Markdown's CodeMirror instance.
@@ -463,15 +531,27 @@ export default class CollabPlugin extends Plugin {
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     const ev = view ? getEditorView(view) : null;
     const path = activeFile?.path ?? null;
-    trace("bind", "active-leaf", { path, attempt, hasEditorView: !!ev });
+    const marker = ev ? currentCollabBindingPath(ev) : null;
+    trace("bind", "active-leaf", { path, attempt, hasEditorView: !!ev, marker });
 
     // Unbind the previous editor if we've moved away from it
     if ((this.boundView || this.boundProvider) && (this.boundPath !== path || this.boundView !== ev)) {
       await this.unbindActiveEditor("active-leaf-change", path, ev);
     }
 
-    if (!ev || !path || !activeFile) { this.refreshCommentsContext(); return; }
-    if (this.boundPath === path) return; // already bound
+    if (!ev || !path || !activeFile) {
+      if (!ev && path && activeFile && this.managerOwning(path) && attempt < 20) {
+        trace("bind", "editor-view-not-ready", { path, attempt });
+        setTimeout(() => void this.bindActiveEditor(activeFile, attempt + 1), 300);
+      }
+      this.refreshCommentsContext();
+      return;
+    }
+    if (this.boundPath === path && this.boundView === ev && marker === path) return; // actually bound
+    if (this.boundPath === path && this.boundView === ev && marker !== path) {
+      trace("bind", "binding-marker-missing", { path, marker });
+      await this.unbindActiveEditor("binding-marker-missing", path, ev);
+    }
 
     // Find the provider owning this file
     let provider: FileProvider | null = null;

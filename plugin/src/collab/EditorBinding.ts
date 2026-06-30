@@ -1,4 +1,4 @@
-import { Compartment, Extension, EditorState } from "@codemirror/state";
+import { Compartment, Extension, EditorState, Facet } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { yCollab } from "y-codemirror.next";
 import * as Y from "yjs";
@@ -18,6 +18,9 @@ import { cursorAwarenessExtension } from "./CursorAwareness";
  * registered globally, is reconfigured per active file.
  */
 const collabCompartment = new Compartment();
+const collabBindingPath = Facet.define<string, string>({
+  combine: (values) => values[values.length - 1] || "",
+});
 
 /** Register once via plugin.registerEditorExtension(). Starts empty. */
 export const collabEditorExtension = collabCompartment.of([]);
@@ -32,15 +35,16 @@ export function bindEditor(
   view: EditorView,
   ytext: Y.Text,
   awareness: Awareness,
-  label?: string,
+  path?: string,
   extra: Extension[] = []
 ): void {
   // yCollab handles text sync/undo. Cursor awareness is local so we can keep
   // identity, focus clearing, and diagnostics under our control.
   view.dispatch({
     effects: collabCompartment.reconfigure([
+      collabBindingPath.of(path || ""),
       yCollab(ytext, null),
-      cursorAwarenessExtension(ytext, awareness, { label }),
+      cursorAwarenessExtension(ytext, awareness, { label: path }),
       ...extra,
     ]),
   });
@@ -48,6 +52,10 @@ export function bindEditor(
 
 export function unbindEditor(view: EditorView): void {
   view.dispatch({ effects: collabCompartment.reconfigure([]) });
+}
+
+export function currentCollabBindingPath(view: EditorView): string | null {
+  return view.state.facet(collabBindingPath) || null;
 }
 
 /**

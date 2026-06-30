@@ -8,9 +8,12 @@ import { fileURLToPath } from "url";
 import WebSocket from "ws";
 import * as Y from "yjs";
 import * as syncProtocol from "y-protocols/sync";
+import * as awarenessProtocol from "y-protocols/awareness";
 import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
 
+const MESSAGE_SYNC = 0;
+const MESSAGE_AWARENESS = 1;
 const MESSAGE_MUX = 6;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -258,18 +261,32 @@ class MuxClient {
   constructor(wsBase, shareId, rooms, params) {
     this.shareId = shareId;
     this.docs = new Map();
+    this.awareness = new Map();
     this.closeCode = null;
     const url = new URL(`${wsBase}/${encodeURIComponent(`@${shareId}:__mux__`)}`);
     for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
     this.ws = new WebSocket(url);
     for (const room of rooms) {
       const doc = new Y.Doc();
+      const awareness = new awarenessProtocol.Awareness(doc);
       this.docs.set(room, doc);
+      this.awareness.set(room, awareness);
       doc.on("update", (update, origin) => {
         if (origin === this || this.ws.readyState !== WebSocket.OPEN) return;
         const inner = encoding.createEncoder();
-        encoding.writeVarUint(inner, 0);
+        encoding.writeVarUint(inner, MESSAGE_SYNC);
         syncProtocol.writeUpdate(inner, update);
+        this.sendInner(room, encoding.toUint8Array(inner));
+      });
+      awareness.on("update", ({ added, updated, removed }, origin) => {
+        if (origin === this || this.ws.readyState !== WebSocket.OPEN) return;
+        const changedClients = added.concat(updated, removed);
+        const inner = encoding.createEncoder();
+        encoding.writeVarUint(inner, MESSAGE_AWARENESS);
+        encoding.writeVarUint8Array(
+          inner,
+          awarenessProtocol.encodeAwarenessUpdate(awareness, changedClients)
+        );
         this.sendInner(room, encoding.toUint8Array(inner));
       });
     }
@@ -303,7 +320,7 @@ class MuxClient {
 
   sendSyncStep1(room) {
     const inner = encoding.createEncoder();
-    encoding.writeVarUint(inner, 0);
+    encoding.writeVarUint(inner, MESSAGE_SYNC);
     syncProtocol.writeSyncStep1(inner, this.docs.get(room));
     this.sendInner(room, encoding.toUint8Array(inner));
   }
@@ -318,12 +335,18 @@ class MuxClient {
     if (!doc) return;
     const inner = decoding.createDecoder(innerBytes);
     const messageType = decoding.readVarUint(inner);
-    if (messageType !== 0) return;
-    const reply = encoding.createEncoder();
-    encoding.writeVarUint(reply, 0);
-    syncProtocol.readSyncMessage(inner, reply, doc, this);
-    if (encoding.length(reply) > 1 && this.ws.readyState === WebSocket.OPEN) {
-      this.sendInner(room, encoding.toUint8Array(reply));
+    if (messageType === MESSAGE_AWARENESS) {
+      const update = decoding.readVarUint8Array(inner);
+      awarenessProtocol.applyAwarenessUpdate(this.awareness.get(room), update, this);
+      return;
+    }
+    if (messageType === MESSAGE_SYNC) {
+      const reply = encoding.createEncoder();
+      encoding.writeVarUint(reply, MESSAGE_SYNC);
+      syncProtocol.readSyncMessage(inner, reply, doc, this);
+      if (encoding.length(reply) > 1 && this.ws.readyState === WebSocket.OPEN) {
+        this.sendInner(room, encoding.toUint8Array(reply));
+      }
     }
   }
 
@@ -339,6 +362,18 @@ class MuxClient {
     }, "local-test");
   }
 
+  setAwareness(room, state) {
+    this.awareness.get(room).setLocalState(state);
+  }
+
+  awarenessStates(room) {
+    return Array.from(this.awareness.get(room).getStates().entries());
+  }
+
+  async waitForAwareness(room, predicate, timeoutMs = 5000) {
+    await waitFor(() => predicate(this.awarenessStates(room)), timeoutMs, `awareness in ${room}`);
+  }
+
   async waitForText(room, text, timeoutMs = 5000) {
     await waitFor(() => this.text(room) === text, timeoutMs, `text ${JSON.stringify(text)} in ${room}`);
   }
@@ -346,6 +381,7 @@ class MuxClient {
   async close() {
     if (this.ws.readyState !== WebSocket.CLOSED) this.ws.close();
     await Promise.race([this.closed, sleep(1500)]);
+    for (const awareness of this.awareness.values()) awareness.destroy();
     for (const doc of this.docs.values()) doc.destroy();
   }
 }
@@ -564,8 +600,10 @@ try {
     const shareId = "e2e-mux";
     const roomA = roomName(shareId, "mux-a.md");
     const roomB = roomName(shareId, "mux-b.md");
-    const A = new MuxClient(server.wsBase, shareId, [roomA, roomB], authParams("editor", 1, shareId));
-    const B = new MuxClient(server.wsBase, shareId, [roomA, roomB], authParams("editor", 1, shareId));
+    const aParams = authParams("editor", 1, shareId);
+    const bParams = authParams("editor", 1, shareId);
+    const A = new MuxClient(server.wsBase, shareId, [roomA, roomB], aParams);
+    const B = new MuxClient(server.wsBase, shareId, [roomA, roomB], bParams);
     await Promise.all([A.ready, B.ready]);
     A.setText(roomA, "mux room A text");
     A.setText(roomB, "mux room B text");
@@ -573,6 +611,23 @@ try {
     await B.waitForText(roomB, "mux room B text");
     check("mux room A converged", B.text(roomA) === "mux room A text");
     check("mux room B converged", B.text(roomB) === "mux room B text");
+    const cursor = Y.createRelativePositionFromTypeIndex(A.docs.get(roomA).getText("codemirror"), 4);
+    A.setAwareness(roomA, {
+      user: { uid: "forged", name: "forged", color: "#ff0000" },
+      cursor: { anchor: cursor, head: cursor },
+    });
+    await B.waitForAwareness(roomA, (states) =>
+      states.some(([, state]) => state?.user?.uid === aParams.uid && state?.cursor?.head)
+    );
+    check("mux awareness crosses room A",
+      B.awarenessStates(roomA).some(([, state]) => state?.user?.uid === aParams.uid && state?.cursor?.head),
+      JSON.stringify(B.awarenessStates(roomA)));
+    check("mux awareness identity is server-stamped",
+      B.awarenessStates(roomA).some(([, state]) => state?.user?.uid === aParams.uid && state?.user?.name === aParams.name),
+      JSON.stringify(B.awarenessStates(roomA)));
+    check("mux awareness stays out of room B",
+      !B.awarenessStates(roomB).some(([, state]) => state?.user?.uid === aParams.uid && state?.cursor?.head),
+      JSON.stringify(B.awarenessStates(roomB)));
     const metricsRes = await fetch(`${server.httpBase}/metrics`, {
       headers: { Authorization: `Bearer ${ADMIN_SECRET}` },
     });

@@ -1,7 +1,7 @@
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { configureLogDrainForTest, getLogDrainHealth, logEvent } from "../src/logging.ts";
+import { configureLogDrainForTest, getLogDrainHealth, logEvent, readLogDrainTail } from "../src/logging.ts";
 
 let failures = 0;
 function check(name, cond, extra = "") {
@@ -71,6 +71,7 @@ check("does not leak secret values", !captured.map((r) => r.line).join("\n").inc
     for (let i = 0; i < 6; i++) {
       logEvent("info", "drain.rotate", { i, message: "x".repeat(260) });
     }
+    logEvent("error", "drain.after_rotate_error", { safe: "tail" });
   } finally {
     console.log = original.log;
     console.warn = original.warn;
@@ -82,11 +83,15 @@ check("does not leak secret values", !captured.map((r) => r.line).join("\n").inc
   const combined = `${current}\n${rotated}`;
   const lines = combined.trim().split(/\n+/).map((line) => JSON.parse(line));
   const health = getLogDrainHealth();
+  const warnTail = readLogDrainTail({ level: "error", limit: 5 });
+  const eventTail = readLogDrainTail({ event: "drain.rotate", limit: 2 });
   check("retained drain writes JSONL", lines.some((row) => row.event === "drain.rotate"), combined);
   check("retained drain uses level stream", drainCaptured.some((row) => row.stream === "error" && row.line.includes("drain.two")));
   check("retained drain redacts secrets", !combined.includes("drain-secret"), combined);
   check("retained drain rotates when capped", rotated.includes("drain."), rotated);
   check("retained drain health is exposed", health.enabled === true && health.ok === true && health.path === logPath && health.bytes > 0, JSON.stringify(health));
+  check("retained drain tail filters level", warnTail.every((row) => row.level === "error") && warnTail.some((row) => row.event === "drain.after_rotate_error"));
+  check("retained drain tail filters event", eventTail.length <= 2 && eventTail.every((row) => row.event === "drain.rotate"));
   configureLogDrainForTest({ enabled: false });
   await fs.rm(tmp, { recursive: true, force: true });
 }

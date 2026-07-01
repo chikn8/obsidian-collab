@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from "fs";
 import { dirname, join } from "path";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -111,6 +111,40 @@ export function getLogDrainHealth(): Record<string, unknown> {
     health.lastError = trim(String(e?.message || e));
   }
   return health;
+}
+
+export function readLogDrainTail(options: { limit?: number; level?: LogLevel; event?: string } = {}): Record<string, unknown>[] {
+  if (!logDrain.enabled) return [];
+  const limit = Math.max(1, Math.min(500, Math.floor(options.limit || 100)));
+  let raw = "";
+  const paths: string[] = [];
+  for (let i = logDrain.rotateCount; i >= 1; i--) paths.push(`${logDrain.path}.${i}`);
+  paths.push(logDrain.path);
+  for (const p of paths) {
+    if (!existsSync(p)) continue;
+    try {
+      raw += readFileSync(p, "utf8");
+      if (!raw.endsWith("\n")) raw += "\n";
+    } catch (e: any) {
+      drainLastError = trim(String(e?.message || e));
+      return [];
+    }
+  }
+  if (!raw) return [];
+  const rows: Record<string, unknown>[] = [];
+  const lines = raw.trim().split(/\n+/).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0 && rows.length < limit; i--) {
+    try {
+      const row = JSON.parse(lines[i]) as Record<string, unknown>;
+      if (options.level && row.level !== options.level) continue;
+      if (options.event && row.event !== options.event) continue;
+      rows.push(row);
+    } catch {
+      // Ignore truncated/corrupt tail rows; the drain is best-effort diagnostics.
+    }
+  }
+  rows.reverse();
+  return rows;
 }
 
 export function configureLogDrainForTest(config: Partial<LogDrainConfig> | null): void {

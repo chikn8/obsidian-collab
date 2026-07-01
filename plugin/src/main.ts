@@ -6,20 +6,14 @@ import { InstanceWatch } from "./collab/InstanceWatch";
 import { StatusBarWidget } from "./ui/StatusBarWidget";
 import { CollabSettingsTab } from "./ui/SettingsTab";
 import { collabEditorExtension, getEditorView, bindEditor, unbindEditor, readOnlyExtension, currentCollabBindingPath } from "./collab/EditorBinding";
-import { CommentStore, type ThreadView } from "./collab/CommentStore";
-import { CommentSession } from "./collab/CommentLayer";
 import { PresenceController } from "./collab/Presence";
 import { selfSelectionExtension } from "./collab/SelfSelection";
 import { deviceScopedColor } from "./collab/YjsProvider";
-import { CommentsView, COMMENTS_VIEW_TYPE } from "./ui/CommentsView";
-import { CommentInboxView, COMMENT_INBOX_VIEW_TYPE, type CommentInboxItem } from "./ui/CommentInboxView";
+import { ActivityView, ACTIVITY_VIEW_TYPE } from "./ui/ActivityView";
 import { promptModal } from "./ui/modals";
 import { configureDiagnostics, exportDiagnosticBundle, log, err, setDiagnosticLogging, startDiagnosticTrace, trace } from "./utils/log";
 import { getJson, postJson } from "./utils/http";
 import { ensureIdentityKeys } from "./utils/identity";
-import { findMentionedUsers } from "./utils/mentions";
-import { buildThreadAuthorNotification, type CommentEventKind } from "./utils/commentNotifications";
-import { isThreadUnread, latestCommentActivity } from "./utils/commentActivity";
 import { readLegacyPluginData } from "./utils/pluginPaths";
 import { cleanShareFolder, shareFolderOverlaps } from "./utils/shareFolders";
 import {
@@ -48,7 +42,6 @@ export default class CollabPlugin extends Plugin {
       new Notice("Collab could not restart syncing. Check the server URL and share settings.");
     });
   }, 800, false);
-  private debouncedPersistReadMarkers = debounce(() => { void this.persist(); }, 500, false);
   private debouncedPresenceDomRefresh = debounce(() => this.eachManager((m) => m.refreshPresenceUi()), 250, false);
   private debouncedLiveIdentityRefresh = debounce(() => this.refreshLiveIdentity(), 250, false);
   private debouncedActiveEditorRefresh = debounce((reason: string) => {
@@ -61,8 +54,6 @@ export default class CollabPlugin extends Plugin {
   private boundView: EditorView | null = null;
   private boundProvider: FileProvider | null = null;
   private boundPath: string | null = null;
-  private boundStore: CommentStore | null = null;
-  private boundSession: CommentSession | null = null;
   private boundPresence: PresenceController | null = null;
   private bindWatchdogTimer: number | null = null;
   private bindWatchdogUntil = 0;
@@ -82,33 +73,10 @@ export default class CollabPlugin extends Plugin {
     this.statusBar = new StatusBarWidget(this.addStatusBarItem());
     this.addSettingTab(new CollabSettingsTab(this.app, this));
 
-    // Comments sidebar (first ItemView in the plugin)
-    this.registerView(COMMENTS_VIEW_TYPE, (leaf) => new CommentsView(leaf));
-    this.registerView(COMMENT_INBOX_VIEW_TYPE, (leaf) => new CommentInboxView(leaf));
-    this.addRibbonIcon("message-square", "Collab comments", () => this.openCommentsPanel());
-    this.addRibbonIcon("inbox", "Unread collab comments", () => this.openCommentInbox());
-    this.addCommand({ id: "open-comments", name: "Open comments panel", callback: () => this.openCommentsPanel() });
-    this.addCommand({ id: "open-comment-inbox", name: "Open unread comments inbox", callback: () => this.openCommentInbox() });
-    this.addCommand({
-      id: "add-comment-to-selection",
-      name: "Add comment to selection",
-      checkCallback: (checking) => {
-        const file = this.app.workspace.getActiveFile();
-        const manager = file ? this.managerOwning(file.path) : null;
-        const canComment =
-          !!file &&
-          !!manager &&
-          manager.role !== "viewer" &&
-          this.boundPath === file.path &&
-          !!this.boundView &&
-          !this.boundView.state.selection.main.empty;
-        if (checking) return canComment;
-        if (!canComment || !file) return false;
-        trace("comment", "add-command", { path: file.path });
-        void this.addCommentForSelection(file, this.app.workspace.getActiveViewOfType(MarkdownView) ?? {});
-        return true;
-      },
-    });
+    // Shared activity/chat panel.
+    this.registerView(ACTIVITY_VIEW_TYPE, (leaf) => new ActivityView(leaf));
+    this.addRibbonIcon("message-circle", "Collab activity", () => this.openActivityPanel());
+    this.addCommand({ id: "open-activity", name: "Open activity panel", callback: () => this.openActivityPanel() });
 
     // Version-history sidebar
     this.registerView(HISTORY_VIEW_TYPE, (leaf) => new HistoryView(leaf));
@@ -219,19 +187,6 @@ export default class CollabPlugin extends Plugin {
             item.setTitle("Version history (collab)").setIcon("history").onClick(() => this.openHistoryPanel())
           );
         }
-      })
-    );
-
-    // Editor context-menu: "Add comment" on a selection in a synced file
-    this.registerEvent(
-      this.app.workspace.on("editor-menu", (menu, editor, info) => {
-        const file = (info as any)?.file as TFile | undefined;
-        const manager = file ? this.managerOwning(file.path) : null;
-        if (!file || !manager || manager.role === "viewer") return;
-        if (!editor.getSelection()) return;
-        menu.addItem((item) =>
-          item.setTitle("Add comment").setIcon("message-square").onClick(() => this.addCommentForSelection(file, info))
-        );
       })
     );
 
@@ -370,6 +325,7 @@ export default class CollabPlugin extends Plugin {
     try {
       await m.start();
       log("share", "started", share.legacy ? "legacy" : share.id, "->", share.localFolder);
+      this.refreshActivityContext();
       this.debouncedActiveEditorRefresh("share-started");
       this.startBindWatchdog("share-started", 6000);
     } catch (e) {
@@ -388,6 +344,7 @@ export default class CollabPlugin extends Plugin {
       }
       await m.destroy();
       this.syncManagers.delete(id);
+      this.refreshActivityContext();
     }
     this.statusBar.removeShare(id);
   }
@@ -521,6 +478,7 @@ export default class CollabPlugin extends Plugin {
     await this.bindActiveEditor(markdownFile, 0);
     // Keep an open history panel in sync with the active file.
     this.getHistoryView()?.setContext(this.buildHistoryContext());
+    this.refreshActivityContext();
   }
 
   private async bindActiveEditor(activeFile: TFile | null, attempt: number): Promise<void> {
@@ -544,7 +502,7 @@ export default class CollabPlugin extends Plugin {
         trace("bind", "editor-view-not-ready", { path, attempt });
         setTimeout(() => void this.bindActiveEditor(activeFile, attempt + 1), 300);
       }
-      this.refreshCommentsContext();
+      this.refreshActivityContext();
       return;
     }
     if (this.boundPath === path && this.boundView === ev && marker === path) return; // actually bound
@@ -559,7 +517,7 @@ export default class CollabPlugin extends Plugin {
       provider = m.getFileProvider(path);
       if (provider) break;
     }
-    if (!provider) { this.refreshCommentsContext(); return; } // not a synced file
+    if (!provider) { this.refreshActivityContext(); return; } // not a synced file
 
     if (!provider.isReady()) {
       trace("bind", "provider-not-ready", { path, attempt });
@@ -573,9 +531,6 @@ export default class CollabPlugin extends Plugin {
     const awareness = provider.getAwareness();
     if (!ytext || !awareness) return;
 
-    const store = new CommentStore(provider.getDoc());
-    const session = new CommentSession(store, (id) => this.openThread(id));
-
     // Presence facepile (needs the owning share's manifest awareness)
     const manager = this.managerOwning(path);
     const manifestAwareness = manager?.getManifestAwareness();
@@ -588,7 +543,7 @@ export default class CollabPlugin extends Plugin {
     const role = manager?.role || "editor";
     const selfBaseColor = this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName);
     const selfColor = deviceScopedColor(selfBaseColor);
-    const extras = [session.extension(), selfSelectionExtension({ name: this.settings.displayName || "You", color: selfColor })];
+    const extras = [selfSelectionExtension({ name: this.settings.displayName || "You", color: selfColor })];
     extras.push(EditorView.updateListener.of((u) => {
       if (u.selectionSet) this.debouncedPresenceDomRefresh();
     }));
@@ -597,149 +552,63 @@ export default class CollabPlugin extends Plugin {
 
     await provider.setEditorBound(true);
     bindEditor(ev, ytext, awareness, path, extras);
-    session.attach(ev);
     presence?.start();
     manager?.refreshPresenceUi();
 
     this.boundView = ev;
     this.boundProvider = provider;
     this.boundPath = path;
-    this.boundStore = store;
-    this.boundSession = session;
     this.boundPresence = presence;
-    this.refreshCommentsContext();
-    trace("bind", "bound", { path, role, hasPresence: !!presence, comments: store.openCount() });
-    log("bind", "bound editor", path, "comments=", store.openCount());
+    this.refreshActivityContext();
+    trace("bind", "bound", { path, role, hasPresence: !!presence });
+    log("bind", "bound editor", path);
   }
 
-  // ── Comments wiring ─────────────────────────────────────────────
+  // ── Activity/chat wiring ───────────────────────────────────────
 
-  private getCommentsView(): CommentsView | null {
-    const leaves = this.app.workspace.getLeavesOfType(COMMENTS_VIEW_TYPE);
-    return (leaves[0]?.view as CommentsView) ?? null;
+  private getActivityView(): ActivityView | null {
+    return (this.app.workspace.getLeavesOfType(ACTIVITY_VIEW_TYPE)[0]?.view as ActivityView) ?? null;
   }
 
-  private async openCommentsPanel(): Promise<void> {
-    let leaf = this.app.workspace.getLeavesOfType(COMMENTS_VIEW_TYPE)[0];
+  private async openActivityPanel(): Promise<void> {
+    let leaf = this.app.workspace.getLeavesOfType(ACTIVITY_VIEW_TYPE)[0];
     if (!leaf) {
       leaf = this.app.workspace.getRightLeaf(false)!;
-      await leaf.setViewState({ type: COMMENTS_VIEW_TYPE, active: true });
+      await leaf.setViewState({ type: ACTIVITY_VIEW_TYPE, active: true });
     }
     this.app.workspace.revealLeaf(leaf);
-    this.refreshCommentsContext();
+    this.refreshActivityContext();
   }
 
-  private refreshCommentsContext(): void {
-    const view = this.getCommentsView();
+  private refreshActivityContext(): void {
+    const view = this.getActivityView();
     if (!view) return;
-    if (this.boundStore && this.boundPath) {
-      const fileName = this.boundPath.split("/").pop() || this.boundPath;
-      view.setContext({
-        store: this.boundStore,
-        session: this.boundSession,
-        fileName,
-        me: { uid: this.settings.uid, name: this.settings.displayName },
-        now: () => Date.now(),
-        canComment: this.managerOwning(this.boundPath || "")?.role !== "viewer",
-        mentionUsers: () => this.managerOwning(this.boundPath || "")?.roster() ?? [],
-        notifyFromText: (text) => this.notifyMentionsInText(text, fileName, this.boundPath || ""),
-        notifyThreadEvent: (thread, kind, text, alreadyNotified) =>
-          this.notifyCommentThreadEvent(thread, kind, text, fileName, this.boundPath || "", alreadyNotified),
-        markRead: (thread) => this.markCommentThreadRead(this.boundPath || "", thread),
-      });
-    } else {
+    const manager = this.activityManager();
+    if (!manager) {
       view.setContext(null);
-    }
-  }
-
-  private openThread(threadId: string): void {
-    this.boundSession?.reveal(threadId);
-    this.openCommentsPanel();
-  }
-
-  private getCommentInboxView(): CommentInboxView | null {
-    return (this.app.workspace.getLeavesOfType(COMMENT_INBOX_VIEW_TYPE)[0]?.view as CommentInboxView) ?? null;
-  }
-
-  private async openCommentInbox(): Promise<void> {
-    let leaf = this.app.workspace.getLeavesOfType(COMMENT_INBOX_VIEW_TYPE)[0];
-    if (!leaf) {
-      leaf = this.app.workspace.getRightLeaf(false)!;
-      await leaf.setViewState({ type: COMMENT_INBOX_VIEW_TYPE, active: true });
-    }
-    this.app.workspace.revealLeaf(leaf);
-    this.getCommentInboxView()?.setContext({
-      items: () => this.buildCommentInboxItems(),
-      open: (item) => this.openCommentInboxItem(item),
-      markAllRead: () => this.markAllInboxRead(),
-      now: () => Date.now(),
-    });
-  }
-
-  private buildCommentInboxItems(): CommentInboxItem[] {
-    const items: CommentInboxItem[] = [];
-    for (const m of this.syncManagers.values()) {
-      m.eachFileProvider((relPath, fp) => {
-        const fullPath = m.toFull(relPath);
-        const store = new CommentStore(fp.getDoc());
-        for (const thread of store.list()) {
-          const key = commentReadKey(m.shareId, relPath, thread.id);
-          const lastReadAt = this.settings.commentReadAt?.[key] || 0;
-          if (!isThreadUnread(thread, this.settings.uid, lastReadAt)) continue;
-          const latest = latestCommentActivity(thread);
-          items.push({
-            key,
-            filePath: fullPath,
-            fileName: fullPath.split("/").pop() || fullPath,
-            threadId: thread.id,
-            authorName: latest.byName || thread.authorName,
-            quote: thread.quote,
-            text: latest.text,
-            lastAt: latest.at,
-          });
-        }
-      });
-    }
-    return items.sort((a, b) => b.lastAt - a.lastAt || a.filePath.localeCompare(b.filePath));
-  }
-
-  private async openCommentInboxItem(item: CommentInboxItem): Promise<void> {
-    this.markCommentReadKey(item.key, item.lastAt);
-    const file = this.app.vault.getAbstractFileByPath(item.filePath);
-    if (!(file instanceof TFile)) {
-      new Notice("That comment's file is not available locally yet.");
       return;
     }
-    await this.app.workspace.getLeaf(false).openFile(file);
-    await this.bindActiveEditor(file, 0);
-    await this.openCommentsPanel();
-    this.boundSession?.reveal(item.threadId);
-    this.getCommentInboxView()?.setContext({
-      items: () => this.buildCommentInboxItems(),
-      open: (next) => this.openCommentInboxItem(next),
-      markAllRead: () => this.markAllInboxRead(),
+    view.setContext({
+      shareLabel: manager.label,
+      events: () => manager.listActivityEvents(),
+      observe: (cb) => manager.observeActivityEvents(cb),
+      send: (text) => manager.sendActivityMessage(text),
       now: () => Date.now(),
+      canSend: manager.role === "editor",
     });
   }
 
-  private markAllInboxRead(): void {
-    for (const item of this.buildCommentInboxItems()) this.markCommentReadKey(item.key, item.lastAt);
-    void this.persist();
-  }
-
-  private markCommentThreadRead(filePath: string, thread: ThreadView): void {
-    const m = this.managerOwning(filePath);
-    if (!m) return;
-    const latest = latestCommentActivity(thread);
-    this.markCommentReadKey(commentReadKey(m.shareId, m.toRel(filePath), thread.id), latest.at);
-  }
-
-  private markCommentReadKey(key: string, at: number): void {
-    if (!key || !at) return;
-    const current = this.settings.commentReadAt?.[key] || 0;
-    if (current >= at) return;
-    this.settings.commentReadAt = { ...(this.settings.commentReadAt || {}), [key]: at };
-    this.debouncedPersistReadMarkers();
+  private activityManager(): SyncManager | null {
+    if (this.boundPath) {
+      const manager = this.managerOwning(this.boundPath);
+      if (manager) return manager;
+    }
+    const active = this.activeFocusedFile();
+    if (active) {
+      const manager = this.managerOwning(active.path);
+      if (manager) return manager;
+    }
+    return this.syncManagers.values().next().value ?? null;
   }
 
   private managerOwning(path: string): SyncManager | null {
@@ -748,7 +617,7 @@ export default class CollabPlugin extends Plugin {
   }
 
   private async unbindActiveEditor(reason: string, nextPath: string | null = null, nextView: unknown = null): Promise<void> {
-    if (!this.boundView && !this.boundProvider && !this.boundSession && !this.boundPresence) return;
+    if (!this.boundView && !this.boundProvider && !this.boundPresence) return;
     const oldPath = this.boundPath;
     trace("bind", "unbind-start", {
       oldPath,
@@ -757,7 +626,6 @@ export default class CollabPlugin extends Plugin {
       sameView: nextView ? this.boundView === nextView : undefined,
       hasProvider: !!this.boundProvider,
     });
-    this.boundSession?.detach();
     this.boundPresence?.stop();
     if (this.boundView) {
       try { unbindEditor(this.boundView); } catch { /* view may be gone */ }
@@ -766,9 +634,8 @@ export default class CollabPlugin extends Plugin {
     this.boundView = null;
     this.boundProvider = null;
     this.boundPath = null;
-    this.boundStore = null;
-    this.boundSession = null;
     this.boundPresence = null;
+    this.refreshActivityContext();
     trace("bind", "unbind-done", { oldPath, nextPath, reason });
   }
 
@@ -790,48 +657,6 @@ export default class CollabPlugin extends Plugin {
       if (!m.reconnect()) failed++;
     });
     trace("reconnect", "all-managers", { reason, managers: this.syncManagers.size, failed });
-  }
-
-  /** Detect "@Name" mentions of collaborators in `text` and push them a notification. */
-  private notifyMentionsInText(text: string, fileName: string, filePath: string): Set<string> {
-    const notified = new Set<string>();
-    if (!text.includes("@") || !filePath) return notified;
-    const m = this.managerOwning(filePath);
-    if (!m) return notified;
-    for (const c of findMentionedUsers(text, m.roster())) {
-      for (const uid of c.uids || [c.uid]) {
-        if (notified.has(uid)) continue;
-        m.sendMention(uid, `${this.settings.displayName} mentioned you in ${fileName}`, text.slice(0, 300), filePath);
-        notified.add(uid);
-        log("mention", "notified", c.name, uid);
-      }
-    }
-    return notified;
-  }
-
-  private notifyCommentThreadEvent(
-    thread: ThreadView,
-    kind: CommentEventKind,
-    text: string,
-    fileName: string,
-    filePath: string,
-    alreadyNotified: Set<string>
-  ): void {
-    const m = this.managerOwning(filePath);
-    if (!m) return;
-    const n = buildThreadAuthorNotification({
-      kind,
-      actorUid: this.settings.uid,
-      actorName: this.settings.displayName,
-      authorUid: thread.authorUid,
-      fileName,
-      quote: thread.quote,
-      text,
-      alreadyNotified,
-    });
-    if (!n) return;
-    m.sendMention(n.toUid, n.title, n.body, filePath);
-    log("comment", "notified thread author", n.toUid, kind);
   }
 
   // ── Version history wiring ──────────────────────────────────────
@@ -905,44 +730,6 @@ export default class CollabPlugin extends Plugin {
       conflictFiles: () => m.listConflictFiles(),
       openConflict: (relPath: string) => m.openSyncedFile(relPath),
     };
-  }
-
-  private async addCommentForSelection(file: TFile, info: any): Promise<void> {
-    const m = this.managerOwning(file.path);
-    const fp = m?.getFileProvider(file.path);
-    if (m && m.role === "viewer") { new Notice("This share is view-only on this device."); return; }
-    if (!fp || !fp.isReady()) { new Notice("This note is still syncing — try again in a moment."); return; }
-
-    const ev = getEditorView(info) || (this.boundPath === file.path ? this.boundView : null);
-    if (!ev) { new Notice("Open the note in the editor to comment."); return; }
-    const sel = ev.state.selection.main;
-    const from = Math.min(sel.from, sel.to);
-    const to = Math.max(sel.from, sel.to);
-    if (to <= from) { new Notice("Select some text to comment on."); return; }
-    const quote = ev.state.doc.sliceString(from, to);
-
-    const res = await promptModal(this.app, {
-      title: "Add comment",
-      cta: "Comment",
-      fields: [{
-        key: "text",
-        label: `On “${quote.slice(0, 40)}${quote.length > 40 ? "…" : ""}”`,
-        placeholder: "Your comment…",
-        mentionUsers: this.managerOwning(file.path)?.roster() ?? [],
-      }],
-    });
-    if (!res || !res.text.trim()) return;
-
-    const store = this.boundPath === file.path && this.boundStore ? this.boundStore : new CommentStore(fp.getDoc());
-    store.addThread({
-      from, to, quote,
-      authorUid: this.settings.uid,
-      authorName: this.settings.displayName,
-      text: res.text.trim(),
-      at: Date.now(),
-    });
-    this.notifyMentionsInText(res.text.trim(), file.name, file.path);
-    await this.openCommentsPanel();
   }
 
   // ── Share creation / joining ───────────────────────────────────
@@ -1350,7 +1137,6 @@ export default class CollabPlugin extends Plugin {
 
   async onunload(): Promise<void> {
     (this.debouncedRestart as any).cancel?.();
-    (this.debouncedPersistReadMarkers as any).cancel?.();
     (this.debouncedPresenceDomRefresh as any).cancel?.();
     (this.debouncedActiveEditorRefresh as any).cancel?.();
     for (const fn of this.modifyDebounceMap.values()) (fn as any).cancel?.();
@@ -1503,8 +1289,4 @@ function safeFolderSegment(value: string): string {
     .trim()
     .slice(0, 60);
   return clean || "Collab share";
-}
-
-function commentReadKey(shareId: string, relPath: string, threadId: string): string {
-  return `${shareId}\t${relPath}\t${threadId}`;
 }

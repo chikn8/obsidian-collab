@@ -1,8 +1,8 @@
 # Obsidian Collab — Real-Time Collaboration for Obsidian
 
 Edit the same notes simultaneously, with live cursors — like Google Docs, inside Obsidian.
-Share **whole folders**, give **different folders to different people**, with **roles**, **threaded
-comments**, **version history**, and **deleted-file recovery**.
+Share **whole folders**, give **different folders to different people**, with **roles**, a shared
+**activity/chat feed**, **version history**, and **deleted-file recovery**.
 
 Built on [Yjs](https://yjs.dev) (CRDTs), `y-codemirror.next`, and `y-websocket`. One always-on
 WebSocket relay server brokers changes; each synced file is a Yjs "room", and each shared folder is a
@@ -36,10 +36,10 @@ namespaced set of rooms plus a manifest.
 |---|---|
 | **Editing** | Live multi-cursor editing (CRDT), remote selections, instant sync via CodeMirror 6 |
 | **Sharing** | Per-folder shares; mount the same share at any local path; multiple independent shares |
-| **Roles** | `editor` / `commenter` / `viewer`, enforced server-side; signed per-recipient invites + revoke-all |
+| **Roles** | `editor` / `viewer` for normal use; legacy `commenter` remains server-compatible; signed per-recipient invites + revoke-all |
 | **Presence** | Top-of-editor facepile with self avatar, file-explorer/tab avatars where Obsidian exposes anchors, click-to-jump, per-device identity |
 | **Attachments** | Images/PDF/audio/video sync as content-addressed blobs referenced from the manifest |
-| **Comments** | Threaded, anchored to text, replies + emoji reactions, unread inbox; mention/thread pushes |
+| **Activity** | Shared per-folder feed for chat plus join/leave, opened-file, edit, create/delete/rename/restore/conflict events |
 | **History** | Server-side git snapshots per file; browse, diff, restore whole versions or individual changes |
 | **Recovery** | Deleted-file list with one-click restore; local `trash/` + `backups/`; off-box server backups |
 | **Offline** | Edits persist locally (IndexedDB) and merge on reconnect; "N changes pending" indicator |
@@ -60,8 +60,8 @@ These are the properties the system is engineered to hold, and how:
   deleted) + a local `trash/` copy + server git history. One-click restore from the history panel.
 - **Conflict copies are reviewable.** Delete-vs-edit and attachment skew cases keep a visible sibling
   file and stamp the manifest so the history panel can show what original path it came from.
-- **Renames preserve everything.** A rename transfers the file's full Yjs doc (text + comments +
-  anchors) and stable identity (`fileId`) into the new room — not a delete+create. Synced Markdown
+- **Renames preserve everything.** A rename transfers the file's full Yjs doc state and stable
+  identity (`fileId`) into the new room — not a delete+create. Synced Markdown
   notes also repair `[[wikilinks]]` and embeds that pointed at the old path.
 - **Folder moves don't orphan files.** A folder move re-derives each child's rename so content and
   lineage transfer.
@@ -103,17 +103,17 @@ races. Your own devices are just "more clients on the share" — the plugin alre
 └──────────────────────────────────────────────────────────┘        └────────────────────────────────┘
 ```
 
-- **Per-file Y.Doc** holds text in `Y.Text("codemirror")` and comments in `Y.Map("comments")`. The
+- **Per-file Y.Doc** holds text in `Y.Text("codemirror")` plus legacy per-file metadata. The
   active editor binds via `yCollab` (live cursors); background files sync headlessly via `FileProvider`.
   Namespaced shares tunnel these rooms over one multiplexed WebSocket per share; legacy shares keep the
   original one-room-per-socket transport.
+- **Per-share manifest** is a `Y.Map("files")` keyed by relative path, tracking the file tree as
+  schema-v2 entries (`fileId`, `exists`, tombstone fields, additive `mutation*` provenance). It also
+  carries a capped `Y.Array("events")` activity/chat feed for human-readable collaboration history.
 - **Binary attachments** (images, PDFs, audio/video) are uploaded as content-addressed blobs and referenced
   from the manifest by SHA-256 hash. They are not merged like text; clearly newer local attachments are
   re-published, and same-time clock-skew cases create a visible sibling conflict copy before the original
   path is updated to the remote blob. The history panel lists these conflict copies for review.
-- **Per-share manifest** is a `Y.Map("files")` keyed by relative path, tracking the file tree as
-  schema-v2 entries (`fileId`, `exists`, tombstone fields, additive `mutation*` provenance). `SyncManager`
-  owns it and the per-file providers.
 - **Rooms** are namespaced per share: `@<shareId>:__manifest__`, `@<shareId>:file:<relPath>`. The
   original single-folder setup auto-migrates to a **legacy** share that keeps the old un-prefixed rooms.
 - **Server** is a content-agnostic relay: it brokers Yjs updates, persists each room's `.yjs` atomically,
@@ -195,7 +195,7 @@ Settings → Real-Time Collaboration:
 | `SYNC_LOG_LARGE_UPDATE_BYTES` | `65536` | Warn when an inbound Yjs sync update frame is this large |
 | `SYNC_LOG_LARGE_TEXT_DELTA` | `20480` | Warn when a single inbound sync update changes text length by this much |
 | `SERVER_LOG_DRAIN` | `true` in production, otherwise `false` | Retain redacted structured server logs to a bounded JSONL file; set `false` to disable |
-| `SERVER_LOG_PATH` | `$PERSIST_DIR/server.jsonl` | Retained structured log path; `/health` reports `logDrain` status |
+| `SERVER_LOG_PATH` | `$PERSIST_DIR/server.jsonl` | Retained structured log path; `/health` reports `logDrain` status and `/admin/logs` can tail it |
 | `SERVER_LOG_MAX_BYTES` | `10485760` | Rotate retained server log when the active file passes this many bytes |
 | `SERVER_LOG_ROTATE_COUNT` | `3` | Number of rotated retained log files to keep |
 | `CLIENT_LOG_MAX_BYTES` | `65536` | Max opt-in `/clientlog` telemetry request body size |
@@ -230,7 +230,7 @@ See `server/.env.example` for a copy-paste template, and `server/RECOVERY.md` fo
 ### Security model at a glance
 
 - The relay is trusted infrastructure, not end-to-end encrypted storage. It receives shared note text,
-  filenames, comments, awareness, and synced attachments for selected shares.
+  filenames, activity/chat events, awareness, and synced attachments for selected shares.
 - `SERVER_SECRET` is the root share-key minting secret. Keep it server-side; normal clients should use
   server-minted share links/invites, not the root secret.
 - `SHARE_MINT_TOKEN` lets a plugin device ask the server to create a new share without learning
@@ -252,12 +252,13 @@ See `server/.env.example` for a copy-paste template, and `server/RECOVERY.md` fo
   sibling vault folders, not nested/overlapping folders.
 - **Join:** `Cmd+P` → *Add a shared folder (paste code)…*, or open an `obsidian://collab-add?code=…`
   link. The join modal pre-fills the code and suggests a friendly local folder/label.
-- **Roles:** share an *editor*, *commenter*, or *viewer* link. Viewers/commenters can't write the file
+- **Roles:** share an *editor* or *viewer* link for normal use. Viewers can't write the file
   (enforced on the server). Use **Invite…** for a named/expiring recipient link that can be revoked by
   itself. Invite links default to one signed local install; raise **Max devices** when the same recipient
   should join from a laptop plus phone. Use **Revoke all links** to bump the share epoch and disconnect
   every old link.
-- **Comments:** select text → right-click → *Add comment*. Open the comments panel from the ribbon.
+- **Activity/chat:** open the activity panel from the ribbon or `Cmd+P` → *Open activity panel*.
+  It shows chat plus join/leave, opened-file, edit, create/delete/rename/restore/conflict events.
 - **Version history:** right-click a synced note → *Version history*, or `Cmd+P` → *Open version
   history*. Preview and restore any snapshot (a pre-restore backup is saved).
 - **Recover a deleted file:** the version-history panel has a **Deleted files** section — one-click
@@ -309,6 +310,7 @@ node tools/diagnostics-summary.mjs "<vault-config>/plugins/live-collab/diagnosti
 Server relay logs are also structured, redacted JSON rows on stdout/stderr. They include `seq`, `dt`,
 `connId`, room/share metadata, rate-limit/backpressure closes, rejected writes, mux room rejections,
 and suspicious update sizes, but never tokens, keys, note bodies, or raw Yjs payloads.
+Use `GET /admin/logs?limit=100&level=warn` with `ADMIN_SECRET` to tail the retained rotating log drain.
 If **Send error telemetry** is enabled in the plugin, `err(...)` rows are also POSTed to `/clientlog`
 with normal share authentication; the server logs them as redacted `client.error` rows.
 

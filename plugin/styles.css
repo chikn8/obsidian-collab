@@ -318,6 +318,85 @@
   color: var(--text-on-accent); border-radius: 8px; padding: 0 5px; flex-shrink: 0;
 }
 
+/* ── Activity/chat panel ──────────────────────────────────────── */
+.collab-activity-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 6px 8px;
+}
+.collab-activity-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.collab-activity-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 0.95em;
+}
+.collab-activity-count {
+  color: var(--text-muted);
+  font-size: 0.78em;
+}
+.collab-activity-list {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+  padding-right: 2px;
+}
+.collab-activity-row {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 6px 0;
+}
+.collab-activity-row.message .collab-activity-body {
+  color: var(--text-normal);
+  white-space: pre-wrap;
+}
+.collab-activity-row.event .collab-activity-body {
+  color: var(--text-muted);
+}
+.collab-activity-meta {
+  color: var(--text-muted);
+  font-size: 0.76em;
+  margin-bottom: 2px;
+}
+.collab-activity-author {
+  color: var(--text-normal);
+  font-weight: 600;
+}
+.collab-activity-body {
+  font-size: 0.88em;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.collab-activity-composer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding-top: 8px;
+  margin-top: 6px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+.collab-activity-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.88em;
+  padding: 4px 6px;
+}
+.collab-activity-send {
+  flex: 0 0 auto;
+}
+
 /* ── Presence facepile (CM6 top panel) ────────────────────────── */
 .collab-facepile {
   display: flex; align-items: center; gap: 4px;

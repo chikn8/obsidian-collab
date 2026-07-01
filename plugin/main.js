@@ -39,8 +39,8 @@ __export(main_exports, {
   default: () => CollabPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian11 = require("obsidian");
-var import_view6 = require("@codemirror/view");
+var import_obsidian10 = require("obsidian");
+var import_view5 = require("@codemirror/view");
 
 // src/collab/SyncManager.ts
 var import_obsidian4 = require("obsidian");
@@ -12538,6 +12538,108 @@ function isElementLike(value) {
   return !!value && typeof value === "object" && "querySelector" in value && "appendChild" in value;
 }
 
+// src/collab/EventLog.ts
+var MAX_TEXT = 2e3;
+var MAX_PATH = 512;
+var MAX_DETAIL_STRING = 256;
+function normalizeEvent(input) {
+  const event = {
+    id: cleanString2(input.id || randomId(), 120) || randomId(),
+    type: input.type,
+    at: finiteNumber(input.at) || Date.now(),
+    shareId: cleanString2(input.shareId, 160) || "unknown",
+    actorUid: cleanString2(input.actorUid, 160) || "unknown",
+    actorName: cleanString2(input.actorName, 120) || "Anonymous",
+    deviceId: cleanString2(input.deviceId, 160) || "unknown"
+  };
+  const device = cleanString2(input.device, 40);
+  const path = cleanString2(input.path, MAX_PATH);
+  const oldPath = cleanString2(input.oldPath, MAX_PATH);
+  const newPath = cleanString2(input.newPath, MAX_PATH);
+  const text2 = cleanString2(input.text, MAX_TEXT);
+  const count2 = finiteNumber(input.count);
+  const details = cleanDetails(input.details);
+  if (device) event.device = device;
+  if (path) event.path = path;
+  if (oldPath) event.oldPath = oldPath;
+  if (newPath) event.newPath = newPath;
+  if (text2) event.text = text2;
+  if (count2 && count2 > 1) event.count = Math.floor(count2);
+  if (details && Object.keys(details).length > 0) event.details = details;
+  return event;
+}
+function appendEvent(events, input, maxEvents = 1e3) {
+  var _a2;
+  const event = normalizeEvent(input);
+  (_a2 = events.doc) == null ? void 0 : _a2.transact(() => {
+    events.push([event]);
+    const overflow = events.length - maxEvents;
+    if (overflow > 0) events.delete(0, overflow);
+  }, "collab-event");
+  return event;
+}
+function listEvents(events, limit = 300) {
+  if (!events) return [];
+  const all2 = events.toArray().map((e) => normalizeEvent(e));
+  return all2.slice(Math.max(0, all2.length - limit));
+}
+function formatEvent(event) {
+  const who = event.actorName || "Someone";
+  const path = event.path || event.newPath || event.oldPath || "";
+  switch (event.type) {
+    case "message":
+      return event.text || "";
+    case "online":
+      return `${who} came online`;
+    case "offline":
+      return `${who} went offline`;
+    case "open":
+      return path ? `${who} opened ${path}` : `${who} opened a synced note`;
+    case "edit":
+      return path ? `${who} edited ${path}${event.count && event.count > 1 ? ` ${event.count} times` : ""}` : `${who} edited a note`;
+    case "create":
+      return path ? `${who} created ${path}` : `${who} created a file`;
+    case "delete":
+      return path ? `${who} deleted ${path}` : `${who} deleted a file`;
+    case "rename":
+      return event.oldPath && event.newPath ? `${who} renamed ${event.oldPath} to ${event.newPath}` : `${who} renamed a file`;
+    case "restore":
+      return path ? `${who} restored ${path}` : `${who} restored a deleted file`;
+    case "resurrect":
+      return path ? `${who} kept ${path} after a delete race` : `${who} kept a file after a delete race`;
+    case "conflict":
+      return event.path && event.newPath ? `${who} kept a conflict copy of ${event.path} at ${event.newPath}` : `${who} created a conflict copy`;
+    case "binary":
+      return path ? `${who} updated attachment ${path}` : `${who} updated an attachment`;
+    case "system":
+      return event.text || "System event";
+    default:
+      return "";
+  }
+}
+function randomId() {
+  var _a2, _b2;
+  return ((_b2 = (_a2 = globalThis.crypto) == null ? void 0 : _a2.randomUUID) == null ? void 0 : _b2.call(_a2)) || `evt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+function cleanString2(value, max2) {
+  if (typeof value !== "string") return "";
+  const clean2 = value.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  return clean2.length <= max2 ? clean2 : `${clean2.slice(0, max2)}...`;
+}
+function finiteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : void 0;
+}
+function cleanDetails(details) {
+  if (!details || typeof details !== "object") return void 0;
+  const out = {};
+  for (const [key, value] of Object.entries(details).slice(0, 20)) {
+    if (/token|secret|password|key|auth|content|body|text/i.test(key)) continue;
+    if (value == null || typeof value === "number" || typeof value === "boolean") out[key] = value;
+    else if (typeof value === "string") out[key] = cleanString2(value, MAX_DETAIL_STRING);
+  }
+  return out;
+}
+
 // src/collab/SyncManager.ts
 function newFileId() {
   var _a2, _b2;
@@ -12555,6 +12657,7 @@ var SyncManager = class {
     this.manifestMap = null;
     this.manifestMeta = null;
     // schemaVersion + future doc-level meta
+    this.eventsArray = null;
     // Volatile "who last edited" stamps live in a SEPARATE map so they merge
     // independently of the files map's lifecycle (exists/deleted) field — a stamp
     // can never LWW-clobber a concurrent delete/rename tombstone.
@@ -12562,6 +12665,11 @@ var SyncManager = class {
     // fileId we last saw per relPath, to detect identity changes (new file at same path).
     this.fileIds = /* @__PURE__ */ new Map();
     this.manifestMutationSeq = 0;
+    this.eventSeq = 0;
+    this.lastPresenceRelPath = null;
+    this.onlineAnnounced = false;
+    this.editEventDebounce = /* @__PURE__ */ new Map();
+    this.editEventCounts = /* @__PURE__ */ new Map();
     // File providers, keyed by relPath
     this.fileProviders = /* @__PURE__ */ new Map();
     // Guards. EchoGuard fingerprints every plugin-initiated vault write so the
@@ -12664,6 +12772,7 @@ var SyncManager = class {
           device: detectDevice(),
           at: Date.now()
         });
+        this.recordEditEvent(relPath);
       }, 3e3, false);
       this.stampDebounce.set(relPath, fn);
     }
@@ -12714,6 +12823,9 @@ var SyncManager = class {
   get role() {
     return this.share.role || "editor";
   }
+  get label() {
+    return this.share.label || this.share.localFolder || this.histShareId;
+  }
   get localFolder() {
     return this.share.localFolder;
   }
@@ -12723,7 +12835,28 @@ var SyncManager = class {
   toFull(relPath) {
     return this.toFullPath(relPath);
   }
+  listActivityEvents(limit = 300) {
+    return listEvents(this.eventsArray, limit);
+  }
+  observeActivityEvents(cb) {
+    if (!this.eventsArray) return () => {
+    };
+    const handler = () => cb();
+    this.eventsArray.observe(handler);
+    return () => {
+      var _a2;
+      return (_a2 = this.eventsArray) == null ? void 0 : _a2.unobserve(handler);
+    };
+  }
+  sendActivityMessage(text2) {
+    if (this.role !== "editor") {
+      trace("activity", "message-skipped", { shareId: this.histShareId, cause: "read-only-role", role: this.role });
+      return;
+    }
+    this.appendActivityEvent("message", { text: text2 });
+  }
   diagnosticSnapshot() {
+    var _a2, _b2;
     return {
       shareId: this.histShareId,
       configuredShareId: this.share.id,
@@ -12737,8 +12870,52 @@ var SyncManager = class {
       renderedFilePresenceHosts: this.renderedPresence.size,
       renderedTabPresenceHosts: this.renderedTabPresence.size,
       lastPresenceHadMissingAnchors: this.lastPresenceHadMissingAnchors,
-      presenceAnchorRetryCount: this.presenceAnchorRetryCount
+      presenceAnchorRetryCount: this.presenceAnchorRetryCount,
+      activityEvents: (_b2 = (_a2 = this.eventsArray) == null ? void 0 : _a2.length) != null ? _b2 : 0
     };
+  }
+  appendActivityEvent(type, fields = {}) {
+    if (!this.eventsArray) return;
+    if (this.role !== "editor") return;
+    const event = appendEvent(this.eventsArray, {
+      ...fields,
+      id: `${this.settings.uid || "anon"}:${installDeviceId()}:${++this.eventSeq}:${Date.now()}`,
+      type,
+      shareId: this.histShareId,
+      actorUid: this.settings.uid,
+      actorName: this.settings.displayName || "Anonymous",
+      deviceId: installDeviceId(),
+      device: detectDevice(),
+      at: Date.now()
+    });
+    trace("activity", "event-appended", {
+      shareId: this.histShareId,
+      type: event.type,
+      path: event.path,
+      oldPath: event.oldPath,
+      newPath: event.newPath,
+      count: event.count
+    });
+  }
+  recordEditEvent(relPath) {
+    const current = this.editEventCounts.get(relPath) || 0;
+    this.editEventCounts.set(relPath, current + 1);
+    let fn = this.editEventDebounce.get(relPath);
+    if (!fn) {
+      fn = (0, import_obsidian4.debounce)(() => {
+        const count2 = this.editEventCounts.get(relPath) || 0;
+        this.editEventCounts.delete(relPath);
+        this.appendActivityEvent("edit", { path: relPath, count: count2 });
+      }, 3e4, false);
+      this.editEventDebounce.set(relPath, fn);
+    }
+    fn();
+  }
+  flushEditEvents() {
+    for (const [relPath, count2] of this.editEventCounts) {
+      if (count2 > 0) this.appendActivityEvent("edit", { path: relPath, count: count2 });
+    }
+    this.editEventCounts.clear();
   }
   manifestMutation(action) {
     return manifestMutationFields({
@@ -12766,6 +12943,7 @@ var SyncManager = class {
     this.manifestMap = this.manifestDoc.getMap("files");
     this.manifestMeta = this.manifestDoc.getMap("meta");
     this.editsMap = this.manifestDoc.getMap("edits");
+    this.eventsArray = this.manifestDoc.getArray("events");
     this.manifestProvider = createProvider(
       this.settings.serverUrl,
       manifestRoom(this.share),
@@ -12826,6 +13004,10 @@ var SyncManager = class {
   async onManifestSynced() {
     var _a2, _b2;
     this.processingManifest = true;
+    if (!this.onlineAnnounced) {
+      this.onlineAnnounced = true;
+      this.appendActivityEvent("online");
+    }
     trace("manifest", "startup-reconcile-start", {
       shareId: this.histShareId,
       role: this.role,
@@ -13063,6 +13245,7 @@ var SyncManager = class {
         ...mutation,
         resurrectedBy: this.settings.displayName
       }));
+      this.appendActivityEvent("resurrect", { path: safeRel });
       new import_obsidian4.Notice(`"${safeRel}" was edited after being deleted \u2014 kept`);
       log("delete", "resurrected (edited after delete)", safeRel);
       return true;
@@ -13154,6 +13337,7 @@ var SyncManager = class {
           conflictCreatedAt: mutation.mutationAt
         }));
         await this.createFileProvider(conflictRel, conflictFullPath);
+        this.appendActivityEvent("conflict", { path: safeRel, newPath: conflictRel, details: { kind: "delete" } });
       }
       log("delete", "created delete conflict copy", safeRel, "->", conflictRel);
       return conflictRel;
@@ -13370,6 +13554,13 @@ var SyncManager = class {
       ...mutation,
       ...stampedExtra
     }));
+    if (extra.conflictOf) {
+      this.appendActivityEvent("conflict", { path: extra.conflictOf, newPath: safeRel, details: { kind: "binary", reason } });
+    } else if (reason === "create" || reason === "startup-create" || reason === "rename-create") {
+      this.appendActivityEvent("create", { path: safeRel, details: { kind: "binary" } });
+    } else {
+      this.appendActivityEvent("binary", { path: safeRel, details: { reason, size: info.size } });
+    }
     trace("blob", "published", { shareId: this.histShareId, relPath: safeRel, hash: info.hash, size: info.size, reason });
   }
   async applyRemoteBinary(relPath, entry, reason = "live") {
@@ -13513,6 +13704,7 @@ var SyncManager = class {
       const mutation = this.manifestMutation("create");
       this.fileIds.set(relPath, fileId);
       this.manifestMap.set(relPath, liveManifestEntry(prev, relPath, fileId, this.settings.displayName, mutation));
+      this.appendActivityEvent("create", { path: relPath });
     }
     if (!this.fileProviders.has(relPath)) {
       this.createFileProvider(relPath, file.path);
@@ -13598,6 +13790,7 @@ var SyncManager = class {
         deletedBy: this.settings.displayName,
         deletedAt: mutation.mutationAt
       });
+      this.appendActivityEvent("delete", { path: relPath });
     }
     this.fileIds.delete(relPath);
     if (fp) {
@@ -13701,6 +13894,7 @@ var SyncManager = class {
         deletedBy: this.settings.displayName,
         deletedAt: mutation.mutationAt
       });
+      this.appendActivityEvent("delete", { path: oldRel, details: { reason: "moved-out" } });
     }
     this.fileIds.delete(oldRel);
     if (fp) {
@@ -13752,6 +13946,7 @@ var SyncManager = class {
           deletedAt: mutation.mutationAt
         });
       });
+      this.appendActivityEvent("rename", { oldPath: oldRel, newPath: newRel });
     }
     log("delete", "renamed", oldRel, "\u2192", newRel, "(content transferred)");
     trace("manifest", "rename-transfer-done", { shareId: this.histShareId, oldRel, newRel, fileId });
@@ -13797,6 +13992,7 @@ var SyncManager = class {
           deletedAt: mutation.mutationAt
         });
       });
+      this.appendActivityEvent("rename", { oldPath: oldRel, newPath: newRel, details: { kind: "binary" } });
     }
     trace("blob", "renamed", { shareId: this.histShareId, oldRel, newRel, fileId, hash: oldEntry.blobHash });
     this.emitStatus();
@@ -13910,6 +14106,10 @@ var SyncManager = class {
     });
     const cur = ((_b2 = this.manifestProvider.awareness.getLocalState()) == null ? void 0 : _b2.presence) || {};
     this.manifestProvider.awareness.setLocalStateField("presence", { ...cur, activeFile: relPath });
+    if (relPath && relPath !== this.lastPresenceRelPath) {
+      this.appendActivityEvent("open", { path: relPath });
+    }
+    this.lastPresenceRelPath = relPath;
     this.refreshPresenceUi();
   }
   /** The FileProvider owning a vault path (for the editor yCollab binding). */
@@ -13979,6 +14179,7 @@ var SyncManager = class {
       restoredBy: this.settings.displayName,
       restoredAt: mutation.mutationAt
     });
+    this.appendActivityEvent("restore", { path: safeRel });
     log("delete", "restore requested", safeRel);
     const trash = await this.readLatestTrash(safeRel);
     if (trash) {
@@ -14265,11 +14466,20 @@ var SyncManager = class {
   }
   /** Stop syncing this share */
   async destroy() {
+    var _a2;
+    this.flushEditEvents();
+    if (this.onlineAnnounced) this.appendActivityEvent("offline");
+    for (const fn of this.editEventDebounce.values()) (_a2 = fn.cancel) == null ? void 0 : _a2.call(fn);
+    this.editEventDebounce.clear();
+    this.editEventCounts.clear();
     this.clearPresenceUi();
     for (const [, fp] of this.fileProviders) fp.destroy();
     this.fileProviders.clear();
     if (this.manifestProvider) this.manifestProvider.destroy();
     if (this.manifestDoc) this.manifestDoc.destroy();
+    this.eventsArray = null;
+    this.onlineAnnounced = false;
+    this.lastPresenceRelPath = null;
     this.syncStatus = "disconnected";
     this.onStatusChange("disconnected", 0, 0);
   }
@@ -14503,18 +14713,6 @@ function normalizeName(name) {
 function lower(name) {
   return normalizeName(name).toLocaleLowerCase();
 }
-function findMentionedUsers(text2, users) {
-  if (!text2.includes("@")) return [];
-  const found = [];
-  for (const user of groupedMentionUsers(users)) {
-    const name = normalizeName(user.name);
-    if (!name) continue;
-    const quoted = text2.toLocaleLowerCase().includes(`@"${name.toLocaleLowerCase()}"`);
-    const bare = !/\s/.test(name) && new RegExp(`(^|[^A-Za-z0-9_-])@${escapeRegExp(name)}(?=$|[^A-Za-z0-9_-])`, "i").test(text2);
-    if (quoted || bare) found.push(user);
-  }
-  return found;
-}
 function mentionTokenAt(text2, cursor) {
   var _a2, _b2, _c;
   const before = text2.slice(0, cursor);
@@ -14543,9 +14741,6 @@ function matchingMentionUsers(users, query, limit = 6) {
 function mentionTextFor(user) {
   const name = normalizeName(user.name);
   return /\s/.test(name) ? `@"${name}" ` : `@${name} `;
-}
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function groupedMentionUsers(users) {
   var _a2;
@@ -14810,7 +15005,7 @@ var CollabSettingsTab = class extends import_obsidian7.PluginSettingTab {
               cta: "Create",
               fields: [
                 { key: "recipient", label: "Recipient label", placeholder: "e.g. Mira laptop" },
-                { key: "role", label: "Role", placeholder: "viewer, commenter, or editor", value: "editor" },
+                { key: "role", label: "Role", placeholder: "viewer or editor", value: "editor" },
                 { key: "maxDevices", label: "Max devices", placeholder: "1", value: "1" },
                 { key: "expiresHours", label: "Expires in hours", placeholder: "Leave blank for no expiry" }
               ]
@@ -14818,7 +15013,7 @@ var CollabSettingsTab = class extends import_obsidian7.PluginSettingTab {
             if (!res) return;
             const role2 = parseRole(res.role);
             if (!role2) {
-              new import_obsidian7.Notice("Role must be viewer, commenter, or editor.");
+              new import_obsidian7.Notice("Role must be viewer or editor.");
               return;
             }
             const hoursRaw = res.expiresHours.trim();
@@ -15724,283 +15919,12 @@ function readOnlyExtension() {
   return [import_state2.EditorState.readOnly.of(true), import_view2.EditorView.editable.of(false)];
 }
 
-// src/collab/CommentStore.ts
-var _seq = 0;
-function genId() {
-  var _a2, _b2;
-  const rnd = ((_b2 = (_a2 = globalThis.crypto) == null ? void 0 : _a2.randomUUID) == null ? void 0 : _b2.call(_a2)) || `r${++_seq}`;
-  return rnd.replace(/-/g, "").slice(0, 16);
-}
-var CommentStore = class {
-  constructor(doc2) {
-    this.doc = doc2;
-    this.ytext = doc2.getText("codemirror");
-    this.map = doc2.getMap("comments");
-  }
-  /** Deep-observe all thread/reply changes. Returns an unsubscribe fn. */
-  observe(cb) {
-    const handler = () => cb();
-    this.map.observeDeep(handler);
-    return () => this.map.unobserveDeep(handler);
-  }
-  // ── anchors ────────────────────────────────────────────────────────────────
-  encodeAnchor(index) {
-    const rp = createRelativePositionFromTypeIndex(this.ytext, index);
-    return JSON.stringify(relativePositionToJSON(rp));
-  }
-  decodeAnchor(json) {
-    try {
-      const rp = createRelativePositionFromJSON(JSON.parse(json));
-      const abs2 = createAbsolutePositionFromRelativePosition(rp, this.doc);
-      return abs2 ? abs2.index : null;
-    } catch (e) {
-      return null;
-    }
-  }
-  /** Resolve a thread's stored anchor to current absolute offsets (or lost). */
-  resolveAnchor(thread) {
-    const fromJson = thread.get("anchorFrom");
-    const toJson = thread.get("anchorTo");
-    if (!fromJson || !toJson) return null;
-    const quote = thread.get("quote") || "";
-    const from2 = this.decodeAnchor(fromJson);
-    const to = this.decodeAnchor(toJson);
-    if (from2 == null || to == null) return this.rematchByQuote(quote);
-    const lo = Math.min(from2, to);
-    const hi = Math.max(from2, to);
-    if (quote) {
-      const slice = this.ytext.toString().slice(lo, hi);
-      if (slice !== quote) return this.rematchByQuote(quote);
-    }
-    return { from: lo, to: hi, lost: lo === hi };
-  }
-  /** Locate a thread's quote in the current text; re-anchor there, or mark lost. */
-  rematchByQuote(quote) {
-    if (!quote) return { from: 0, to: 0, lost: true };
-    const idx = this.ytext.toString().indexOf(quote);
-    if (idx >= 0) return { from: idx, to: idx + quote.length, lost: false };
-    return { from: 0, to: 0, lost: true };
-  }
-  // ── mutations ────────────────────────────────────────────────────────────────
-  addThread(args2) {
-    const id2 = genId();
-    this.doc.transact(() => {
-      const thread = new YMap();
-      thread.set("anchorFrom", this.encodeAnchor(args2.from));
-      thread.set("anchorTo", this.encodeAnchor(args2.to));
-      thread.set("quote", args2.quote);
-      thread.set("resolved", false);
-      thread.set("authorUid", args2.authorUid);
-      thread.set("authorName", args2.authorName);
-      thread.set("createdAt", args2.at);
-      const replies = new YArray();
-      thread.set("replies", replies);
-      this.map.set(id2, thread);
-      this.appendReply(thread, args2);
-    });
-    return id2;
-  }
-  addReply(threadId, args2) {
-    const thread = this.map.get(threadId);
-    if (!thread) return;
-    this.doc.transact(() => this.appendReply(thread, { authorUid: args2.byUid, authorName: args2.byName, text: args2.text, at: args2.at }));
-  }
-  appendReply(thread, args2) {
-    const replies = thread.get("replies");
-    const reply = new YMap();
-    reply.set("id", genId());
-    reply.set("byUid", args2.authorUid);
-    reply.set("byName", args2.authorName);
-    reply.set("at", args2.at);
-    reply.set("text", args2.text);
-    reply.set("reactions", new YMap());
-    replies.push([reply]);
-  }
-  setResolved(threadId, resolved) {
-    const thread = this.map.get(threadId);
-    if (thread) thread.set("resolved", resolved);
-  }
-  /** Permanently remove a thread (only its author should call this). */
-  deleteThread(threadId) {
-    if (this.map.has(threadId)) this.map.delete(threadId);
-  }
-  react(threadId, replyId, emoji, delta) {
-    const thread = this.map.get(threadId);
-    if (!thread) return;
-    const replies = thread.get("replies");
-    for (let i = 0; i < replies.length; i++) {
-      const r = replies.get(i);
-      if (r.get("id") === replyId) {
-        const reactions = r.get("reactions");
-        const cur = reactions.get(emoji) || 0;
-        const next = Math.max(0, cur + delta);
-        if (next === 0) reactions.delete(emoji);
-        else reactions.set(emoji, next);
-        return;
-      }
-    }
-  }
-  // ── reads ────────────────────────────────────────────────────────────────
-  list() {
-    const out = [];
-    this.map.forEach((thread, id2) => {
-      out.push(this.view(id2, thread));
-    });
-    return out.sort((a, b) => {
-      var _a2, _b2, _c, _d, _e, _f, _g;
-      if (!!((_a2 = a.anchor) == null ? void 0 : _a2.lost) !== !!((_b2 = b.anchor) == null ? void 0 : _b2.lost)) return ((_c = a.anchor) == null ? void 0 : _c.lost) ? 1 : -1;
-      return ((_e = (_d = a.anchor) == null ? void 0 : _d.from) != null ? _e : 0) - ((_g = (_f = b.anchor) == null ? void 0 : _f.from) != null ? _g : 0);
-    });
-  }
-  view(id2, thread) {
-    var _a2;
-    const replies = thread.get("replies") || new YArray();
-    const replyViews = [];
-    for (let i = 0; i < replies.length; i++) {
-      const r = replies.get(i);
-      const reactions = {};
-      (_a2 = r.get("reactions")) == null ? void 0 : _a2.forEach((v, k) => reactions[k] = v);
-      replyViews.push({
-        id: r.get("id"),
-        byUid: r.get("byUid"),
-        byName: r.get("byName"),
-        at: r.get("at"),
-        text: r.get("text"),
-        reactions
-      });
-    }
-    return {
-      id: id2,
-      anchor: this.resolveAnchor(thread),
-      quote: thread.get("quote") || "",
-      resolved: !!thread.get("resolved"),
-      authorUid: thread.get("authorUid") || "",
-      authorName: thread.get("authorName") || "?",
-      createdAt: thread.get("createdAt") || 0,
-      replies: replyViews
-    };
-  }
-  /** Count of unresolved threads (for the file-explorer badge). */
-  openCount() {
-    let n = 0;
-    this.map.forEach((t) => {
-      if (!t.get("resolved")) n++;
-    });
-    return n;
-  }
-};
-
-// src/collab/CommentLayer.ts
+// src/collab/Presence.ts
 var import_view3 = require("@codemirror/view");
 var import_state3 = require("@codemirror/state");
-var setCommentDecos = import_state3.StateEffect.define();
-var commentField = import_state3.StateField.define({
-  create: () => import_view3.Decoration.none,
-  update(decos, tr) {
-    decos = decos.map(tr.changes);
-    for (const e of tr.effects) if (e.is(setCommentDecos)) decos = e.value;
-    return decos;
-  },
-  provide: (f) => import_view3.EditorView.decorations.from(f)
-});
-var commentTheme = import_view3.EditorView.baseTheme({
-  ".cm-collab-comment": {
-    backgroundColor: "rgba(255, 206, 84, 0.28)",
-    borderBottom: "2px solid rgba(255, 206, 84, 0.9)",
-    cursor: "pointer"
-  },
-  ".cm-collab-comment-resolved": {
-    backgroundColor: "transparent",
-    borderBottom: "1px dotted var(--text-faint)"
-  }
-});
-var CommentSession = class {
-  constructor(store, onOpenThread, opts = { showResolved: () => false }) {
-    this.store = store;
-    this.onOpenThread = onOpenThread;
-    this.opts = opts;
-    this.view = null;
-    this.ranges = [];
-    this.unobserve = null;
-  }
-  extension() {
-    return [
-      commentField,
-      commentTheme,
-      import_view3.EditorView.domEventHandlers({
-        mousedown: (evt, view) => this.handleClick(evt, view)
-      }),
-      import_view3.EditorView.updateListener.of((u) => {
-        if (u.docChanged) this.recompute();
-      })
-    ];
-  }
-  attach(view) {
-    this.view = view;
-    this.unobserve = this.store.observe(() => this.recompute());
-    this.recompute();
-  }
-  detach() {
-    var _a2;
-    (_a2 = this.unobserve) == null ? void 0 : _a2.call(this);
-    this.unobserve = null;
-    this.view = null;
-    this.ranges = [];
-  }
-  /** Scroll/select a thread's anchor in the editor (jump-to-comment). */
-  reveal(threadId) {
-    const hit = this.ranges.find((r) => r.id === threadId);
-    if (!hit || !this.view) return;
-    this.view.dispatch({
-      selection: { anchor: hit.from, head: hit.to },
-      effects: import_view3.EditorView.scrollIntoView(hit.from, { y: "center" })
-    });
-    this.view.focus();
-  }
-  recompute() {
-    if (!this.view) return;
-    const docLen = this.view.state.doc.length;
-    const threads = this.store.list();
-    const showResolved = this.opts.showResolved();
-    const builder = [];
-    const hits = [];
-    for (const t of threads) {
-      if (!t.anchor || t.anchor.lost) continue;
-      if (t.resolved && !showResolved) continue;
-      const from2 = Math.min(t.anchor.from, docLen);
-      const to = Math.min(t.anchor.to, docLen);
-      if (to <= from2) continue;
-      const cls = t.resolved ? "cm-collab-comment-resolved" : "cm-collab-comment";
-      builder.push({ from: from2, to, deco: import_view3.Decoration.mark({ class: cls, attributes: { "data-thread": t.id } }) });
-      hits.push({ id: t.id, from: from2, to });
-    }
-    builder.sort((a, b) => a.from - b.from || a.to - b.to);
-    this.ranges = hits;
-    const set = import_view3.Decoration.set(builder.map((b) => b.deco.range(b.from, b.to)), true);
-    this.view.dispatch({ effects: setCommentDecos.of(set) });
-  }
-  handleClick(evt, view) {
-    const pos = view.posAtCoords({ x: evt.clientX, y: evt.clientY });
-    if (pos == null) return;
-    let best = null;
-    for (const r of this.ranges) {
-      if (pos >= r.from && pos <= r.to) {
-        if (!best || r.to - r.from < best.to - best.from) best = r;
-      }
-    }
-    if (best) {
-      evt.preventDefault();
-      this.onOpenThread(best.id);
-    }
-  }
-};
-
-// src/collab/Presence.ts
-var import_view4 = require("@codemirror/view");
-var import_state4 = require("@codemirror/state");
-var setRoster = import_state4.StateEffect.define();
+var setRoster = import_state3.StateEffect.define();
 function facepileExtension(onJump) {
-  return import_view4.showPanel.of((view) => makePanel(view, onJump));
+  return import_view3.showPanel.of((view) => makePanel(view, onJump));
 }
 function makePanel(_view, onJump) {
   const dom = document.createElement("div");
@@ -16061,7 +15985,7 @@ var PresenceController = class {
   extension(showFacepile = true) {
     return [
       ...showFacepile ? [facepileExtension((uid) => this.jumpTo(uid))] : [],
-      import_view4.EditorView.domEventHandlers({
+      import_view3.EditorView.domEventHandlers({
         beforeinput: (event) => {
           if (isTypingInputType(event.inputType)) this.bumpTyping();
           return false;
@@ -16079,7 +16003,7 @@ var PresenceController = class {
           return false;
         }
       }),
-      import_view4.EditorView.updateListener.of((update) => {
+      import_view3.EditorView.updateListener.of((update) => {
         if (isLocalTypingUpdate(update)) this.bumpTyping();
       })
     ];
@@ -16162,7 +16086,7 @@ var PresenceController = class {
     const idx = resolveAwarenessCursor((_a2 = target.head) != null ? _a2 : target.anchor, this.doc);
     if (idx == null) return;
     const pos = Math.min(idx, this.view.state.doc.length);
-    this.view.dispatch({ effects: import_view4.EditorView.scrollIntoView(pos, { y: "center" }) });
+    this.view.dispatch({ effects: import_view3.EditorView.scrollIntoView(pos, { y: "center" }) });
   }
 };
 function rosterSignature(roster) {
@@ -16188,7 +16112,7 @@ function isTypingUserEvent(event) {
 function isLocalTypingUpdate(update) {
   if (!update.docChanged) return false;
   return update.transactions.some((tr) => {
-    const event = typeof tr.annotation === "function" ? tr.annotation(import_state4.Transaction.userEvent) : null;
+    const event = typeof tr.annotation === "function" ? tr.annotation(import_state3.Transaction.userEvent) : null;
     if (isTypingUserEvent(event)) return true;
     if (typeof tr.isUserEvent !== "function") return false;
     return tr.isUserEvent("input") || tr.isUserEvent("delete") || tr.isUserEvent("paste") || tr.isUserEvent("cut") || tr.isUserEvent("undo") || tr.isUserEvent("redo");
@@ -16211,8 +16135,8 @@ function resolveAwarenessCursor(rel, doc2) {
 }
 
 // src/collab/SelfSelection.ts
-var import_state5 = require("@codemirror/state");
-var import_view5 = require("@codemirror/view");
+var import_state4 = require("@codemirror/state");
+var import_view4 = require("@codemirror/view");
 function selfSelectionOverlay(anchor, head) {
   const from2 = Math.min(anchor, head);
   const to = Math.max(anchor, head);
@@ -16227,12 +16151,12 @@ function selfSelectionOverlay(anchor, head) {
 function selfSelectionExtension(user) {
   return [
     selfSelectionTheme,
-    import_view5.ViewPlugin.define((view) => new SelfSelectionPlugin(view, user), {
+    import_view4.ViewPlugin.define((view) => new SelfSelectionPlugin(view, user), {
       decorations: (v) => v.decorations
     })
   ];
 }
-var selfSelectionTheme = import_view5.EditorView.baseTheme({
+var selfSelectionTheme = import_view4.EditorView.baseTheme({
   ".cm-collab-self-selection": {
     opacity: "0.35"
   },
@@ -16273,7 +16197,7 @@ var selfSelectionTheme = import_view5.EditorView.baseTheme({
 var SelfSelectionPlugin = class {
   constructor(view, user) {
     this.user = user;
-    this.decorations = import_view5.Decoration.none;
+    this.decorations = import_view4.Decoration.none;
     this.rebuild(view);
   }
   update(update) {
@@ -16282,18 +16206,18 @@ var SelfSelectionPlugin = class {
     }
   }
   rebuild(view) {
-    const builder = new import_state5.RangeSetBuilder();
+    const builder = new import_state4.RangeSetBuilder();
     const sel = view.state.selection.main;
     const overlay = selfSelectionOverlay(sel.anchor, sel.head);
     const color = this.user.color || "var(--interactive-accent)";
-    builder.add(overlay.caret.pos, overlay.caret.pos, import_view5.Decoration.widget({
+    builder.add(overlay.caret.pos, overlay.caret.pos, import_view4.Decoration.widget({
       side: overlay.caret.side,
       widget: new SelfCaretWidget(this.user.name || "You", color)
     }));
     this.decorations = builder.finish();
   }
 };
-var SelfCaretWidget = class extends import_view5.WidgetType {
+var SelfCaretWidget = class extends import_view4.WidgetType {
   constructor(name, color) {
     super();
     this.name = name;
@@ -16324,25 +16248,23 @@ function renderSelfCaret(doc2, name, color) {
   return el;
 }
 
-// src/ui/CommentsView.ts
+// src/ui/ActivityView.ts
 var import_obsidian8 = require("obsidian");
-var COMMENTS_VIEW_TYPE = "collab-comments";
-var REACTIONS = ["\u{1F44D}", "\u2764\uFE0F", "\u{1F389}", "\u{1F604}", "\u{1F440}"];
-var CommentsView = class extends import_obsidian8.ItemView {
+var ACTIVITY_VIEW_TYPE = "collab-activity";
+var ActivityView = class extends import_obsidian8.ItemView {
   constructor(leaf) {
     super(leaf);
     this.ctx = null;
     this.unobserve = null;
-    this.showResolved = false;
   }
   getViewType() {
-    return COMMENTS_VIEW_TYPE;
+    return ACTIVITY_VIEW_TYPE;
   }
   getDisplayText() {
-    return "Comments";
+    return "Collab activity";
   }
   getIcon() {
-    return "message-square";
+    return "message-circle";
   }
   async onOpen() {
     this.render();
@@ -16352,202 +16274,80 @@ var CommentsView = class extends import_obsidian8.ItemView {
     (_a2 = this.unobserve) == null ? void 0 : _a2.call(this);
     this.unobserve = null;
   }
-  /** Plugin calls this on active-file change / bind. */
   setContext(ctx) {
     var _a2;
     (_a2 = this.unobserve) == null ? void 0 : _a2.call(this);
     this.unobserve = null;
     this.ctx = ctx;
-    if (ctx) this.unobserve = ctx.store.observe(() => this.render());
+    if (ctx) this.unobserve = ctx.observe(() => this.render());
     this.render();
   }
   render() {
     const root = this.contentEl;
     root.empty();
-    root.addClass("collab-comments-view");
-    const header = root.createDiv({ cls: "collab-comments-header" });
-    header.createEl("div", { text: this.ctx ? `Comments \u2014 ${this.ctx.fileName}` : "Comments", cls: "collab-comments-title" });
+    root.addClass("collab-activity-view");
+    const header = root.createDiv({ cls: "collab-activity-header" });
+    header.createEl("div", { text: this.ctx ? this.ctx.shareLabel : "Activity", cls: "collab-activity-title" });
     if (this.ctx) {
-      const toggle = header.createEl("label", { cls: "collab-comments-toggle" });
-      const cb = toggle.createEl("input", { type: "checkbox" });
-      cb.checked = this.showResolved;
-      toggle.appendText(" resolved");
-      cb.onchange = () => {
-        this.showResolved = cb.checked;
-        this.render();
-      };
+      const count2 = this.ctx.events().length;
+      header.createEl("div", { text: `${count2}`, cls: "collab-activity-count" });
     }
     if (!this.ctx) {
-      root.createEl("p", { text: "Open a synced note to see and add comments.", cls: "collab-comments-empty" });
+      root.createEl("p", { text: "Open or join a synced folder to see activity.", cls: "collab-comments-empty" });
       return;
     }
-    const threads = this.ctx.store.list();
-    const visible = threads.filter((t) => this.showResolved || !t.resolved);
-    for (const t of visible) this.ctx.markRead(t);
-    if (visible.length === 0) {
-      root.createEl("p", { text: "No comments yet. Select text, then run Add comment to selection.", cls: "collab-comments-empty" });
-      return;
+    const list = root.createDiv({ cls: "collab-activity-list" });
+    const events = this.ctx.events();
+    if (events.length === 0) {
+      list.createEl("p", { text: "No activity yet.", cls: "collab-comments-empty" });
+    } else {
+      for (const event of events) this.renderEvent(list, event);
     }
-    const list = root.createDiv({ cls: "collab-comments-list" });
-    for (const t of visible) this.renderThread(list, t);
-  }
-  renderThread(parent, t) {
-    var _a2, _b2;
-    const card = parent.createDiv({ cls: "collab-comment-card" + (t.resolved ? " resolved" : "") });
-    const quote = card.createDiv({ cls: "collab-comment-quote" });
-    if ((_a2 = t.anchor) == null ? void 0 : _a2.lost) quote.addClass("lost");
-    quote.setText(((_b2 = t.anchor) == null ? void 0 : _b2.lost) ? `\u201C${t.quote}\u201D (context lost)` : `\u201C${t.quote}\u201D`);
-    quote.onclick = () => {
-      var _a3, _b3, _c;
-      if (!((_a3 = t.anchor) == null ? void 0 : _a3.lost)) (_c = (_b3 = this.ctx) == null ? void 0 : _b3.session) == null ? void 0 : _c.reveal(t.id);
-    };
-    for (const r of t.replies) {
-      const row = card.createDiv({ cls: "collab-comment-reply" });
-      const meta = row.createDiv({ cls: "collab-comment-meta" });
-      meta.createSpan({ text: r.byName, cls: "collab-comment-author" });
-      meta.createSpan({ text: " \xB7 " + timeAgo(this.ctx.now(), r.at), cls: "collab-comment-time" });
-      row.createDiv({ cls: "collab-comment-text", text: r.text });
-      const react = row.createDiv({ cls: "collab-comment-reactions" });
-      for (const [emoji, n] of Object.entries(r.reactions)) {
-        if (this.ctx.canComment) {
-          const chip = react.createEl("button", { cls: "collab-reaction", text: `${emoji} ${n}` });
-          chip.onclick = () => this.ctx.store.react(t.id, r.id, emoji, 1);
-        } else {
-          react.createSpan({ cls: "collab-reaction", text: `${emoji} ${n}` });
-        }
-      }
-      if (this.ctx.canComment) {
-        const addReact = react.createEl("button", { cls: "collab-reaction add", text: "\uFF0B" });
-        addReact.onclick = (e) => this.reactionMenu(e, t.id, r.id);
-      }
-    }
-    if (!this.ctx.canComment) return;
-    const actions = card.createDiv({ cls: "collab-comment-actions" });
-    const replyInput = actions.createEl("input", { type: "text", placeholder: "Reply\u2026 (@name to notify)", cls: "collab-comment-input" });
-    wireMentionAutocomplete(actions, replyInput, () => {
-      var _a3, _b3;
-      return (_b3 = (_a3 = this.ctx) == null ? void 0 : _a3.mentionUsers()) != null ? _b3 : [];
+    const composer = root.createDiv({ cls: "collab-activity-composer" });
+    const input = composer.createEl("input", {
+      type: "text",
+      placeholder: "Message",
+      cls: "collab-activity-input"
     });
+    const sendBtn = composer.createEl("button", { cls: "collab-comment-btn collab-activity-send" });
+    (0, import_obsidian8.setIcon)(sendBtn, "send");
+    sendBtn.setAttr("aria-label", "Send message");
     const send = () => {
-      const text2 = replyInput.value.trim();
+      if (!this.ctx) return;
+      const text2 = input.value.trim();
       if (!text2) return;
-      this.ctx.store.addReply(t.id, { byUid: this.ctx.me.uid, byName: this.ctx.me.name, text: text2, at: this.ctx.now() });
-      const notified = this.ctx.notifyFromText(text2);
-      this.ctx.notifyThreadEvent(t, "reply", text2, notified);
-      replyInput.value = "";
+      if (!this.ctx.canSend) {
+        new import_obsidian8.Notice("This share is read-only on this device.");
+        return;
+      }
+      this.ctx.send(text2);
+      input.value = "";
     };
-    replyInput.addEventListener("keydown", (e) => {
+    input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
         send();
       }
     });
-    const resolveBtn = actions.createEl("button", { cls: "collab-comment-btn" });
-    (0, import_obsidian8.setIcon)(resolveBtn, t.resolved ? "rotate-ccw" : "check");
-    resolveBtn.setAttr("aria-label", t.resolved ? "Reopen" : "Resolve");
-    resolveBtn.onclick = () => {
-      const next = !t.resolved;
-      this.ctx.store.setResolved(t.id, next);
-      this.ctx.notifyThreadEvent(t, next ? "resolve" : "reopen", "", /* @__PURE__ */ new Set());
-    };
-    if (t.authorUid === this.ctx.me.uid) {
-      const del2 = actions.createEl("button", { cls: "collab-comment-btn" });
-      (0, import_obsidian8.setIcon)(del2, "trash-2");
-      del2.setAttr("aria-label", "Delete thread");
-      del2.onclick = () => this.ctx.store.deleteThread(t.id);
-    }
+    sendBtn.onclick = send;
   }
-  reactionMenu(e, threadId, replyId) {
-    const host = e.target.parentElement;
-    const existing = host.querySelector(".collab-reaction-picker");
-    if (existing) {
-      existing.remove();
+  renderEvent(parent, event) {
+    var _a2;
+    const isMessage = event.type === "message";
+    const row = parent.createDiv({ cls: `collab-activity-row ${isMessage ? "message" : "event"}` });
+    const meta = row.createDiv({ cls: "collab-activity-meta" });
+    meta.createSpan({ text: event.actorName || "Anonymous", cls: "collab-activity-author" });
+    meta.createSpan({ text: " \xB7 " + timeAgo(((_a2 = this.ctx) == null ? void 0 : _a2.now()) || Date.now(), event.at), cls: "collab-activity-time" });
+    if (event.device) meta.createSpan({ text: " \xB7 " + event.device, cls: "collab-activity-device" });
+    const body = row.createDiv({ cls: "collab-activity-body" });
+    if (isMessage) {
+      body.setText(event.text || "");
       return;
     }
-    const picker = host.createDiv({ cls: "collab-reaction-picker" });
-    for (const emoji of REACTIONS) {
-      const b = picker.createEl("button", { text: emoji });
-      b.onclick = () => {
-        this.ctx.store.react(threadId, replyId, emoji, 1);
-        picker.remove();
-      };
-    }
+    body.setText(formatEvent(event));
   }
 };
 function timeAgo(now, then) {
-  const s = Math.max(0, Math.floor((now - then) / 1e3));
-  if (s < 60) return "just now";
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-}
-
-// src/ui/CommentInboxView.ts
-var import_obsidian9 = require("obsidian");
-var COMMENT_INBOX_VIEW_TYPE = "collab-comment-inbox";
-var CommentInboxView = class extends import_obsidian9.ItemView {
-  constructor(leaf) {
-    super(leaf);
-    this.ctx = null;
-  }
-  getViewType() {
-    return COMMENT_INBOX_VIEW_TYPE;
-  }
-  getDisplayText() {
-    return "Comment inbox";
-  }
-  getIcon() {
-    return "inbox";
-  }
-  async onOpen() {
-    this.render();
-  }
-  setContext(ctx) {
-    this.ctx = ctx;
-    this.render();
-  }
-  render() {
-    const root = this.contentEl;
-    root.empty();
-    root.addClass("collab-history-view");
-    const header = root.createDiv({ cls: "collab-comments-header" });
-    header.createEl("div", { text: "Unread comments", cls: "collab-history-title" });
-    if (this.ctx) {
-      const mark = header.createEl("button", { cls: "collab-comment-btn" });
-      (0, import_obsidian9.setIcon)(mark, "check-check");
-      mark.appendText(" Mark all read");
-      mark.onclick = () => {
-        var _a2;
-        (_a2 = this.ctx) == null ? void 0 : _a2.markAllRead();
-        this.render();
-      };
-    }
-    if (!this.ctx) {
-      root.createEl("p", { text: "Open a synced vault to collect comment activity.", cls: "collab-comments-empty" });
-      return;
-    }
-    const items = this.ctx.items();
-    if (items.length === 0) {
-      root.createEl("p", { text: "No unread comments.", cls: "collab-comments-empty" });
-      return;
-    }
-    const list = root.createDiv({ cls: "collab-history-list" });
-    for (const item of items) {
-      const row = list.createDiv({ cls: "collab-history-row" });
-      const main = row.createDiv({ cls: "collab-history-main" });
-      main.createSpan({ text: item.fileName, cls: "collab-history-when" });
-      main.createSpan({ text: ` \xB7 ${item.authorName || "unknown"} \xB7 ${timeAgo2(this.ctx.now(), item.lastAt)}`, cls: "collab-history-author" });
-      row.createDiv({ text: item.text || item.quote, cls: "collab-comment-text" });
-      row.onclick = () => {
-        var _a2;
-        return void ((_a2 = this.ctx) == null ? void 0 : _a2.open(item));
-      };
-    }
-  }
-};
-function timeAgo2(now, then) {
   const s = Math.max(0, Math.floor((now - then) / 1e3));
   if (s < 60) return "just now";
   const m = Math.floor(s / 60);
@@ -16648,38 +16448,6 @@ async function ensureIdentityKeys(existing, uid) {
   return { publicKey, privateKey, signature };
 }
 
-// src/utils/commentNotifications.ts
-function buildThreadAuthorNotification(args2) {
-  var _a2;
-  if (!args2.authorUid || args2.authorUid === args2.actorUid) return null;
-  if ((_a2 = args2.alreadyNotified) == null ? void 0 : _a2.has(args2.authorUid)) return null;
-  const verb = args2.kind === "reply" ? "replied to your comment in" : args2.kind === "resolve" ? "resolved your comment in" : "reopened your comment in";
-  const body = (args2.text || args2.quote || "").slice(0, 300);
-  return {
-    toUid: args2.authorUid,
-    title: `${args2.actorName} ${verb} ${args2.fileName}`,
-    body
-  };
-}
-
-// src/utils/commentActivity.ts
-function latestCommentActivity(thread) {
-  const latest = thread.replies.reduce((best, reply) => {
-    if (best && best.at >= reply.at) return best;
-    return { at: reply.at || 0, byUid: reply.byUid || "", byName: reply.byName || "", text: reply.text || "" };
-  }, null);
-  return latest || {
-    at: thread.createdAt || 0,
-    byUid: thread.authorUid || "",
-    byName: thread.authorName || "",
-    text: thread.quote || ""
-  };
-}
-function isThreadUnread(thread, myUid, lastReadAt) {
-  const latest = latestCommentActivity(thread);
-  return !thread.resolved && latest.byUid !== myUid && latest.at > lastReadAt;
-}
-
 // src/utils/shareFolders.ts
 function cleanShareFolder(folder) {
   return folder.trim().replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
@@ -16697,7 +16465,7 @@ function shareFolderOverlaps(shares, folder, exceptId) {
 }
 
 // src/ui/HistoryView.ts
-var import_obsidian10 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 
 // src/utils/lineDiff.ts
 function splitLines(text2) {
@@ -16885,7 +16653,7 @@ function applyRestoreHunk(currentText, hunk) {
 
 // src/ui/HistoryView.ts
 var HISTORY_VIEW_TYPE = "collab-history";
-var HistoryView = class extends import_obsidian10.ItemView {
+var HistoryView = class extends import_obsidian9.ItemView {
   constructor(leaf) {
     super(leaf);
     this.ctx = null;
@@ -16947,7 +16715,7 @@ var HistoryView = class extends import_obsidian10.ItemView {
           e.stopPropagation();
           const content = await this.ctx.load(v.hash);
           if (content == null) {
-            new import_obsidian10.Notice("Couldn't load this version.");
+            new import_obsidian9.Notice("Couldn't load this version.");
             return;
           }
           this.showPreview(root, v, content);
@@ -16957,7 +16725,7 @@ var HistoryView = class extends import_obsidian10.ItemView {
           e.stopPropagation();
           const content = await this.ctx.load(v.hash);
           if (content == null) {
-            new import_obsidian10.Notice("Couldn't load this version.");
+            new import_obsidian9.Notice("Couldn't load this version.");
             return;
           }
           this.showDiff(root, v, content, "inline");
@@ -16967,23 +16735,23 @@ var HistoryView = class extends import_obsidian10.ItemView {
           e.stopPropagation();
           const content = await this.ctx.load(v.hash);
           if (content == null) {
-            new import_obsidian10.Notice("Couldn't load this version.");
+            new import_obsidian9.Notice("Couldn't load this version.");
             return;
           }
           this.showDiff(root, v, content, "side");
         };
         const restore = actions.createEl("button", { cls: "collab-comment-btn" });
-        (0, import_obsidian10.setIcon)(restore, "rotate-ccw");
+        (0, import_obsidian9.setIcon)(restore, "rotate-ccw");
         restore.appendText(" Restore");
         restore.onclick = async (e) => {
           e.stopPropagation();
           const content = await this.ctx.load(v.hash);
           if (content == null) {
-            new import_obsidian10.Notice("Couldn't load this version.");
+            new import_obsidian9.Notice("Couldn't load this version.");
             return;
           }
           await this.ctx.restore(content);
-          new import_obsidian10.Notice("Restored. A pre-restore backup was saved.");
+          new import_obsidian9.Notice("Restored. A pre-restore backup was saved.");
         };
       }
     }
@@ -17004,13 +16772,13 @@ var HistoryView = class extends import_obsidian10.ItemView {
       const meta = [d.deletedBy ? `by ${d.deletedBy}` : "", d.deletedAt ? relTime(new Date(d.deletedAt).toISOString()) : ""].filter(Boolean).join(" \xB7 ");
       if (meta) main.createSpan({ text: " \xB7 " + meta, cls: "collab-history-author" });
       const restore = row.createEl("button", { cls: "collab-comment-btn" });
-      (0, import_obsidian10.setIcon)(restore, "rotate-ccw");
+      (0, import_obsidian9.setIcon)(restore, "rotate-ccw");
       restore.appendText(" Restore");
       restore.onclick = async (e) => {
         e.stopPropagation();
         restore.disabled = true;
         const ok = await ctx.restoreDeleted(d.relPath);
-        new import_obsidian10.Notice(ok ? `Restoring "${name}"\u2026` : "Couldn't restore this file.");
+        new import_obsidian9.Notice(ok ? `Restoring "${name}"\u2026` : "Couldn't restore this file.");
         if (ok) setTimeout(() => this.render(), 1200);
         else restore.disabled = false;
       };
@@ -17038,7 +16806,7 @@ var HistoryView = class extends import_obsidian10.ItemView {
       const hashes = [shortHash(c.localHash), shortHash(c.remoteHash)].filter(Boolean);
       if (hashes.length) main.createEl("div", { text: hashes.join(" vs "), cls: "collab-history-detail" });
       const open = row.createEl("button", { cls: "collab-comment-btn" });
-      (0, import_obsidian10.setIcon)(open, "file-search");
+      (0, import_obsidian9.setIcon)(open, "file-search");
       open.appendText(" Open");
       open.onclick = async (e) => {
         e.stopPropagation();
@@ -17086,17 +16854,17 @@ var HistoryView = class extends import_obsidian10.ItemView {
     const actions = box.createDiv({ cls: "collab-history-hunks" });
     for (const hunk of hunks) {
       const btn = actions.createEl("button", { cls: "collab-comment-btn" });
-      (0, import_obsidian10.setIcon)(btn, "rotate-ccw");
+      (0, import_obsidian9.setIcon)(btn, "rotate-ccw");
       btn.appendText(` Restore change ${hunk.id + 1} (+${hunk.added}/-${hunk.removed})`);
       btn.onclick = async () => {
         if (!this.ctx) return;
         if (this.ctx.currentText() !== baselineCurrent) {
-          new import_obsidian10.Notice("Note changed since this diff loaded. Reopen the diff and try again.");
+          new import_obsidian9.Notice("Note changed since this diff loaded. Reopen the diff and try again.");
           return;
         }
         btn.disabled = true;
         await this.ctx.restore(applyRestoreHunk(baselineCurrent, hunk));
-        new import_obsidian10.Notice("Restored that change. A pre-restore backup was saved.");
+        new import_obsidian9.Notice("Restored that change. A pre-restore backup was saved.");
       };
     }
   }
@@ -17176,25 +16944,22 @@ function relTime(iso) {
 }
 
 // src/main.ts
-var CollabPlugin = class extends import_obsidian11.Plugin {
+var CollabPlugin = class extends import_obsidian10.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
     this.instanceWatch = null;
     this.syncManagers = /* @__PURE__ */ new Map();
     this.modifyDebounceMap = /* @__PURE__ */ new Map();
-    this.debouncedRestart = (0, import_obsidian11.debounce)(() => {
+    this.debouncedRestart = (0, import_obsidian10.debounce)(() => {
       this.restartShares().catch((e) => {
         err("share", "restart failed", e);
-        new import_obsidian11.Notice("Collab could not restart syncing. Check the server URL and share settings.");
+        new import_obsidian10.Notice("Collab could not restart syncing. Check the server URL and share settings.");
       });
     }, 800, false);
-    this.debouncedPersistReadMarkers = (0, import_obsidian11.debounce)(() => {
-      void this.persist();
-    }, 500, false);
-    this.debouncedPresenceDomRefresh = (0, import_obsidian11.debounce)(() => this.eachManager((m) => m.refreshPresenceUi()), 250, false);
-    this.debouncedLiveIdentityRefresh = (0, import_obsidian11.debounce)(() => this.refreshLiveIdentity(), 250, false);
-    this.debouncedActiveEditorRefresh = (0, import_obsidian11.debounce)((reason) => {
+    this.debouncedPresenceDomRefresh = (0, import_obsidian10.debounce)(() => this.eachManager((m) => m.refreshPresenceUi()), 250, false);
+    this.debouncedLiveIdentityRefresh = (0, import_obsidian10.debounce)(() => this.refreshLiveIdentity(), 250, false);
+    this.debouncedActiveEditorRefresh = (0, import_obsidian10.debounce)((reason) => {
       trace("bind", "active-editor-refresh", { reason, managers: this.syncManagers.size });
       void this.handleActiveLeafChange();
     }, 150, false);
@@ -17203,8 +16968,6 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     this.boundView = null;
     this.boundProvider = null;
     this.boundPath = null;
-    this.boundStore = null;
-    this.boundSession = null;
     this.boundPresence = null;
     this.bindWatchdogTimer = null;
     this.bindWatchdogUntil = 0;
@@ -17223,27 +16986,9 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     log("load", "starting; uid=", (_a2 = this.settings.uid) == null ? void 0 : _a2.slice(0, 8), "shares=", this.settings.shares.length);
     this.statusBar = new StatusBarWidget(this.addStatusBarItem());
     this.addSettingTab(new CollabSettingsTab(this.app, this));
-    this.registerView(COMMENTS_VIEW_TYPE, (leaf) => new CommentsView(leaf));
-    this.registerView(COMMENT_INBOX_VIEW_TYPE, (leaf) => new CommentInboxView(leaf));
-    this.addRibbonIcon("message-square", "Collab comments", () => this.openCommentsPanel());
-    this.addRibbonIcon("inbox", "Unread collab comments", () => this.openCommentInbox());
-    this.addCommand({ id: "open-comments", name: "Open comments panel", callback: () => this.openCommentsPanel() });
-    this.addCommand({ id: "open-comment-inbox", name: "Open unread comments inbox", callback: () => this.openCommentInbox() });
-    this.addCommand({
-      id: "add-comment-to-selection",
-      name: "Add comment to selection",
-      checkCallback: (checking) => {
-        var _a3;
-        const file = this.app.workspace.getActiveFile();
-        const manager = file ? this.managerOwning(file.path) : null;
-        const canComment = !!file && !!manager && manager.role !== "viewer" && this.boundPath === file.path && !!this.boundView && !this.boundView.state.selection.main.empty;
-        if (checking) return canComment;
-        if (!canComment || !file) return false;
-        trace("comment", "add-command", { path: file.path });
-        void this.addCommentForSelection(file, (_a3 = this.app.workspace.getActiveViewOfType(import_obsidian11.MarkdownView)) != null ? _a3 : {});
-        return true;
-      }
-    });
+    this.registerView(ACTIVITY_VIEW_TYPE, (leaf) => new ActivityView(leaf));
+    this.addRibbonIcon("message-circle", "Collab activity", () => this.openActivityPanel());
+    this.addCommand({ id: "open-activity", name: "Open activity panel", callback: () => this.openActivityPanel() });
     this.registerView(HISTORY_VIEW_TYPE, (leaf) => new HistoryView(leaf));
     this.addCommand({ id: "open-history", name: "Open version history", callback: () => this.openHistoryPanel() });
     this.registerEditorExtension([collabEditorExtension]);
@@ -17256,18 +17001,18 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     this.startBindWatchdog("plugin-load", 12e3);
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        trace("vault", "create", { path: file.path, kind: file instanceof import_obsidian11.TFile ? "file" : file instanceof import_obsidian11.TFolder ? "folder" : "other" });
-        if (file instanceof import_obsidian11.TFile) this.eachManager((m) => m.onFileCreate(file));
+        trace("vault", "create", { path: file.path, kind: file instanceof import_obsidian10.TFile ? "file" : file instanceof import_obsidian10.TFolder ? "folder" : "other" });
+        if (file instanceof import_obsidian10.TFile) this.eachManager((m) => m.onFileCreate(file));
       })
     );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
         var _a3, _b2;
-        if (!(file instanceof import_obsidian11.TFile)) return;
+        if (!(file instanceof import_obsidian10.TFile)) return;
         trace("vault", "modify", { path: file.path, size: (_a3 = file.stat) == null ? void 0 : _a3.size, mtime: (_b2 = file.stat) == null ? void 0 : _b2.mtime });
         let fn = this.modifyDebounceMap.get(file.path);
         if (!fn) {
-          fn = (0, import_obsidian11.debounce)((f) => {
+          fn = (0, import_obsidian10.debounce)((f) => {
             this.modifyDebounceMap.delete(f.path);
             this.eachManager((m) => m.onFileModify(f));
           }, 50, true);
@@ -17278,17 +17023,17 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        trace("vault", "delete", { path: file.path, kind: file instanceof import_obsidian11.TFile ? "file" : file instanceof import_obsidian11.TFolder ? "folder" : "other" });
-        if (file instanceof import_obsidian11.TFile) this.eachManager((m) => m.onFileDelete(file));
-        else if (file instanceof import_obsidian11.TFolder) this.eachManager((m) => m.onFolderDelete(file.path));
+        trace("vault", "delete", { path: file.path, kind: file instanceof import_obsidian10.TFile ? "file" : file instanceof import_obsidian10.TFolder ? "folder" : "other" });
+        if (file instanceof import_obsidian10.TFile) this.eachManager((m) => m.onFileDelete(file));
+        else if (file instanceof import_obsidian10.TFolder) this.eachManager((m) => m.onFolderDelete(file.path));
         this.modifyDebounceMap.delete(file.path);
       })
     );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        trace("vault", "rename", { oldPath, newPath: file.path, kind: file instanceof import_obsidian11.TFile ? "file" : file instanceof import_obsidian11.TFolder ? "folder" : "other" });
-        if (file instanceof import_obsidian11.TFile) this.eachManager((m) => m.onFileRename(file, oldPath));
-        else if (file instanceof import_obsidian11.TFolder) this.eachManager((m) => m.onFolderRename(file, oldPath));
+        trace("vault", "rename", { oldPath, newPath: file.path, kind: file instanceof import_obsidian10.TFile ? "file" : file instanceof import_obsidian10.TFolder ? "folder" : "other" });
+        if (file instanceof import_obsidian10.TFile) this.eachManager((m) => m.onFileRename(file, oldPath));
+        else if (file instanceof import_obsidian10.TFolder) this.eachManager((m) => m.onFolderRename(file, oldPath));
         this.modifyDebounceMap.delete(oldPath);
       })
     );
@@ -17324,26 +17069,15 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     this.registerDomEvent(window, "beforeunload", () => void this.flushActiveEditorForLifecycle("beforeunload"));
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (file instanceof import_obsidian11.TFolder) {
+        if (file instanceof import_obsidian10.TFolder) {
           menu.addItem(
             (item) => item.setTitle("Share this folder (collab)").setIcon("users").onClick(() => this.shareFolderInteractive(file.path))
           );
-        } else if (file instanceof import_obsidian11.TFile && this.managerOwning(file.path)) {
+        } else if (file instanceof import_obsidian10.TFile && this.managerOwning(file.path)) {
           menu.addItem(
             (item) => item.setTitle("Version history (collab)").setIcon("history").onClick(() => this.openHistoryPanel())
           );
         }
-      })
-    );
-    this.registerEvent(
-      this.app.workspace.on("editor-menu", (menu, editor, info) => {
-        const file = info == null ? void 0 : info.file;
-        const manager = file ? this.managerOwning(file.path) : null;
-        if (!file || !manager || manager.role === "viewer") return;
-        if (!editor.getSelection()) return;
-        menu.addItem(
-          (item) => item.setTitle("Add comment").setIcon("message-square").onClick(() => this.addCommentForSelection(file, info))
-        );
       })
     );
     this.registerObsidianProtocolHandler("collab-add", async (params2) => {
@@ -17368,7 +17102,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
           await this.startAllShares();
         } catch (e) {
           err("share", "force resync failed", e);
-          new import_obsidian11.Notice("Collab force re-sync failed. Check diagnostics for details.");
+          new import_obsidian10.Notice("Collab force re-sync failed. Check diagnostics for details.");
         }
       }
     });
@@ -17380,7 +17114,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
         for (const m of this.syncManagers.values()) {
           if (!m.reconnect()) failed++;
         }
-        new import_obsidian11.Notice(failed > 0 ? `Reconnect requested; ${failed} share(s) reported an immediate failure.` : "Reconnecting\u2026");
+        new import_obsidian10.Notice(failed > 0 ? `Reconnect requested; ${failed} share(s) reported an immediate failure.` : "Reconnecting\u2026");
         log("reconnect", "manual reconnect of", this.syncManagers.size, "shares");
       }
     });
@@ -17399,15 +17133,15 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
   // ── Share lifecycle ────────────────────────────────────────────
   startDiagnosticTraceInteractive() {
     const path = startDiagnosticTrace(2 * 6e4);
-    new import_obsidian11.Notice(`Collab diagnostic trace started: ${path}`, 8e3);
+    new import_obsidian10.Notice(`Collab diagnostic trace started: ${path}`, 8e3);
   }
   async exportDiagnosticBundleInteractive() {
     try {
       const path = await exportDiagnosticBundle();
-      new import_obsidian11.Notice(`Collab diagnostic bundle written: ${path}`, 1e4);
+      new import_obsidian10.Notice(`Collab diagnostic bundle written: ${path}`, 1e4);
     } catch (e) {
       err("diag", e);
-      new import_obsidian11.Notice("Could not export collab diagnostic bundle.");
+      new import_obsidian10.Notice("Could not export collab diagnostic bundle.");
     }
   }
   diagnosticContext() {
@@ -17423,14 +17157,14 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
         version: this.manifest.version
       },
       platform: {
-        mobile: import_obsidian11.Platform.isMobile,
-        desktop: import_obsidian11.Platform.isDesktop,
-        mobileApp: import_obsidian11.Platform.isMobileApp,
-        desktopApp: import_obsidian11.Platform.isDesktopApp,
-        ios: import_obsidian11.Platform.isIosApp,
-        android: import_obsidian11.Platform.isAndroidApp,
-        phone: import_obsidian11.Platform.isPhone,
-        tablet: import_obsidian11.Platform.isTablet
+        mobile: import_obsidian10.Platform.isMobile,
+        desktop: import_obsidian10.Platform.isDesktop,
+        mobileApp: import_obsidian10.Platform.isMobileApp,
+        desktopApp: import_obsidian10.Platform.isDesktopApp,
+        ios: import_obsidian10.Platform.isIosApp,
+        android: import_obsidian10.Platform.isAndroidApp,
+        phone: import_obsidian10.Platform.isPhone,
+        tablet: import_obsidian10.Platform.isTablet
       },
       settings: {
         shareCount: this.settings.shares.length,
@@ -17472,13 +17206,14 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     try {
       await m.start();
       log("share", "started", share.legacy ? "legacy" : share.id, "->", share.localFolder);
+      this.refreshActivityContext();
       this.debouncedActiveEditorRefresh("share-started");
       this.startBindWatchdog("share-started", 6e3);
     } catch (e) {
       this.syncManagers.delete(share.id);
       this.statusBar.setShare(share.id, { label: share.label, status: "error", fileCount: 0, pending: 0 });
       err("share", "start failed", share.legacy ? "legacy" : share.id, share.localFolder, e);
-      new import_obsidian11.Notice(`Collab could not start "${share.label || share.localFolder}". Check the server URL and share settings.`);
+      new import_obsidian10.Notice(`Collab could not start "${share.label || share.localFolder}". Check the server URL and share settings.`);
     }
   }
   async stopShare(id2) {
@@ -17489,6 +17224,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       }
       await m.destroy();
       this.syncManagers.delete(id2);
+      this.refreshActivityContext();
     }
     this.statusBar.removeShare(id2);
   }
@@ -17544,7 +17280,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
   activeFocusedFile() {
     var _a2;
     const activeView = (_a2 = this.app.workspace.activeLeaf) == null ? void 0 : _a2.view;
-    return (activeView == null ? void 0 : activeView.file) instanceof import_obsidian11.TFile ? activeView.file : null;
+    return (activeView == null ? void 0 : activeView.file) instanceof import_obsidian10.TFile ? activeView.file : null;
   }
   startBindWatchdog(reason, durationMs) {
     this.bindWatchdogUntil = Math.max(this.bindWatchdogUntil, Date.now() + durationMs);
@@ -17565,7 +17301,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
   }
   async verifyActiveEditorBinding(reason) {
     var _a2, _b2;
-    const markdownView = this.app.workspace.getActiveViewOfType(import_obsidian11.MarkdownView);
+    const markdownView = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
     const activeFile = (_a2 = markdownView == null ? void 0 : markdownView.file) != null ? _a2 : null;
     const ev = markdownView ? getEditorView(markdownView) : null;
     const path = (_b2 = activeFile == null ? void 0 : activeFile.path) != null ? _b2 : null;
@@ -17593,18 +17329,19 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
   async handleActiveLeafChange() {
     var _a2, _b2;
     const activeFile = this.activeFocusedFile();
-    const markdownView = this.app.workspace.getActiveViewOfType(import_obsidian11.MarkdownView);
+    const markdownView = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
     const markdownFile = (_a2 = markdownView == null ? void 0 : markdownView.file) != null ? _a2 : null;
     this.eachManager((m) => m.setPresence(activeFile));
     await this.bindActiveEditor(markdownFile, 0);
     (_b2 = this.getHistoryView()) == null ? void 0 : _b2.setContext(this.buildHistoryContext());
+    this.refreshActivityContext();
   }
   async bindActiveEditor(activeFile, attempt) {
     var _a2, _b2, _c, _d;
     if (attempt > 0 && ((_b2 = (_a2 = this.app.workspace.getActiveFile()) == null ? void 0 : _a2.path) != null ? _b2 : null) !== ((_c = activeFile == null ? void 0 : activeFile.path) != null ? _c : null)) {
       return;
     }
-    const view = this.app.workspace.getActiveViewOfType(import_obsidian11.MarkdownView);
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
     const ev = view ? getEditorView(view) : null;
     const path = (_d = activeFile == null ? void 0 : activeFile.path) != null ? _d : null;
     const marker = ev ? currentCollabBindingPath(ev) : null;
@@ -17617,7 +17354,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
         trace("bind", "editor-view-not-ready", { path, attempt });
         setTimeout(() => void this.bindActiveEditor(activeFile, attempt + 1), 300);
       }
-      this.refreshCommentsContext();
+      this.refreshActivityContext();
       return;
     }
     if (this.boundPath === path && this.boundView === ev && marker === path) return;
@@ -17631,7 +17368,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       if (provider) break;
     }
     if (!provider) {
-      this.refreshCommentsContext();
+      this.refreshActivityContext();
       return;
     }
     if (!provider.isReady()) {
@@ -17642,8 +17379,6 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     const ytext = provider.getYText();
     const awareness = provider.getAwareness();
     if (!ytext || !awareness) return;
-    const store = new CommentStore(provider.getDoc());
-    const session = new CommentSession(store, (id2) => this.openThread(id2));
     const manager = this.managerOwning(path);
     const manifestAwareness = manager == null ? void 0 : manager.getManifestAwareness();
     const relPath = manager ? manager.toRel(path) : path;
@@ -17651,162 +17386,75 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     const role = (manager == null ? void 0 : manager.role) || "editor";
     const selfBaseColor = this.settings.cursorColor || colorFor(this.settings.uid || this.settings.displayName);
     const selfColor = deviceScopedColor(selfBaseColor);
-    const extras = [session.extension(), selfSelectionExtension({ name: this.settings.displayName || "You", color: selfColor })];
-    extras.push(import_view6.EditorView.updateListener.of((u) => {
+    const extras = [selfSelectionExtension({ name: this.settings.displayName || "You", color: selfColor })];
+    extras.push(import_view5.EditorView.updateListener.of((u) => {
       if (u.selectionSet) this.debouncedPresenceDomRefresh();
     }));
     if (presence) extras.push(presence.extension(true));
     if (role !== "editor") extras.push(readOnlyExtension());
     await provider.setEditorBound(true);
     bindEditor(ev, ytext, awareness, path, extras);
-    session.attach(ev);
     presence == null ? void 0 : presence.start();
     manager == null ? void 0 : manager.refreshPresenceUi();
     this.boundView = ev;
     this.boundProvider = provider;
     this.boundPath = path;
-    this.boundStore = store;
-    this.boundSession = session;
     this.boundPresence = presence;
-    this.refreshCommentsContext();
-    trace("bind", "bound", { path, role, hasPresence: !!presence, comments: store.openCount() });
-    log("bind", "bound editor", path, "comments=", store.openCount());
+    this.refreshActivityContext();
+    trace("bind", "bound", { path, role, hasPresence: !!presence });
+    log("bind", "bound editor", path);
   }
-  // ── Comments wiring ─────────────────────────────────────────────
-  getCommentsView() {
+  // ── Activity/chat wiring ───────────────────────────────────────
+  getActivityView() {
     var _a2, _b2;
-    const leaves = this.app.workspace.getLeavesOfType(COMMENTS_VIEW_TYPE);
-    return (_b2 = (_a2 = leaves[0]) == null ? void 0 : _a2.view) != null ? _b2 : null;
+    return (_b2 = (_a2 = this.app.workspace.getLeavesOfType(ACTIVITY_VIEW_TYPE)[0]) == null ? void 0 : _a2.view) != null ? _b2 : null;
   }
-  async openCommentsPanel() {
-    let leaf = this.app.workspace.getLeavesOfType(COMMENTS_VIEW_TYPE)[0];
+  async openActivityPanel() {
+    let leaf = this.app.workspace.getLeavesOfType(ACTIVITY_VIEW_TYPE)[0];
     if (!leaf) {
       leaf = this.app.workspace.getRightLeaf(false);
-      await leaf.setViewState({ type: COMMENTS_VIEW_TYPE, active: true });
+      await leaf.setViewState({ type: ACTIVITY_VIEW_TYPE, active: true });
     }
     this.app.workspace.revealLeaf(leaf);
-    this.refreshCommentsContext();
+    this.refreshActivityContext();
   }
-  refreshCommentsContext() {
-    var _a2;
-    const view = this.getCommentsView();
+  refreshActivityContext() {
+    const view = this.getActivityView();
     if (!view) return;
-    if (this.boundStore && this.boundPath) {
-      const fileName = this.boundPath.split("/").pop() || this.boundPath;
-      view.setContext({
-        store: this.boundStore,
-        session: this.boundSession,
-        fileName,
-        me: { uid: this.settings.uid, name: this.settings.displayName },
-        now: () => Date.now(),
-        canComment: ((_a2 = this.managerOwning(this.boundPath || "")) == null ? void 0 : _a2.role) !== "viewer",
-        mentionUsers: () => {
-          var _a3, _b2;
-          return (_b2 = (_a3 = this.managerOwning(this.boundPath || "")) == null ? void 0 : _a3.roster()) != null ? _b2 : [];
-        },
-        notifyFromText: (text2) => this.notifyMentionsInText(text2, fileName, this.boundPath || ""),
-        notifyThreadEvent: (thread, kind, text2, alreadyNotified) => this.notifyCommentThreadEvent(thread, kind, text2, fileName, this.boundPath || "", alreadyNotified),
-        markRead: (thread) => this.markCommentThreadRead(this.boundPath || "", thread)
-      });
-    } else {
+    const manager = this.activityManager();
+    if (!manager) {
       view.setContext(null);
-    }
-  }
-  openThread(threadId) {
-    var _a2;
-    (_a2 = this.boundSession) == null ? void 0 : _a2.reveal(threadId);
-    this.openCommentsPanel();
-  }
-  getCommentInboxView() {
-    var _a2, _b2;
-    return (_b2 = (_a2 = this.app.workspace.getLeavesOfType(COMMENT_INBOX_VIEW_TYPE)[0]) == null ? void 0 : _a2.view) != null ? _b2 : null;
-  }
-  async openCommentInbox() {
-    var _a2;
-    let leaf = this.app.workspace.getLeavesOfType(COMMENT_INBOX_VIEW_TYPE)[0];
-    if (!leaf) {
-      leaf = this.app.workspace.getRightLeaf(false);
-      await leaf.setViewState({ type: COMMENT_INBOX_VIEW_TYPE, active: true });
-    }
-    this.app.workspace.revealLeaf(leaf);
-    (_a2 = this.getCommentInboxView()) == null ? void 0 : _a2.setContext({
-      items: () => this.buildCommentInboxItems(),
-      open: (item) => this.openCommentInboxItem(item),
-      markAllRead: () => this.markAllInboxRead(),
-      now: () => Date.now()
-    });
-  }
-  buildCommentInboxItems() {
-    const items = [];
-    for (const m of this.syncManagers.values()) {
-      m.eachFileProvider((relPath, fp) => {
-        var _a2;
-        const fullPath = m.toFull(relPath);
-        const store = new CommentStore(fp.getDoc());
-        for (const thread of store.list()) {
-          const key = commentReadKey(m.shareId, relPath, thread.id);
-          const lastReadAt = ((_a2 = this.settings.commentReadAt) == null ? void 0 : _a2[key]) || 0;
-          if (!isThreadUnread(thread, this.settings.uid, lastReadAt)) continue;
-          const latest = latestCommentActivity(thread);
-          items.push({
-            key,
-            filePath: fullPath,
-            fileName: fullPath.split("/").pop() || fullPath,
-            threadId: thread.id,
-            authorName: latest.byName || thread.authorName,
-            quote: thread.quote,
-            text: latest.text,
-            lastAt: latest.at
-          });
-        }
-      });
-    }
-    return items.sort((a, b) => b.lastAt - a.lastAt || a.filePath.localeCompare(b.filePath));
-  }
-  async openCommentInboxItem(item) {
-    var _a2, _b2;
-    this.markCommentReadKey(item.key, item.lastAt);
-    const file = this.app.vault.getAbstractFileByPath(item.filePath);
-    if (!(file instanceof import_obsidian11.TFile)) {
-      new import_obsidian11.Notice("That comment's file is not available locally yet.");
       return;
     }
-    await this.app.workspace.getLeaf(false).openFile(file);
-    await this.bindActiveEditor(file, 0);
-    await this.openCommentsPanel();
-    (_a2 = this.boundSession) == null ? void 0 : _a2.reveal(item.threadId);
-    (_b2 = this.getCommentInboxView()) == null ? void 0 : _b2.setContext({
-      items: () => this.buildCommentInboxItems(),
-      open: (next) => this.openCommentInboxItem(next),
-      markAllRead: () => this.markAllInboxRead(),
-      now: () => Date.now()
+    view.setContext({
+      shareLabel: manager.label,
+      events: () => manager.listActivityEvents(),
+      observe: (cb) => manager.observeActivityEvents(cb),
+      send: (text2) => manager.sendActivityMessage(text2),
+      now: () => Date.now(),
+      canSend: manager.role === "editor"
     });
   }
-  markAllInboxRead() {
-    for (const item of this.buildCommentInboxItems()) this.markCommentReadKey(item.key, item.lastAt);
-    void this.persist();
-  }
-  markCommentThreadRead(filePath, thread) {
-    const m = this.managerOwning(filePath);
-    if (!m) return;
-    const latest = latestCommentActivity(thread);
-    this.markCommentReadKey(commentReadKey(m.shareId, m.toRel(filePath), thread.id), latest.at);
-  }
-  markCommentReadKey(key, at) {
+  activityManager() {
     var _a2;
-    if (!key || !at) return;
-    const current = ((_a2 = this.settings.commentReadAt) == null ? void 0 : _a2[key]) || 0;
-    if (current >= at) return;
-    this.settings.commentReadAt = { ...this.settings.commentReadAt || {}, [key]: at };
-    this.debouncedPersistReadMarkers();
+    if (this.boundPath) {
+      const manager = this.managerOwning(this.boundPath);
+      if (manager) return manager;
+    }
+    const active = this.activeFocusedFile();
+    if (active) {
+      const manager = this.managerOwning(active.path);
+      if (manager) return manager;
+    }
+    return (_a2 = this.syncManagers.values().next().value) != null ? _a2 : null;
   }
   managerOwning(path) {
     for (const m of this.syncManagers.values()) if (m.isInLinkedFolder(path)) return m;
     return null;
   }
   async unbindActiveEditor(reason, nextPath = null, nextView = null) {
-    var _a2, _b2, _c;
-    if (!this.boundView && !this.boundProvider && !this.boundSession && !this.boundPresence) return;
+    var _a2, _b2;
+    if (!this.boundView && !this.boundProvider && !this.boundPresence) return;
     const oldPath = this.boundPath;
     trace("bind", "unbind-start", {
       oldPath,
@@ -17815,21 +17463,19 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       sameView: nextView ? this.boundView === nextView : void 0,
       hasProvider: !!this.boundProvider
     });
-    (_a2 = this.boundSession) == null ? void 0 : _a2.detach();
-    (_b2 = this.boundPresence) == null ? void 0 : _b2.stop();
+    (_a2 = this.boundPresence) == null ? void 0 : _a2.stop();
     if (this.boundView) {
       try {
         unbindEditor(this.boundView);
       } catch (e) {
       }
     }
-    await ((_c = this.boundProvider) == null ? void 0 : _c.setEditorBound(false));
+    await ((_b2 = this.boundProvider) == null ? void 0 : _b2.setEditorBound(false));
     this.boundView = null;
     this.boundProvider = null;
     this.boundPath = null;
-    this.boundStore = null;
-    this.boundSession = null;
     this.boundPresence = null;
+    this.refreshActivityContext();
     trace("bind", "unbind-done", { oldPath, nextPath, reason });
   }
   async flushActiveEditorForLifecycle(reason) {
@@ -17849,39 +17495,6 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       if (!m.reconnect()) failed++;
     });
     trace("reconnect", "all-managers", { reason, managers: this.syncManagers.size, failed });
-  }
-  /** Detect "@Name" mentions of collaborators in `text` and push them a notification. */
-  notifyMentionsInText(text2, fileName, filePath) {
-    const notified = /* @__PURE__ */ new Set();
-    if (!text2.includes("@") || !filePath) return notified;
-    const m = this.managerOwning(filePath);
-    if (!m) return notified;
-    for (const c of findMentionedUsers(text2, m.roster())) {
-      for (const uid of c.uids || [c.uid]) {
-        if (notified.has(uid)) continue;
-        m.sendMention(uid, `${this.settings.displayName} mentioned you in ${fileName}`, text2.slice(0, 300), filePath);
-        notified.add(uid);
-        log("mention", "notified", c.name, uid);
-      }
-    }
-    return notified;
-  }
-  notifyCommentThreadEvent(thread, kind, text2, fileName, filePath, alreadyNotified) {
-    const m = this.managerOwning(filePath);
-    if (!m) return;
-    const n = buildThreadAuthorNotification({
-      kind,
-      actorUid: this.settings.uid,
-      actorName: this.settings.displayName,
-      authorUid: thread.authorUid,
-      fileName,
-      quote: thread.quote,
-      text: text2,
-      alreadyNotified
-    });
-    if (!n) return;
-    m.sendMention(n.toUid, n.title, n.body, filePath);
-    log("comment", "notified thread author", n.toUid, kind);
   }
   // ── Version history wiring ──────────────────────────────────────
   getHistoryView() {
@@ -17942,12 +17555,12 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       },
       restore: async (text2) => {
         if (m.role !== "editor") {
-          new import_obsidian11.Notice("This share is read-only on this device.");
+          new import_obsidian10.Notice("This share is read-only on this device.");
           return;
         }
         const fp = m.getFileProvider(file.path);
         if (fp) await fp.restoreFromText(text2);
-        else new import_obsidian11.Notice("Open the note before restoring.");
+        else new import_obsidian10.Notice("Open the note before restoring.");
       },
       currentText: () => {
         var _a3, _b2;
@@ -17958,55 +17571,6 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       conflictFiles: () => m.listConflictFiles(),
       openConflict: (relPath2) => m.openSyncedFile(relPath2)
     };
-  }
-  async addCommentForSelection(file, info) {
-    var _a2, _b2;
-    const m = this.managerOwning(file.path);
-    const fp = m == null ? void 0 : m.getFileProvider(file.path);
-    if (m && m.role === "viewer") {
-      new import_obsidian11.Notice("This share is view-only on this device.");
-      return;
-    }
-    if (!fp || !fp.isReady()) {
-      new import_obsidian11.Notice("This note is still syncing \u2014 try again in a moment.");
-      return;
-    }
-    const ev = getEditorView(info) || (this.boundPath === file.path ? this.boundView : null);
-    if (!ev) {
-      new import_obsidian11.Notice("Open the note in the editor to comment.");
-      return;
-    }
-    const sel = ev.state.selection.main;
-    const from2 = Math.min(sel.from, sel.to);
-    const to = Math.max(sel.from, sel.to);
-    if (to <= from2) {
-      new import_obsidian11.Notice("Select some text to comment on.");
-      return;
-    }
-    const quote = ev.state.doc.sliceString(from2, to);
-    const res = await promptModal(this.app, {
-      title: "Add comment",
-      cta: "Comment",
-      fields: [{
-        key: "text",
-        label: `On \u201C${quote.slice(0, 40)}${quote.length > 40 ? "\u2026" : ""}\u201D`,
-        placeholder: "Your comment\u2026",
-        mentionUsers: (_b2 = (_a2 = this.managerOwning(file.path)) == null ? void 0 : _a2.roster()) != null ? _b2 : []
-      }]
-    });
-    if (!res || !res.text.trim()) return;
-    const store = this.boundPath === file.path && this.boundStore ? this.boundStore : new CommentStore(fp.getDoc());
-    store.addThread({
-      from: from2,
-      to,
-      quote,
-      authorUid: this.settings.uid,
-      authorName: this.settings.displayName,
-      text: res.text.trim(),
-      at: Date.now()
-    });
-    this.notifyMentionsInText(res.text.trim(), file.name, file.path);
-    await this.openCommentsPanel();
   }
   // ── Share creation / joining ───────────────────────────────────
   /** Generate a role-scoped share code using ownerKey, or legacy local-HMAC fallback. */
@@ -18030,24 +17594,24 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       } catch (e) {
         err("share", "server link mint failed", e);
       }
-      new import_obsidian11.Notice("Could not create that share link on the server.");
+      new import_obsidian10.Notice("Could not create that share link on the server.");
       return null;
     }
     if (this.settings.serverSecret) {
       const key = await deriveRoleKey(this.settings.serverSecret, share.id, role, epoch);
       return encodeShareCode(this.settings.serverUrl, share.id, key, role, epoch, void 0, void 0, share.label);
     }
-    new import_obsidian11.Notice("This device does not have owner access for that share.");
+    new import_obsidian10.Notice("This device does not have owner access for that share.");
     return null;
   }
   async generateShareInviteCode(share, role, recipient, expiresAt, maxDevices = 1) {
     var _a2, _b2;
     if (share.legacy) {
-      new import_obsidian11.Notice("Invite links require a non-legacy share.");
+      new import_obsidian10.Notice("Invite links require a non-legacy share.");
       return null;
     }
     if (!share.ownerKey) {
-      new import_obsidian11.Notice("This device does not have owner access for that share.");
+      new import_obsidian10.Notice("This device does not have owner access for that share.");
       return null;
     }
     const epoch = (_a2 = share.epoch) != null ? _a2 : 1;
@@ -18058,7 +17622,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
         bearerHeaders(share.ownerKey)
       );
       if (!res.ok || !((_b2 = res.body) == null ? void 0 : _b2.key) || !res.body.inviteId) {
-        new import_obsidian11.Notice("Could not create that invite on the server.");
+        new import_obsidian10.Notice("Could not create that invite on the server.");
         return null;
       }
       const invite = {
@@ -18084,14 +17648,14 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       );
     } catch (e) {
       err("share", "server invite mint failed", e);
-      new import_obsidian11.Notice("Invite request failed.");
+      new import_obsidian10.Notice("Invite request failed.");
       return null;
     }
   }
   async revokeShareInvite(share, invite) {
     var _a2, _b2, _c;
     if (!share.ownerKey) {
-      new import_obsidian11.Notice("This device does not have owner access for that share.");
+      new import_obsidian10.Notice("This device does not have owner access for that share.");
       return false;
     }
     try {
@@ -18101,16 +17665,16 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
         bearerHeaders(share.ownerKey)
       );
       if (!res.ok) {
-        new import_obsidian11.Notice("Could not revoke that invite.");
+        new import_obsidian10.Notice("Could not revoke that invite.");
         return false;
       }
       invite.revokedAt = ((_b2 = res.body) == null ? void 0 : _b2.revokedAt) || Date.now();
       await this.persist();
-      new import_obsidian11.Notice(`Invite revoked${((_c = res.body) == null ? void 0 : _c.closedConnections) ? `; closed ${res.body.closedConnections} connection(s)` : ""}.`);
+      new import_obsidian10.Notice(`Invite revoked${((_c = res.body) == null ? void 0 : _c.closedConnections) ? `; closed ${res.body.closedConnections} connection(s)` : ""}.`);
       return true;
     } catch (e) {
       err("revoke", e);
-      new import_obsidian11.Notice("Invite revoke request failed.");
+      new import_obsidian10.Notice("Invite revoke request failed.");
       return false;
     }
   }
@@ -18118,7 +17682,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
   async revokeShareAccess(share) {
     var _a2, _b2, _c, _d;
     if (share.legacy) {
-      new import_obsidian11.Notice("Can't revoke legacy shares.");
+      new import_obsidian10.Notice("Can't revoke legacy shares.");
       return false;
     }
     if (share.ownerKey) {
@@ -18129,7 +17693,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
           bearerHeaders(share.ownerKey)
         );
         if (!res.ok || !((_b2 = res.body) == null ? void 0 : _b2.key) || !res.body.ownerKey) {
-          new import_obsidian11.Notice("Revoke failed on the server.");
+          new import_obsidian10.Notice("Revoke failed on the server.");
           return false;
         }
         share.epoch = res.body.epoch;
@@ -18144,16 +17708,16 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
         await this.stopShare(share.id);
         await this.startShare(share);
         log("revoke", "share", share.id, "-> epoch", share.epoch, "closed=", (_c = res.body.closedConnections) != null ? _c : 0);
-        new import_obsidian11.Notice("Access revoked. Old links no longer work \u2014 re-share to invite again.");
+        new import_obsidian10.Notice("Access revoked. Old links no longer work \u2014 re-share to invite again.");
         return true;
       } catch (e) {
         err("revoke", e);
-        new import_obsidian11.Notice("Revoke request failed.");
+        new import_obsidian10.Notice("Revoke request failed.");
         return false;
       }
     }
     if (!this.settings.serverSecret) {
-      new import_obsidian11.Notice("Can't revoke this share from this device.");
+      new import_obsidian10.Notice("Can't revoke this share from this device.");
       return false;
     }
     const newEpoch = ((_d = share.epoch) != null ? _d : 1) + 1;
@@ -18161,12 +17725,12 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     try {
       const res = await postJson(`${httpBase(this.settings.serverUrl)}/admin/revoke?share=${encodeURIComponent(share.id)}&epoch=${newEpoch}&token=${encodeURIComponent(token)}`);
       if (!res.ok) {
-        new import_obsidian11.Notice("Revoke failed on the server.");
+        new import_obsidian10.Notice("Revoke failed on the server.");
         return false;
       }
     } catch (e) {
       err("revoke", e);
-      new import_obsidian11.Notice("Revoke request failed.");
+      new import_obsidian10.Notice("Revoke request failed.");
       return false;
     }
     share.epoch = newEpoch;
@@ -18180,7 +17744,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     await this.stopShare(share.id);
     await this.startShare(share);
     log("revoke", "share", share.id, "-> epoch", newEpoch);
-    new import_obsidian11.Notice("Access revoked. Old links no longer work \u2014 re-share to invite again.");
+    new import_obsidian10.Notice("Access revoked. Old links no longer work \u2014 re-share to invite again.");
     return true;
   }
   folderOverlaps(path) {
@@ -18191,7 +17755,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
   }
   async shareFolderInteractive(presetFolder) {
     if (!this.settings.shareMintToken && !this.settings.serverSecret) {
-      new import_obsidian11.Notice("Set the Share admin token in settings first \u2014 it's needed to create shares.");
+      new import_obsidian10.Notice("Set the Share admin token in settings first \u2014 it's needed to create shares.");
       return;
     }
     const res = await promptModal(this.app, {
@@ -18206,7 +17770,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     const folder = cleanShareFolder(res.folder);
     const overlap = this.folderOverlaps(folder);
     if (overlap) {
-      new import_obsidian11.Notice(`That folder overlaps an existing share ("${overlap.label}").`);
+      new import_obsidian10.Notice(`That folder overlaps an existing share ("${overlap.label}").`);
       return;
     }
     await this.ensureFolder(folder);
@@ -18233,7 +17797,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
       } catch (e) {
       }
     }
-    new import_obsidian11.Notice(copied ? `Share created \u2014 editor link copied. For a view-only link, use \u201CCopy link\u201D in settings.` : `Share created. Copy the editor link from settings (clipboard unavailable here).`);
+    new import_obsidian10.Notice(copied ? `Share created \u2014 editor link copied. For a view-only link, use \u201CCopy link\u201D in settings.` : `Share created. Copy the editor link from settings (clipboard unavailable here).`);
   }
   async mintShare() {
     var _a2, _b2;
@@ -18252,10 +17816,10 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
             ownerKey: res.body.ownerKey
           };
         }
-        new import_obsidian11.Notice("Share creation was rejected by the server.");
+        new import_obsidian10.Notice("Share creation was rejected by the server.");
       } catch (e) {
         err("share", "server mint failed", e);
-        new import_obsidian11.Notice("Share creation request failed.");
+        new import_obsidian10.Notice("Share creation request failed.");
       }
       if (!this.settings.serverSecret) return null;
     }
@@ -18287,11 +17851,11 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     var _a2;
     const decoded = decodeShareCode(code);
     if (!decoded) {
-      new import_obsidian11.Notice("Invalid share code.");
+      new import_obsidian10.Notice("Invalid share code.");
       return;
     }
     if (this.settings.shares.some((s) => s.id === decoded.id)) {
-      new import_obsidian11.Notice("You already have this shared folder.");
+      new import_obsidian10.Notice("You already have this shared folder.");
       return;
     }
     if (!this.settings.serverUrl || this.settings.serverUrl === DEFAULT_SETTINGS.serverUrl) {
@@ -18300,7 +17864,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     const folder = cleanShareFolder(localFolder || this.suggestJoinFolder(decoded.l, decoded.id));
     const overlap = this.folderOverlaps(folder);
     if (overlap) {
-      new import_obsidian11.Notice(`That folder overlaps an existing share ("${overlap.label}").`);
+      new import_obsidian10.Notice(`That folder overlaps an existing share ("${overlap.label}").`);
       return;
     }
     await this.ensureFolder(folder);
@@ -18318,7 +17882,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     await this.persist();
     await this.startShare(share);
     log("share", "joined", share.id, "role=", share.role || "editor");
-    new import_obsidian11.Notice(`Joined shared folder \u2192 ${folder}${share.role && share.role !== "editor" ? ` (${share.role})` : ""}`);
+    new import_obsidian10.Notice(`Joined shared folder \u2192 ${folder}${share.role && share.role !== "editor" ? ` (${share.role})` : ""}`);
   }
   suggestJoinFolder(label, id2) {
     const baseName = safeFolderSegment(label || "Collab share");
@@ -18348,12 +17912,12 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     if (!res) return;
     const folder = cleanShareFolder(res.folder);
     if (!folder) {
-      new import_obsidian11.Notice("Choose a vault folder for this share.");
+      new import_obsidian10.Notice("Choose a vault folder for this share.");
       return;
     }
     const overlap = this.folderOverlapsOtherShare(folder, share.id);
     if (overlap) {
-      new import_obsidian11.Notice(`That folder overlaps an existing share ("${overlap.label}").`);
+      new import_obsidian10.Notice(`That folder overlaps an existing share ("${overlap.label}").`);
       return;
     }
     if (folder === cleanShareFolder(share.localFolder)) return;
@@ -18364,7 +17928,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     await this.persist();
     await this.startShare(share);
     log("share", "local folder changed", share.id, oldFolder, "->", folder);
-    new import_obsidian11.Notice(`Share "${share.label || share.id}" now syncs at ${folder}.`);
+    new import_obsidian10.Notice(`Share "${share.label || share.id}" now syncs at ${folder}.`);
   }
   async ensureFolder(path) {
     const clean2 = cleanShareFolder(path);
@@ -18374,7 +17938,7 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     for (const part of parts) {
       cur = cur ? `${cur}/${part}` : part;
       const existing = this.app.vault.getAbstractFileByPath(cur);
-      if (existing instanceof import_obsidian11.TFolder) continue;
+      if (existing instanceof import_obsidian10.TFolder) continue;
       if (existing) throw new Error(`Cannot create folder "${cur}"; a file exists there.`);
       await this.app.vault.createFolder(cur).catch((e) => {
         if (!this.app.vault.getAbstractFileByPath(cur)) throw e;
@@ -18382,18 +17946,17 @@ var CollabPlugin = class extends import_obsidian11.Plugin {
     }
   }
   async onunload() {
-    var _a2, _b2, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+    var _a2, _b2, _c, _d, _e, _f, _g, _h, _i;
     (_b2 = (_a2 = this.debouncedRestart).cancel) == null ? void 0 : _b2.call(_a2);
-    (_d = (_c = this.debouncedPersistReadMarkers).cancel) == null ? void 0 : _d.call(_c);
-    (_f = (_e = this.debouncedPresenceDomRefresh).cancel) == null ? void 0 : _f.call(_e);
-    (_h = (_g = this.debouncedActiveEditorRefresh).cancel) == null ? void 0 : _h.call(_g);
-    for (const fn of this.modifyDebounceMap.values()) (_i = fn.cancel) == null ? void 0 : _i.call(fn);
+    (_d = (_c = this.debouncedPresenceDomRefresh).cancel) == null ? void 0 : _d.call(_c);
+    (_f = (_e = this.debouncedActiveEditorRefresh).cancel) == null ? void 0 : _f.call(_e);
+    for (const fn of this.modifyDebounceMap.values()) (_g = fn.cancel) == null ? void 0 : _g.call(fn);
     this.modifyDebounceMap.clear();
-    (_j = this.presenceDomObserver) == null ? void 0 : _j.disconnect();
+    (_h = this.presenceDomObserver) == null ? void 0 : _h.disconnect();
     this.presenceDomObserver = null;
     trace("presence", "dom-observer-stopped");
     await this.unbindActiveEditor("plugin-unload");
-    await ((_k = this.instanceWatch) == null ? void 0 : _k.stop());
+    await ((_i = this.instanceWatch) == null ? void 0 : _i.stop());
     await this.stopAllShares();
     console.log("Obsidian Collab plugin unloaded");
   }
@@ -18507,7 +18070,4 @@ function bearerHeaders(token) {
 function safeFolderSegment(value) {
   const clean2 = value.replace(/[\\/:*?"<>|#[\]^]/g, " ").replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
   return clean2 || "Collab share";
-}
-function commentReadKey(shareId, relPath, threadId) {
-  return `${shareId}	${relPath}	${threadId}`;
 }

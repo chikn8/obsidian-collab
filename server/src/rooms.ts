@@ -408,6 +408,10 @@ function forgetConnRoom(conn: WebSocket, roomName: string): void {
   if (rooms.size === 0) connRooms.delete(conn);
 }
 
+function connRoomCount(conn: WebSocket): number {
+  return connRooms.get(conn)?.size || 0;
+}
+
 function closeRoomIfIdle(roomName: string, doc: WSSharedDoc): void {
   if (doc.conns.size !== 0) return;
   stopPeriodicSave(roomName);
@@ -1154,6 +1158,16 @@ export async function setupMuxConnection(
     role: (conn as any).collabRole || "editor",
     uid: (conn as any).collabIdentity?.uid,
   });
+  logEvent("info", "mux.connect", {
+    connId: (conn as any).collabConnId,
+    shareId: (conn as any).collabShareId || undefined,
+    role: (conn as any).collabRole || "editor",
+    uid: (conn as any).collabIdentity?.uid,
+    name: (conn as any).collabIdentity?.name,
+    device: (conn as any).collabIdentity?.device,
+    deviceId: (conn as any).collabIdentity?.deviceId,
+    remote: req.socket.remoteAddress || "",
+  });
   void auditEvent("mux.join", {
     connId: (conn as any).collabConnId,
     shareId: (conn as any).collabShareId || undefined,
@@ -1258,6 +1272,16 @@ export async function setupMuxConnection(
   });
 
   conn.on("close", () => {
+    logEvent("info", "mux.disconnect", {
+      connId: (conn as any).collabConnId,
+      shareId: (conn as any).collabShareId || undefined,
+      role: (conn as any).collabRole || "editor",
+      uid: (conn as any).collabIdentity?.uid,
+      name: (conn as any).collabIdentity?.name,
+      device: (conn as any).collabIdentity?.device,
+      deviceId: (conn as any).collabIdentity?.deviceId,
+      rooms: connRoomCount(conn),
+    });
     activeMuxConnections.delete(conn);
     closeConn(conn);
   });

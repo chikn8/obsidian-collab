@@ -39,6 +39,7 @@ import {
   tabHeaderForLeaf,
   tabPresenceTarget,
 } from "./PresenceDom";
+import { appendEvent, listEvents, type CollabEvent, type CollabEventInput, type CollabEventType } from "./EventLog";
 
 /** Stable file identity. crypto.randomUUID where available, else a random fallback. */
 function newFileId(): string {
@@ -66,6 +67,7 @@ export class SyncManager {
   private manifestProvider: any = null;  // WebsocketProvider
   private manifestMap: Y.Map<any> | null = null;
   private manifestMeta: Y.Map<any> | null = null; // schemaVersion + future doc-level meta
+  private eventsArray: Y.Array<CollabEvent> | null = null;
   // Volatile "who last edited" stamps live in a SEPARATE map so they merge
   // independently of the files map's lifecycle (exists/deleted) field — a stamp
   // can never LWW-clobber a concurrent delete/rename tombstone.
@@ -73,6 +75,11 @@ export class SyncManager {
   // fileId we last saw per relPath, to detect identity changes (new file at same path).
   private fileIds: Map<string, string> = new Map();
   private manifestMutationSeq = 0;
+  private eventSeq = 0;
+  private lastPresenceRelPath: string | null = null;
+  private onlineAnnounced = false;
+  private editEventDebounce: Map<string, () => void> = new Map();
+  private editEventCounts: Map<string, number> = new Map();
 
   // File providers, keyed by relPath
   private fileProviders: Map<string, FileProvider> = new Map();
@@ -190,6 +197,7 @@ export class SyncManager {
           device: detectDevice(),
           at: Date.now(),
         });
+        this.recordEditEvent(relPath);
       }, 3000, false);
       this.stampDebounce.set(relPath, fn);
     }
@@ -243,9 +251,29 @@ export class SyncManager {
   }
 
   get role(): string { return this.share.role || "editor"; }
+  get label(): string { return this.share.label || this.share.localFolder || this.histShareId; }
   get localFolder(): string { return this.share.localFolder; }
   toRel(fullPath: string): string { return this.toRelativePath(fullPath); }
   toFull(relPath: string): string { return this.toFullPath(relPath); }
+
+  listActivityEvents(limit = 300): CollabEvent[] {
+    return listEvents(this.eventsArray, limit);
+  }
+
+  observeActivityEvents(cb: () => void): () => void {
+    if (!this.eventsArray) return () => {};
+    const handler = () => cb();
+    this.eventsArray.observe(handler);
+    return () => this.eventsArray?.unobserve(handler);
+  }
+
+  sendActivityMessage(text: string): void {
+    if (this.role !== "editor") {
+      trace("activity", "message-skipped", { shareId: this.histShareId, cause: "read-only-role", role: this.role });
+      return;
+    }
+    this.appendActivityEvent("message", { text });
+  }
 
   diagnosticSnapshot(): Record<string, unknown> {
     return {
@@ -262,7 +290,57 @@ export class SyncManager {
       renderedTabPresenceHosts: this.renderedTabPresence.size,
       lastPresenceHadMissingAnchors: this.lastPresenceHadMissingAnchors,
       presenceAnchorRetryCount: this.presenceAnchorRetryCount,
+      activityEvents: this.eventsArray?.length ?? 0,
     };
+  }
+
+  private appendActivityEvent(
+    type: CollabEventType,
+    fields: Partial<Omit<CollabEventInput, "type" | "shareId" | "actorUid" | "actorName" | "deviceId">> = {}
+  ): void {
+    if (!this.eventsArray) return;
+    if (this.role !== "editor") return;
+    const event = appendEvent(this.eventsArray, {
+      ...fields,
+      id: `${this.settings.uid || "anon"}:${installDeviceId()}:${++this.eventSeq}:${Date.now()}`,
+      type,
+      shareId: this.histShareId,
+      actorUid: this.settings.uid,
+      actorName: this.settings.displayName || "Anonymous",
+      deviceId: installDeviceId(),
+      device: detectDevice(),
+      at: Date.now(),
+    });
+    trace("activity", "event-appended", {
+      shareId: this.histShareId,
+      type: event.type,
+      path: event.path,
+      oldPath: event.oldPath,
+      newPath: event.newPath,
+      count: event.count,
+    });
+  }
+
+  private recordEditEvent(relPath: string): void {
+    const current = this.editEventCounts.get(relPath) || 0;
+    this.editEventCounts.set(relPath, current + 1);
+    let fn = this.editEventDebounce.get(relPath);
+    if (!fn) {
+      fn = debounce(() => {
+        const count = this.editEventCounts.get(relPath) || 0;
+        this.editEventCounts.delete(relPath);
+        this.appendActivityEvent("edit", { path: relPath, count });
+      }, 30000, false);
+      this.editEventDebounce.set(relPath, fn);
+    }
+    fn();
+  }
+
+  private flushEditEvents(): void {
+    for (const [relPath, count] of this.editEventCounts) {
+      if (count > 0) this.appendActivityEvent("edit", { path: relPath, count });
+    }
+    this.editEventCounts.clear();
   }
 
   private manifestMutation(action: string): Partial<ManifestEntry> {
@@ -295,6 +373,7 @@ export class SyncManager {
     this.manifestMap = this.manifestDoc.getMap("files");
     this.manifestMeta = this.manifestDoc.getMap("meta");
     this.editsMap = this.manifestDoc.getMap("edits");
+    this.eventsArray = this.manifestDoc.getArray("events");
 
     this.manifestProvider = createProvider(
       this.settings.serverUrl,
@@ -361,6 +440,10 @@ export class SyncManager {
   /** Called after initial manifest sync -- reconcile local folder with manifest */
   private async onManifestSynced(): Promise<void> {
     this.processingManifest = true;
+    if (!this.onlineAnnounced) {
+      this.onlineAnnounced = true;
+      this.appendActivityEvent("online");
+    }
     trace("manifest", "startup-reconcile-start", {
       shareId: this.histShareId,
       role: this.role,
@@ -646,6 +729,7 @@ export class SyncManager {
         ...mutation,
         resurrectedBy: this.settings.displayName,
       }));
+      this.appendActivityEvent("resurrect", { path: safeRel });
       new Notice(`"${safeRel}" was edited after being deleted — kept`);
       log("delete", "resurrected (edited after delete)", safeRel);
       return true;
@@ -749,6 +833,7 @@ export class SyncManager {
           conflictCreatedAt: mutation.mutationAt,
         }));
         await this.createFileProvider(conflictRel, conflictFullPath);
+        this.appendActivityEvent("conflict", { path: safeRel, newPath: conflictRel, details: { kind: "delete" } });
       }
       log("delete", "created delete conflict copy", safeRel, "->", conflictRel);
       return conflictRel;
@@ -994,6 +1079,13 @@ export class SyncManager {
       ...mutation,
       ...stampedExtra,
     }));
+    if (extra.conflictOf) {
+      this.appendActivityEvent("conflict", { path: extra.conflictOf, newPath: safeRel, details: { kind: "binary", reason } });
+    } else if (reason === "create" || reason === "startup-create" || reason === "rename-create") {
+      this.appendActivityEvent("create", { path: safeRel, details: { kind: "binary" } });
+    } else {
+      this.appendActivityEvent("binary", { path: safeRel, details: { reason, size: info.size } });
+    }
     trace("blob", "published", { shareId: this.histShareId, relPath: safeRel, hash: info.hash, size: info.size, reason });
   }
 
@@ -1151,6 +1243,7 @@ export class SyncManager {
       const mutation = this.manifestMutation("create");
       this.fileIds.set(relPath, fileId);
       this.manifestMap.set(relPath, liveManifestEntry(prev, relPath, fileId, this.settings.displayName, mutation));
+      this.appendActivityEvent("create", { path: relPath });
     }
 
     if (!this.fileProviders.has(relPath)) {
@@ -1244,6 +1337,7 @@ export class SyncManager {
         deletedBy: this.settings.displayName,
         deletedAt: mutation.mutationAt,
       });
+      this.appendActivityEvent("delete", { path: relPath });
     }
     this.fileIds.delete(relPath);
 
@@ -1347,6 +1441,7 @@ export class SyncManager {
         ...(prev || {}), path: oldRel, exists: false, deleted: true,
         ...mutation, deletedBy: this.settings.displayName, deletedAt: mutation.mutationAt,
       });
+      this.appendActivityEvent("delete", { path: oldRel, details: { reason: "moved-out" } });
     }
     this.fileIds.delete(oldRel);
     if (fp) { fp.destroyAndClearData(); this.fileProviders.delete(oldRel); }
@@ -1397,6 +1492,7 @@ export class SyncManager {
           deletedBy: this.settings.displayName, deletedAt: mutation.mutationAt,
         });
       });
+      this.appendActivityEvent("rename", { oldPath: oldRel, newPath: newRel });
     }
     log("delete", "renamed", oldRel, "→", newRel, "(content transferred)");
     trace("manifest", "rename-transfer-done", { shareId: this.histShareId, oldRel, newRel, fileId });
@@ -1436,6 +1532,7 @@ export class SyncManager {
           deletedBy: this.settings.displayName, deletedAt: mutation.mutationAt,
         });
       });
+      this.appendActivityEvent("rename", { oldPath: oldRel, newPath: newRel, details: { kind: "binary" } });
     }
     trace("blob", "renamed", { shareId: this.histShareId, oldRel, newRel, fileId, hash: oldEntry.blobHash });
     this.emitStatus();
@@ -1556,6 +1653,10 @@ export class SyncManager {
     });
     const cur = this.manifestProvider.awareness.getLocalState()?.presence || {};
     this.manifestProvider.awareness.setLocalStateField("presence", { ...cur, activeFile: relPath });
+    if (relPath && relPath !== this.lastPresenceRelPath) {
+      this.appendActivityEvent("open", { path: relPath });
+    }
+    this.lastPresenceRelPath = relPath;
     this.refreshPresenceUi();
   }
 
@@ -1627,6 +1728,7 @@ export class SyncManager {
       restoredBy: this.settings.displayName,
       restoredAt: mutation.mutationAt,
     });
+    this.appendActivityEvent("restore", { path: safeRel });
     log("delete", "restore requested", safeRel);
 
     // Primary path: the flipped tombstone makes handleManifestChange recreate
@@ -1949,6 +2051,11 @@ export class SyncManager {
 
   /** Stop syncing this share */
   async destroy(): Promise<void> {
+    this.flushEditEvents();
+    if (this.onlineAnnounced) this.appendActivityEvent("offline");
+    for (const fn of this.editEventDebounce.values()) (fn as any).cancel?.();
+    this.editEventDebounce.clear();
+    this.editEventCounts.clear();
     this.clearPresenceUi();
 
     for (const [, fp] of this.fileProviders) fp.destroy();
@@ -1956,6 +2063,9 @@ export class SyncManager {
 
     if (this.manifestProvider) this.manifestProvider.destroy();
     if (this.manifestDoc) this.manifestDoc.destroy();
+    this.eventsArray = null;
+    this.onlineAnnounced = false;
+    this.lastPresenceRelPath = null;
 
     this.syncStatus = "disconnected";
     this.onStatusChange("disconnected", 0, 0);

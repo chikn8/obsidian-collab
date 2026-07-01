@@ -190,7 +190,7 @@ legacy `/admin/revoke` raises it and disconnects live revoked clients with close
   emits redacted structured logs for joins/leaves, rejected writes, mux room rejections, rate limits,
   backpressure closes, suspicious update sizes, and awareness debug rows when `SYNC_DEBUG_LOG=true`. In
   production, those redacted rows are also retained to a bounded rotating JSONL drain; `/health` and
-  `/metrics` expose `logDrain` status.
+  `/metrics` expose `logDrain` status, and admin-authenticated `/admin/logs` can tail filtered rows.
 - **`/clientlog`** — opt-in plugin error telemetry. Clients authenticate with an existing share token
   (including role/invite identity params where applicable), POST only redacted `err(...)` diagnostics, and
   the server re-normalizes the body before emitting a structured `client.error` log row. Manifest/file

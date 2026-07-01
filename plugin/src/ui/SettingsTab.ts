@@ -216,7 +216,7 @@ export class CollabSettingsTab extends PluginSettingTab {
               cta: "Create",
               fields: [
                 { key: "recipient", label: "Recipient label", placeholder: "e.g. Mira laptop" },
-                { key: "role", label: "Role", placeholder: "viewer, commenter, or editor", value: "editor" },
+                { key: "role", label: "Role", placeholder: "viewer or editor", value: "editor" },
                 { key: "maxDevices", label: "Max devices", placeholder: "1", value: "1" },
                 { key: "expiresHours", label: "Expires in hours", placeholder: "Leave blank for no expiry" },
               ],
@@ -224,7 +224,7 @@ export class CollabSettingsTab extends PluginSettingTab {
             if (!res) return;
             const role = parseRole(res.role);
             if (!role) {
-              new Notice("Role must be viewer, commenter, or editor.");
+              new Notice("Role must be viewer or editor.");
               return;
             }
             const hoursRaw = res.expiresHours.trim();

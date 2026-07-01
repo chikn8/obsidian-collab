@@ -25,7 +25,7 @@ import { startBackups, stopBackups } from "./backups.js";
 import { auditEvent } from "./audit.js";
 import { getRuntimeHealth } from "./runtime.js";
 import { CLIENT_LOG_MAX_BYTES, clientLogFields } from "./clientLog.js";
-import { getLogDrainHealth, logEvent } from "./logging.js";
+import { getLogDrainHealth, logEvent, readLogDrainTail } from "./logging.js";
 import { incMetric } from "./metrics.js";
 import { collectServerHealth } from "./health.js";
 import { startHealthMonitor, stopHealthMonitor } from "./healthMonitor.js";
@@ -257,6 +257,22 @@ const server = http.createServer(async (req, res) => {
     if (p === "/metrics") {
       if (!metricsAuthorized(req, url)) return json(401, { error: "unauthorized" });
       return json(200, { ...getMetrics(), runtime: getRuntimeHealth(), logDrain: getLogDrainHealth() });
+    }
+
+    if (p === "/admin/logs") {
+      if (!adminAuthorized(req, url)) return json(401, { error: "unauthorized" });
+      const limit = Number(url.searchParams.get("limit") || 100);
+      const level = url.searchParams.get("level") as any;
+      const event = url.searchParams.get("event") || undefined;
+      return json(200, {
+        ok: true,
+        logDrain: getLogDrainHealth(),
+        rows: readLogDrainTail({
+          limit,
+          level: level === "debug" || level === "info" || level === "warn" || level === "error" ? level : undefined,
+          event,
+        }),
+      });
     }
 
     if (p === "/clientlog" && req.method === "POST") {

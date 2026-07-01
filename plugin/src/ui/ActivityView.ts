@@ -130,7 +130,9 @@ export class ActivityView extends ItemView {
   private renderGroupItem(parent: HTMLElement, event: CollabEvent): void {
     const isMessage = event.type === "message";
     const item = parent.createDiv({ cls: `collab-activity-item ${isMessage ? "message" : "event"} type-${event.type}` });
-    if (!isMessage) {
+    if (isMessage) {
+      item.createSpan({ cls: "collab-activity-action-spacer" });
+    } else {
       const action = item.createSpan({ cls: `collab-activity-action type-${event.type}` });
       setIcon(action, actionIcon(event.type));
       action.setAttr("aria-label", actionLabel(event.type));

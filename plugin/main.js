@@ -13855,7 +13855,7 @@ var SyncManager = class {
     const walk = (f) => {
       for (const c of f.children) {
         if (c instanceof import_obsidian4.TFile && this.isSyncableFile(c)) children.push(c);
-        else if (c instanceof import_obsidian4.TFolder) walk(c);
+        else if (c instanceof import_obsidian4.TFolder && !this.isBlockedSyncFolder(c.path)) walk(c);
       }
     };
     walk(folder);
@@ -14524,6 +14524,10 @@ var SyncManager = class {
         if (child instanceof import_obsidian4.TFile && this.isSyncableFile(child)) {
           files.push(child.path);
         } else if (child instanceof import_obsidian4.TFolder) {
+          if (this.isBlockedSyncFolder(child.path)) {
+            trace("vault", "folder-scan-skipped", { shareId: this.histShareId, path: child.path, cause: "blocked-folder" });
+            continue;
+          }
           recurse(child);
         }
       }
@@ -14548,6 +14552,9 @@ var SyncManager = class {
   }
   isSyncableFile(file) {
     return isSyncablePath(file.path);
+  }
+  isBlockedSyncFolder(path) {
+    return hasBlockedSyncSegment(path);
   }
 };
 

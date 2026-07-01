@@ -13,6 +13,7 @@ import {
   isRecoverableTombstone,
   isSyncablePath,
   isSyncableTextPath,
+  hasBlockedSyncSegment,
   conflictFileFromManifest,
   liveManifestEntry,
   manifestMutationFields,
@@ -1399,7 +1400,7 @@ export class SyncManager {
     const walk = (f: TFolder) => {
       for (const c of f.children) {
         if (c instanceof TFile && this.isSyncableFile(c)) children.push(c);
-        else if (c instanceof TFolder) walk(c);
+        else if (c instanceof TFolder && !this.isBlockedSyncFolder(c.path)) walk(c);
       }
     };
     walk(folder);
@@ -2109,6 +2110,10 @@ export class SyncManager {
         if (child instanceof TFile && this.isSyncableFile(child)) {
           files.push(child.path);
         } else if (child instanceof TFolder) {
+          if (this.isBlockedSyncFolder(child.path)) {
+            trace("vault", "folder-scan-skipped", { shareId: this.histShareId, path: child.path, cause: "blocked-folder" });
+            continue;
+          }
           recurse(child);
         }
       }
@@ -2135,5 +2140,9 @@ export class SyncManager {
 
   private isSyncableFile(file: TFile): boolean {
     return isSyncablePath(file.path);
+  }
+
+  private isBlockedSyncFolder(path: string): boolean {
+    return hasBlockedSyncSegment(path);
   }
 }

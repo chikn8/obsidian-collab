@@ -14424,19 +14424,9 @@ var SyncManager = class {
     });
     return { rendered, missing };
   }
-  renderOutlinePresence(fileUsers) {
+  renderOutlinePresence(_fileUsers) {
     clearRenderedPresence(this.renderedOutlinePresence);
-    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian4.MarkdownView);
-    if (!activeView) return { rendered: 0, missing: 0 };
-    const file = activeView == null ? void 0 : activeView.file;
-    if (!(file instanceof import_obsidian4.TFile) || !this.isInLinkedFolder(file.path)) return { rendered: 0, missing: 0 };
-    const users = fileUsers.get(file.path);
-    if (!users || users.length === 0) return { rendered: 0, missing: 0 };
-    const target = this.currentOutlineTarget(activeView, file);
-    if (!target) return { rendered: 0, missing: 0 };
-    const host = appendPresenceHost(target, "collab-outline-presence-host", users, "tab", () => this.followPresence(file.path));
-    this.renderedOutlinePresence.set(file.path, [host]);
-    return { rendered: 1, missing: 0 };
+    return { rendered: 0, missing: 0 };
   }
   currentOutlineTarget(view, file) {
     var _a2, _b2, _c, _d, _e, _f, _g;
@@ -17413,7 +17403,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     if (typeof document === "undefined" || typeof HTMLElement === "undefined" || typeof MutationObserver === "undefined" || !document.body) {
       return;
     }
-    const relevant = ".workspace-tab-header, .nav-file-title, .nav-folder-title, .tree-item-inner";
+    const relevant = ".workspace-tab-header, .nav-file-title, .nav-folder-title";
     trace("presence", "dom-observer-started", { selector: relevant });
     this.presenceDomObserver = new MutationObserver((mutations) => {
       for (const mutation of mutations) {

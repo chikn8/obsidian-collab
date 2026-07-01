@@ -387,7 +387,7 @@ export default class CollabPlugin extends Plugin {
     ) {
       return;
     }
-    const relevant = ".workspace-tab-header, .nav-file-title, .nav-folder-title, .tree-item-inner";
+    const relevant = ".workspace-tab-header, .nav-file-title, .nav-folder-title";
     trace("presence", "dom-observer-started", { selector: relevant });
     this.presenceDomObserver = new MutationObserver((mutations) => {
       for (const mutation of mutations) {

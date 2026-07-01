@@ -1995,19 +1995,11 @@ export class SyncManager {
     return { rendered, missing };
   }
 
-  private renderOutlinePresence(fileUsers: Map<string, PresenceDevice[]>): { rendered: number; missing: number } {
+  private renderOutlinePresence(_fileUsers: Map<string, PresenceDevice[]>): { rendered: number; missing: number } {
     clearRenderedPresence(this.renderedOutlinePresence);
-    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (!activeView) return { rendered: 0, missing: 0 };
-    const file = activeView?.file;
-    if (!(file instanceof TFile) || !this.isInLinkedFolder(file.path)) return { rendered: 0, missing: 0 };
-    const users = fileUsers.get(file.path);
-    if (!users || users.length === 0) return { rendered: 0, missing: 0 };
-    const target = this.currentOutlineTarget(activeView, file);
-    if (!target) return { rendered: 0, missing: 0 };
-    const host = appendPresenceHost(target, "collab-outline-presence-host", users, "tab", () => this.followPresence(file.path));
-    this.renderedOutlinePresence.set(file.path, [host]);
-    return { rendered: 1, missing: 0 };
+    // Hotfix: mutating Obsidian's Outline tree can trigger a renderer runaway
+    // on large/active notes. Keep tab/file/editor presence enabled for now.
+    return { rendered: 0, missing: 0 };
   }
 
   private currentOutlineTarget(view: MarkdownView, file: TFile): HTMLElement | null {

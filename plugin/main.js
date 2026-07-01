@@ -16272,6 +16272,7 @@ var ActivityView = class extends import_obsidian8.ItemView {
     super(leaf);
     this.ctx = null;
     this.unobserve = null;
+    this.draft = "";
   }
   getViewType() {
     return ACTIVITY_VIEW_TYPE;
@@ -16325,6 +16326,10 @@ var ActivityView = class extends import_obsidian8.ItemView {
       placeholder: "Message",
       cls: "collab-activity-input"
     });
+    input.value = this.draft;
+    input.addEventListener("input", () => {
+      this.draft = input.value;
+    });
     const sendBtn = composer.createEl("button", { cls: "collab-comment-btn collab-activity-send" });
     (0, import_obsidian8.setIcon)(sendBtn, "send");
     sendBtn.setAttr("aria-label", "Send message");
@@ -16338,6 +16343,8 @@ var ActivityView = class extends import_obsidian8.ItemView {
       }
       this.ctx.send(text2);
       input.value = "";
+      this.draft = "";
+      this.scrollToBottom(list);
     };
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
@@ -16346,21 +16353,39 @@ var ActivityView = class extends import_obsidian8.ItemView {
       }
     });
     sendBtn.onclick = send;
+    this.scrollToBottom(list);
   }
   renderEvent(parent, event) {
     var _a2;
     const isMessage = event.type === "message";
-    const row = parent.createDiv({ cls: `collab-activity-row ${isMessage ? "message" : "event"}` });
-    const meta = row.createDiv({ cls: "collab-activity-meta" });
+    const row = parent.createDiv({ cls: `collab-activity-row ${isMessage ? "message" : "event"} type-${event.type}` });
+    const avatar = row.createDiv({ cls: "collab-activity-avatar" });
+    avatar.setText(actorInitial(event.actorName));
+    avatar.setAttr("aria-label", event.actorName || "Anonymous");
+    avatar.setAttr("title", event.actorName || "Anonymous");
+    avatar.style.backgroundColor = actorColor(event);
+    const content = row.createDiv({ cls: "collab-activity-content" });
+    const meta = content.createDiv({ cls: "collab-activity-meta" });
+    const action = meta.createSpan({ cls: `collab-activity-action type-${event.type}` });
+    (0, import_obsidian8.setIcon)(action, actionIcon(event.type));
+    action.setAttr("aria-label", actionLabel(event.type));
+    action.setAttr("title", actionLabel(event.type));
     meta.createSpan({ text: event.actorName || "Anonymous", cls: "collab-activity-author" });
     meta.createSpan({ text: " \xB7 " + timeAgo(((_a2 = this.ctx) == null ? void 0 : _a2.now()) || Date.now(), event.at), cls: "collab-activity-time" });
     if (event.device) meta.createSpan({ text: " \xB7 " + event.device, cls: "collab-activity-device" });
-    const body = row.createDiv({ cls: "collab-activity-body" });
+    const body = content.createDiv({ cls: "collab-activity-body" });
     if (isMessage) {
       body.setText(event.text || "");
       return;
     }
-    body.setText(formatEvent(event));
+    body.setText(withoutActorPrefix(formatEvent(event), event.actorName));
+  }
+  scrollToBottom(list) {
+    const scroll = () => {
+      list.scrollTop = list.scrollHeight;
+    };
+    scroll();
+    requestAnimationFrame(scroll);
   }
 };
 function timeAgo(now, then) {
@@ -16371,6 +16396,86 @@ function timeAgo(now, then) {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+function actorInitial(name) {
+  const clean2 = (name || "Anonymous").trim();
+  return (clean2[0] || "?").toUpperCase();
+}
+function actorColor(event) {
+  const key = event.actorUid || event.actorName || "anonymous";
+  let hash2 = 0;
+  for (let i = 0; i < key.length; i++) hash2 = hash2 * 31 + key.charCodeAt(i) >>> 0;
+  return `hsl(${hash2 % 360}, 62%, 46%)`;
+}
+function actionIcon(type) {
+  switch (type) {
+    case "message":
+      return "message-circle";
+    case "online":
+      return "log-in";
+    case "offline":
+      return "log-out";
+    case "open":
+      return "file-text";
+    case "edit":
+      return "pencil";
+    case "create":
+      return "file-plus";
+    case "delete":
+      return "trash-2";
+    case "rename":
+      return "file-pen-line";
+    case "restore":
+      return "archive-restore";
+    case "resurrect":
+      return "rotate-ccw";
+    case "conflict":
+      return "triangle-alert";
+    case "binary":
+      return "paperclip";
+    case "system":
+      return "info";
+    default:
+      return "circle";
+  }
+}
+function actionLabel(type) {
+  switch (type) {
+    case "message":
+      return "Message";
+    case "online":
+      return "Online";
+    case "offline":
+      return "Offline";
+    case "open":
+      return "Opened file";
+    case "edit":
+      return "Edited file";
+    case "create":
+      return "Created file";
+    case "delete":
+      return "Deleted file";
+    case "rename":
+      return "Renamed file";
+    case "restore":
+      return "Restored file";
+    case "resurrect":
+      return "Recovered local edit";
+    case "conflict":
+      return "Conflict copy";
+    case "binary":
+      return "Attachment update";
+    case "system":
+      return "System";
+    default:
+      return "Activity";
+  }
+}
+function withoutActorPrefix(text2, actorName) {
+  const cleanActor = (actorName || "").trim();
+  if (!cleanActor || !text2.startsWith(cleanActor)) return text2;
+  const next = text2.slice(cleanActor.length);
+  return next.trimStart();
 }
 
 // src/utils/identity.ts

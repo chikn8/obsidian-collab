@@ -354,8 +354,30 @@
   padding-right: 2px;
 }
 .collab-activity-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
+  align-items: flex-start;
   border-bottom: 1px solid var(--background-modifier-border);
   padding: 6px 0;
+}
+.collab-activity-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: #fff;
+  font-family: var(--font-interface);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+  box-shadow: 0 0 0 1.5px var(--background-secondary);
+}
+.collab-activity-content {
+  min-width: 0;
 }
 .collab-activity-row.message .collab-activity-body {
   color: var(--text-normal);
@@ -365,13 +387,53 @@
   color: var(--text-muted);
 }
 .collab-activity-meta {
+  display: flex;
+  align-items: center;
+  gap: 3px;
   color: var(--text-muted);
   font-size: 0.76em;
   margin-bottom: 2px;
+  min-width: 0;
+}
+.collab-activity-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+}
+.collab-activity-action svg {
+  width: 10px;
+  height: 10px;
+  stroke-width: 2.4;
+}
+.collab-activity-action.type-message { background: #3b82f6; }
+.collab-activity-action.type-online { background: #22c55e; }
+.collab-activity-action.type-offline { background: #737373; }
+.collab-activity-action.type-open { background: #06b6d4; }
+.collab-activity-action.type-edit { background: #8b5cf6; }
+.collab-activity-action.type-create { background: #14b8a6; }
+.collab-activity-action.type-delete { background: #ef4444; }
+.collab-activity-action.type-rename { background: #f59e0b; }
+.collab-activity-action.type-restore,
+.collab-activity-action.type-resurrect { background: #84cc16; }
+.collab-activity-action.type-conflict { background: #f97316; }
+.collab-activity-action.type-binary { background: #64748b; }
+.collab-activity-action.type-system { background: #6b7280; }
+.collab-activity-time,
+.collab-activity-device {
+  flex: 0 0 auto;
 }
 .collab-activity-author {
   color: var(--text-normal);
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .collab-activity-body {
   font-size: 0.88em;

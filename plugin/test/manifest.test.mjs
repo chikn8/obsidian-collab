@@ -9,6 +9,8 @@ import * as Y from "yjs";
 import {
   conflictFileFromManifest,
   isRecoverableTombstone,
+  isSyncablePath,
+  isSyncableTextPath,
   liveManifestEntry,
   manifestMutationFields,
   safeRelPath,
@@ -454,6 +456,14 @@ console.log("Safe manifest paths");
     safeRelPath("a:b.md", "Shared") === null);
   check("rejects unsupported file type",
     safeRelPath("note.exe", "Shared") === null);
+  check("rejects node_modules markdown path",
+    safeRelPath("repo/node_modules/pkg/README.md", "Shared") === null);
+  check("rejects git markdown path",
+    safeRelPath("repo/.git/COMMIT_EDITMSG.md", "Shared") === null);
+  check("syncable path rejects node_modules markdown",
+    !isSyncablePath("repo/node_modules/pkg/README.md"));
+  check("syncable text path rejects git markdown",
+    !isSyncableTextPath("repo/.git/COMMIT_EDITMSG.md"));
   check("rejects empty segment",
     safeRelPath("a//b.md", "Shared") === null);
   check("rejects control chars",

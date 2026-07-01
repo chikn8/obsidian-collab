@@ -7,6 +7,7 @@ import type { ManifestEntry } from "../types";
 /** Grace window (ms) for clock skew between the deleter's clock and our mtime. */
 export const RESURRECT_GRACE_MS = 2000;
 export const SYNCABLE_TEXT_EXTENSIONS = ["md"] as const;
+export const BLOCKED_SYNC_SEGMENTS = ["node_modules", ".git"] as const;
 export type TombstoneLocalDecision = "delete" | "resurrect" | "conflict-copy";
 export type ConflictKind = "delete" | "binary-update";
 
@@ -55,12 +56,22 @@ export function manifestMutationFields(args: {
 }
 
 export function isSyncableTextPath(path: string): boolean {
+  if (hasBlockedSyncSegment(path)) return false;
   const ext = path.split("/").pop()?.split(".").pop()?.toLowerCase() || "";
   return (SYNCABLE_TEXT_EXTENSIONS as readonly string[]).includes(ext);
 }
 
 export function isSyncablePath(path: string): boolean {
   return isSyncableTextPath(path);
+}
+
+export function blockedSyncSegment(path: string): string | null {
+  const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts.find((part) => (BLOCKED_SYNC_SEGMENTS as readonly string[]).includes(part)) || null;
+}
+
+export function hasBlockedSyncSegment(path: string): boolean {
+  return blockedSyncSegment(path) !== null;
 }
 
 /**

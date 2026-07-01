@@ -12205,6 +12205,7 @@ function countRun(line, start, ch) {
 // src/utils/manifestLogic.ts
 var RESURRECT_GRACE_MS = 2e3;
 var SYNCABLE_TEXT_EXTENSIONS = ["md"];
+var BLOCKED_SYNC_SEGMENTS = ["node_modules", ".git"];
 function mutationPart(value, fallback) {
   const clean2 = (value || "").trim().replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 80);
   return clean2 || fallback;
@@ -12227,11 +12228,19 @@ function manifestMutationFields(args2) {
 }
 function isSyncableTextPath(path) {
   var _a2, _b2;
+  if (hasBlockedSyncSegment(path)) return false;
   const ext = ((_b2 = (_a2 = path.split("/").pop()) == null ? void 0 : _a2.split(".").pop()) == null ? void 0 : _b2.toLowerCase()) || "";
   return SYNCABLE_TEXT_EXTENSIONS.includes(ext);
 }
 function isSyncablePath(path) {
   return isSyncableTextPath(path);
+}
+function blockedSyncSegment(path) {
+  const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts.find((part) => BLOCKED_SYNC_SEGMENTS.includes(part)) || null;
+}
+function hasBlockedSyncSegment(path) {
+  return blockedSyncSegment(path) !== null;
 }
 function tombstoneLocalDecision(args2) {
   if (args2.renamedTo) return "delete";

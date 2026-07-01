@@ -36,7 +36,15 @@ const RATE_BURST = 600;                  // bucket capacity (covers a big paste)
 const RATE_LIMIT_CLOSE_CODE = 4408;
 const RATE_LIMIT_LOG_SAMPLE = Number(process.env.RATE_LIMIT_LOG_SAMPLE || 5000);
 const BLOCKED_ROOM_LOG_SAMPLE = Number(process.env.BLOCKED_ROOM_LOG_SAMPLE || 5000);
-const SEND_BUFFER_LIMIT = 8 * 1024 * 1024; // drop a hopelessly backed-up socket (slow-peer OOM guard)
+// Drop a hopelessly backed-up socket (slow-peer OOM guard). Must never be
+// tighter than the largest frame we accept (WS_MAX_PAYLOAD, see index.ts): a
+// doc whose initial-sync payload exceeded the buffer limit would get its socket
+// killed on every connect — a reconnect death loop.
+const ROOMS_MAX_PAYLOAD = Number(process.env.WS_MAX_PAYLOAD);
+const SEND_BUFFER_LIMIT = Math.max(
+  8 * 1024 * 1024,
+  Number.isFinite(ROOMS_MAX_PAYLOAD) && ROOMS_MAX_PAYLOAD > 0 ? 2 * ROOMS_MAX_PAYLOAD : 0
+);
 let rateLimitedCount = 0;
 let backpressureClosedCount = 0;
 let blockedRoomCount = 0;

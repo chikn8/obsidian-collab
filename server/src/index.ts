@@ -24,7 +24,7 @@ import { bindInviteIdentity, getInvite, getMinEpoch, putInvite, revokeInvite, se
 import { startBackups, stopBackups } from "./backups.js";
 import { auditEvent } from "./audit.js";
 import { getRuntimeHealth } from "./runtime.js";
-import { CLIENT_LOG_MAX_BYTES, clientLogFields } from "./clientLog.js";
+import { CLIENT_LOG_MAX_BYTES, clientLogFields, clientLogRateLimited } from "./clientLog.js";
 import { getLogDrainHealth, logEvent, readLogDrainTail } from "./logging.js";
 import { incMetric } from "./metrics.js";
 import { collectServerHealth } from "./health.js";
@@ -289,6 +289,11 @@ const server = http.createServer(async (req, res) => {
           ? "editor"
           : await verifyNamespacedAccess({ shareId, token, role, epoch, inviteId, expiresAt, ...identity });
       if (!granted) return json(401, { error: "unauthorized" });
+      const senderKey = `${shareId}:${identity.identityUid || remoteAddress(req)}`;
+      if (clientLogRateLimited(senderKey)) {
+        incMetric("client_log_rate_limited");
+        return json(429, { error: "rate limited" });
+      }
       let body: any;
       try {
         body = await readJsonBody(req, CLIENT_LOG_MAX_BYTES);

@@ -75,6 +75,41 @@ try {
   const aged = await sweepOrphanBlobs({ dryRun: false, graceMs: 1 });
   check("aged orphan deletes after grace", aged.deleted === 1, JSON.stringify(aged));
   check("aged orphan file removed", await loadBlob(shareId, youngHash) === null);
+
+  // Fail-closed: an unreadable manifest must retain that share's blobs.
+  const badShare = "share-bad";
+  const badBody = Buffer.from("behind-corrupt-manifest");
+  const badHash = sha256(badBody);
+  await storeBlob(badShare, badHash, badBody);
+  await fs.utimes(blobPath(tmp, badShare, badHash), new Date(0), new Date(0));
+  await fs.writeFile(path.join(tmp, `${encodeURIComponent(`@${badShare}:__manifest__`)}.yjs`), Buffer.from("not a yjs update"));
+  const origErr = console.error;
+  console.error = () => {};
+  let unreadable;
+  try {
+    unreadable = await sweepOrphanBlobs({ dryRun: false, graceMs: 1 });
+  } finally {
+    console.error = origErr;
+  }
+  check("unreadable manifest retains its share's blobs", unreadable.retainedUnreadable === 1 && unreadable.deleted === 0, JSON.stringify(unreadable));
+  check("blob behind corrupt manifest remains", (await loadBlob(badShare, badHash))?.equals(badBody));
+  await fs.rm(path.join(tmp, `${encodeURIComponent(`@${badShare}:__manifest__`)}.yjs`));
+
+  // Fail-closed: a share with NO manifest at all (quarantined / fresh volume)
+  // must also be retained, not treated as unreferenced.
+  const ghostShare = "share-ghost";
+  const ghostBody = Buffer.from("no-manifest-anywhere");
+  const ghostHash = sha256(ghostBody);
+  await storeBlob(ghostShare, ghostHash, ghostBody);
+  await fs.utimes(blobPath(tmp, ghostShare, ghostHash), new Date(0), new Date(0));
+  const ghost = await sweepOrphanBlobs({ dryRun: false, graceMs: 1 });
+  check("share without manifest is retained", ghost.retainedNoManifest >= 1 && ghost.deleted === 0, JSON.stringify(ghost));
+  check("blob without manifest remains", (await loadBlob(ghostShare, ghostHash))?.equals(ghostBody));
+
+  // Fail-closed: PERSIST_DIR unreadable → sweep aborts, deletes nothing.
+  await fs.rm(tmp, { recursive: true, force: true });
+  const abortedSweep = await sweepOrphanBlobs({ dryRun: false, graceMs: 1 });
+  check("missing persist dir aborts the sweep", abortedSweep.aborted === true && abortedSweep.deleted === 0, JSON.stringify(abortedSweep));
 } finally {
   await fs.rm(tmp, { recursive: true, force: true });
 }

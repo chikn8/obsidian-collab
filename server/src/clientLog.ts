@@ -1,5 +1,35 @@
 export const CLIENT_LOG_MAX_BYTES = Number(process.env.CLIENT_LOG_MAX_BYTES || 64 * 1024);
 
+// ── Per-sender rate limit ─────────────────────────────────────────────────────
+// /clientlog does synchronous log writes; without a cap any share member could
+// flood it and rotate away the server's own diagnostics. Sliding one-minute
+// window per share+sender key, in-memory (fits the single-process server).
+const CLIENT_LOG_WINDOW_MS = 60_000;
+const CLIENT_LOG_MAX_PER_WINDOW = Number(process.env.CLIENT_LOG_MAX_PER_MINUTE || 60);
+const clientLogWindows = new Map<string, number[]>();
+
+export function clientLogRateLimited(key: string, now = Date.now()): boolean {
+  const cutoff = now - CLIENT_LOG_WINDOW_MS;
+  const stamps = (clientLogWindows.get(key) || []).filter((ts) => ts > cutoff);
+  if (stamps.length >= CLIENT_LOG_MAX_PER_WINDOW) {
+    clientLogWindows.set(key, stamps);
+    return true;
+  }
+  stamps.push(now);
+  clientLogWindows.set(key, stamps);
+  // Opportunistic sweep so abandoned senders don't accumulate forever.
+  if (clientLogWindows.size > 512) {
+    for (const [k, v] of clientLogWindows) {
+      if (!v.some((ts) => ts > cutoff)) clientLogWindows.delete(k);
+    }
+  }
+  return false;
+}
+
+export function resetClientLogRateLimiterForTest(): void {
+  clientLogWindows.clear();
+}
+
 const MAX_STRING = 500;
 const MAX_ARRAY = 20;
 const MAX_OBJECT_KEYS = 40;

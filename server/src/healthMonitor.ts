@@ -8,11 +8,16 @@ let timer: ReturnType<typeof setInterval> | null = null;
 
 export function defaultHealthAlertIntervalMs(): number {
   const raw = process.env.HEALTH_ALERT_INTERVAL_MS;
+  const fallback = process.env.NODE_ENV === "production" ? DEFAULT_PROD_INTERVAL_MS : 0;
   if (raw !== undefined && raw !== "") {
     const parsed = Number(raw);
-    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+    // An explicit 0 disables alerting; garbage must NOT — a typo'd value that
+    // silently turned production alerting off is exactly the failure mode this
+    // monitor exists to catch.
+    if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
+    console.warn(`[health-monitor] ignoring invalid HEALTH_ALERT_INTERVAL_MS="${raw}"; using ${fallback}`);
   }
-  return process.env.NODE_ENV === "production" ? DEFAULT_PROD_INTERVAL_MS : 0;
+  return fallback;
 }
 
 export function startHealthMonitor(options: {

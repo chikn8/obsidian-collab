@@ -2,19 +2,21 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { alertOps } from "./notify.js";
 import { PERSIST_DIR } from "./persistence.js";
-import { envFlag, productionDefault } from "./env.js";
+import { envFlag, envInt, productionDefault } from "./env.js";
 import { gitCommandEnv } from "./gitSsh.js";
 
 const execShell = promisify(exec);
 
 const BACKUP_COMMAND = process.env.PERSIST_BACKUP_COMMAND || "";
 const REQUIRE_PERSIST_BACKUP = envFlag("REQUIRE_PERSIST_BACKUP", productionDefault());
-const BACKUP_INTERVAL_MS = Number(process.env.PERSIST_BACKUP_INTERVAL_MS || 24 * 60 * 60_000);
-const BACKUP_JITTER_MS = Number(process.env.PERSIST_BACKUP_JITTER_MS || 5 * 60_000);
-const BACKUP_TIMEOUT_MS = Number(process.env.PERSIST_BACKUP_TIMEOUT_MS || 30 * 60_000);
-const BACKUP_STARTUP_GRACE_MS = Number(
-  process.env.PERSIST_BACKUP_STARTUP_GRACE_MS ||
-  (process.env.NODE_ENV === "production" ? 30 * 60_000 : 0)
+// Interval floor of 1 min: a bad value must not degenerate into a continuous
+// backup loop that hammers the box and the git remote.
+const BACKUP_INTERVAL_MS = envInt("PERSIST_BACKUP_INTERVAL_MS", 24 * 60 * 60_000, 60_000);
+const BACKUP_JITTER_MS = envInt("PERSIST_BACKUP_JITTER_MS", 5 * 60_000);
+const BACKUP_TIMEOUT_MS = envInt("PERSIST_BACKUP_TIMEOUT_MS", 30 * 60_000, 1000);
+const BACKUP_STARTUP_GRACE_MS = envInt(
+  "PERSIST_BACKUP_STARTUP_GRACE_MS",
+  process.env.NODE_ENV === "production" ? 30 * 60_000 : 0
 );
 
 let backupTimer: ReturnType<typeof setTimeout> | null = null;

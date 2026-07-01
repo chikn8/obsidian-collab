@@ -44,6 +44,7 @@ const {
   getPersistenceHealth,
   loadState,
   markDirty,
+  saveState,
   startPeriodicSave,
   stopPeriodicSave,
 } = await import("../src/persistence.ts");
@@ -84,6 +85,22 @@ try {
   stopPeriodicSave(room);
   health = await getPersistenceHealth();
   check("stopped room is no longer active", health.activeRooms === 0, JSON.stringify(health));
+
+  // Non-ASCII file paths double-encode to ~15 bytes/char and used to exceed the
+  // 255-byte filename limit — the room could never persist. The hashed fallback
+  // name must save and round-trip.
+  const longRel = encodeURIComponent("ノート/とても長いファイル名のメモですこれは本当に長い.md".repeat(2));
+  const longRoom = `@share-long:file:${longRel}`;
+  const longDoc = new Y.Doc();
+  longDoc.getText("codemirror").insert(0, "long-name content");
+  await saveState(longRoom, longDoc);
+  const files = await fs.readdir(tmp);
+  const longFile = files.find((f) => f.includes("-") && f.endsWith(".yjs") && Buffer.byteLength(f) <= 200);
+  check("long room name saved under a bounded filename", !!longFile, files.join(","));
+  const longReload = new Y.Doc();
+  await loadState(longRoom, longReload);
+  check("long room name round-trips", longReload.getText("codemirror").toString() === "long-name content");
+  longDoc.destroy(); longReload.destroy();
 } finally {
   stopPeriodicSave(room);
   doc.destroy();

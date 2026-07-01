@@ -31,6 +31,12 @@ git checkout --orphan backup-next
 git rm -rf . >/dev/null 2>&1 || true
 find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
 
+# POSIX sh has no pipefail, so `tar -cf - | tar -xf -` only reports the
+# CONSUMER's status: a failing producer yielded a silently partial copy that got
+# force-pushed over the last good backup and reported ok. Stage through a temp
+# tarball so set -e catches each step.
+TMP_TAR="$WORK_DIR.corpus.tar.tmp"
+trap 'rm -f "$TMP_TAR"' EXIT
 tar -C "$PERSIST_DIR" \
   --exclude="./snapshots" \
   --exclude="./snapshots/*" \
@@ -40,7 +46,9 @@ tar -C "$PERSIST_DIR" \
   --exclude="*.log.*" \
   --exclude="*.tmp" \
   --exclude=".*.tmp" \
-  -cf - . | tar -xf -
+  -cf "$TMP_TAR" .
+tar -xf "$TMP_TAR"
+rm -f "$TMP_TAR"
 
 # Snapshot note history is pushed separately to SNAPSHOT_GIT_BRANCH. Retained
 # logs/audit can exceed GitHub's single-file limit and are not required to

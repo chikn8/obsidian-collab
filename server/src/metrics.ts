@@ -10,6 +10,7 @@ export const METRIC_NAMES = [
   "backpressure_closed",
   "send_failures",
   "client_errors",
+  "client_log_rate_limited",
   "mux_room_rejections",
 ] as const;
 

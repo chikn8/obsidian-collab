@@ -72,6 +72,35 @@ await fs.access(path.join(restoreDir, "audit.jsonl"))
   .then(() => check("backup branch excludes retained audit log", false, "audit copied"))
   .catch(() => check("backup branch excludes retained audit log", true));
 
+// A failing tar PRODUCER must abort the script before anything is pushed —
+// the old `tar -cf - | tar -xf -` pipeline only surfaced the consumer's exit
+// status, so partial copies were force-pushed over the last good backup.
+if (process.getuid && process.getuid() !== 0) {
+  const failPersist = path.join(temp, "persist-fail");
+  const failRemote = path.join(temp, "backup-fail.git");
+  await fs.mkdir(path.join(failPersist, "share"), { recursive: true });
+  await fs.writeFile(path.join(failPersist, "share", "note.yjs"), "state");
+  await fs.writeFile(path.join(failPersist, "share", "locked.yjs"), "unreadable");
+  await fs.chmod(path.join(failPersist, "share", "locked.yjs"), 0o000);
+  result = await run("git", ["init", "--bare", failRemote]);
+  check("failure-case remote init succeeds", result.code === 0, result.stderr);
+  result = await run("sh", [script], {
+    cwd: serverRoot,
+    env: {
+      ...process.env,
+      PERSIST_DIR: failPersist,
+      SNAPSHOT_GIT_REMOTE: failRemote,
+      PERSIST_BACKUP_WORK_DIR: path.join(temp, "work-fail"),
+    },
+  });
+  check("tar producer failure aborts the script", result.code !== 0, `exit=${result.code}`);
+  const branches = await run("git", ["--git-dir", failRemote, "branch", "--list"]);
+  check("nothing was pushed after producer failure", !branches.stdout.includes("backups"), branches.stdout);
+  await fs.chmod(path.join(failPersist, "share", "locked.yjs"), 0o644);
+} else {
+  console.log("  (skipped producer-failure case: running as root, chmod 000 is not enforced)");
+}
+
 console.log("");
 if (failures > 0) { console.error(`FAILED - ${failures} assertion(s) failed`); process.exit(1); }
 else console.log("ALL PASSED");

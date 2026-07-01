@@ -1,4 +1,4 @@
-import { clientLogFields } from "../src/clientLog.ts";
+import { clientLogFields, clientLogRateLimited, resetClientLogRateLimiterForTest } from "../src/clientLog.ts";
 
 let failures = 0;
 function check(name, cond, extra = "") {
@@ -51,6 +51,18 @@ check("keeps safe client fields", fields.clientFields?.path === "Shared/note.md"
 check("redacts context secrets", fields.clientContext?.settings?.serverToken === "[redacted]");
 check("keeps safe context", fields.clientContext?.settings?.shareCount === 2 && fields.clientContext?.runtime?.boundPath === "Shared/note.md");
 check("does not leak secret values", !JSON.stringify(fields).includes("should-not-export"));
+
+// Sliding-window rate limit: 60/min per share+sender, isolated per key,
+// resetting once the window slides past.
+resetClientLogRateLimiterForTest();
+const t0 = 1_000_000;
+let limited = false;
+for (let i = 0; i < 60; i++) limited = clientLogRateLimited("share-1:uid-a", t0 + i);
+check("first 60 entries in a minute pass", limited === false);
+check("61st entry is limited", clientLogRateLimited("share-1:uid-a", t0 + 100) === true);
+check("other senders are unaffected", clientLogRateLimited("share-1:uid-b", t0 + 100) === false);
+check("window slides open again", clientLogRateLimited("share-1:uid-a", t0 + 61_000) === false);
+resetClientLogRateLimiterForTest();
 
 console.log("");
 if (failures > 0) { console.error(`FAILED — ${failures} assertion(s) failed`); process.exit(1); }

@@ -1,5 +1,6 @@
 import {
   checkHealthOnce,
+  defaultHealthAlertIntervalMs,
   degradedHealthComponents,
   healthAlertBody,
 } from "../src/healthMonitor.ts";
@@ -29,6 +30,34 @@ check("finds degraded health components", components.join(",") === "snapshots,ba
 const body = healthAlertBody(degradedHealth, components);
 check("alert body summarizes status", body.includes("status=degraded") && body.includes("degraded=snapshots,backups,opsAlerts"), body);
 check("alert body includes component reasons", body.includes("remote missing") && body.includes("rclone failed") && body.includes("required but not configured"), body);
+
+{
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalInterval = process.env.HEALTH_ALERT_INTERVAL_MS;
+  const originalWarn = console.warn;
+  try {
+    process.env.NODE_ENV = "production";
+    process.env.HEALTH_ALERT_INTERVAL_MS = "not-a-number";
+    try {
+      console.warn = () => {};
+      check("invalid production alert interval falls back to default", defaultHealthAlertIntervalMs() === 60000);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    process.env.HEALTH_ALERT_INTERVAL_MS = "0";
+    check("explicit zero alert interval disables alerting", defaultHealthAlertIntervalMs() === 0);
+
+    delete process.env.HEALTH_ALERT_INTERVAL_MS;
+    check("missing production alert interval uses default", defaultHealthAlertIntervalMs() === 60000);
+  } finally {
+    console.warn = originalWarn;
+    if (originalInterval === undefined) delete process.env.HEALTH_ALERT_INTERVAL_MS;
+    else process.env.HEALTH_ALERT_INTERVAL_MS = originalInterval;
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
+  }
+}
 
 {
   const sent = [];

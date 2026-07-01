@@ -5,7 +5,8 @@ import { getBlobStore, type StoredBlob } from "./blobStore.js";
 export const BLOB_MAX_BYTES = Number(process.env.BLOB_MAX_BYTES || 25 * 1024 * 1024);
 
 export function safeBlobShareId(shareId: string): boolean {
-  return /^[A-Za-z0-9_.-]{1,128}$/.test(shareId);
+  // Dot-only names ("." / "..") are path navigation, not share ids.
+  return /^[A-Za-z0-9_.-]{1,128}$/.test(shareId) && !/^\.+$/.test(shareId);
 }
 
 export function safeBlobHash(hash: string): boolean {

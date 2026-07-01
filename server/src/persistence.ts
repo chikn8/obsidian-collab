@@ -1,6 +1,7 @@
 import * as Y from "yjs";
 import fs from "fs/promises";
 import path from "path";
+import { createHash } from "crypto";
 import { writeSnapshot } from "./snapshots.js";
 import { alertOps } from "./notify.js";
 import { atomicWriteFile } from "./storage.js";
@@ -26,8 +27,25 @@ function logPersistenceRoom(message: string): void {
   if (VERBOSE_PERSISTENCE_LOGS) console.log(message);
 }
 
+// File rooms arrive with an already-URI-encoded relPath inside the room name,
+// so encodeURIComponent here re-encodes every % — non-ASCII vault paths balloon
+// to ~9 bytes/char and can blow the 255-byte filename limit, making the room
+// permanently unpersistable (every save ENAMETOOLONG). Over-limit rooms get a
+// stable truncated-prefix + sha256 name instead. No migration: such rooms never
+// had a file under the plain scheme. Manifest rooms ("@<shareId>:__manifest__",
+// shareId ≤ 128 safe chars) always fit the plain scheme, which blob GC's
+// directory scan relies on.
+const MAX_STATE_FILENAME_BYTES = 200;
+
 function statePath(roomName: string): string {
-  return path.join(PERSIST_DIR, encodeURIComponent(roomName) + ".yjs");
+  const encoded = encodeURIComponent(roomName);
+  if (Buffer.byteLength(encoded) + 4 <= MAX_STATE_FILENAME_BYTES) {
+    return path.join(PERSIST_DIR, encoded + ".yjs");
+  }
+  // encoded is pure ASCII; trim a trailing partial %XX triplet after slicing.
+  const prefix = encoded.slice(0, 80).replace(/%[0-9A-Fa-f]?$/, "");
+  const digest = createHash("sha256").update(roomName).digest("hex");
+  return path.join(PERSIST_DIR, `${prefix}-${digest}.yjs`);
 }
 
 async function enqueueSave(roomName: string, fn: () => Promise<void>): Promise<void> {

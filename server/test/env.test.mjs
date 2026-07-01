@@ -1,4 +1,4 @@
-import { envFlag, productionDefault } from "../src/env.ts";
+import { envFlag, envInt, productionDefault } from "../src/env.ts";
 
 let failures = 0;
 function check(name, cond, extra = "") {
@@ -10,6 +10,7 @@ console.log("server env helpers\n");
 
 const originalNodeEnv = process.env.NODE_ENV;
 const originalFlag = process.env.TEST_COLLAB_FLAG;
+const originalInt = process.env.TEST_COLLAB_INT;
 
 try {
   delete process.env.TEST_COLLAB_FLAG;
@@ -30,9 +31,31 @@ try {
 
   process.env.NODE_ENV = "test";
   check("production default is false outside production", productionDefault() === false);
+
+  delete process.env.TEST_COLLAB_INT;
+  check("missing int uses default", envInt("TEST_COLLAB_INT", 42) === 42);
+
+  process.env.TEST_COLLAB_INT = "1234";
+  check("int parses numeric value", envInt("TEST_COLLAB_INT", 42) === 1234);
+
+  {
+    const originalWarn = console.warn;
+    try {
+      console.warn = () => {};
+      process.env.TEST_COLLAB_INT = "10s";
+      check("invalid int falls back to default", envInt("TEST_COLLAB_INT", 42) === 42);
+
+      process.env.TEST_COLLAB_INT = "50";
+      check("int below min falls back to default", envInt("TEST_COLLAB_INT", 42, 1000) === 42);
+    } finally {
+      console.warn = originalWarn;
+    }
+  }
 } finally {
   if (originalFlag === undefined) delete process.env.TEST_COLLAB_FLAG;
   else process.env.TEST_COLLAB_FLAG = originalFlag;
+  if (originalInt === undefined) delete process.env.TEST_COLLAB_INT;
+  else process.env.TEST_COLLAB_INT = originalInt;
   if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
   else process.env.NODE_ENV = originalNodeEnv;
 }

@@ -379,12 +379,25 @@
 .collab-activity-content {
   min-width: 0;
 }
-.collab-activity-row.message .collab-activity-body {
+.collab-activity-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.collab-activity-item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 5px;
+  align-items: flex-start;
+}
+.collab-activity-item.message .collab-activity-body {
   color: var(--text-normal);
+  font-style: normal;
   white-space: pre-wrap;
 }
-.collab-activity-row.event .collab-activity-body {
+.collab-activity-item.event .collab-activity-body {
   color: var(--text-muted);
+  font-style: italic;
 }
 .collab-activity-meta {
   display: flex;
@@ -399,6 +412,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  margin-top: 1px;
   width: 16px;
   height: 16px;
   border-radius: 50%;

@@ -12,6 +12,13 @@ export interface ActivityContext {
   canSend: boolean;
 }
 
+const GROUP_WINDOW_MS = 10 * 60 * 1000;
+
+interface ActivityGroup {
+  actorKey: string;
+  events: CollabEvent[];
+}
+
 export class ActivityView extends ItemView {
   private ctx: ActivityContext | null = null;
   private unobserve: (() => void) | null = null;
@@ -58,7 +65,7 @@ export class ActivityView extends ItemView {
     if (events.length === 0) {
       list.createEl("p", { text: "No activity yet.", cls: "collab-comments-empty" });
     } else {
-      for (const event of events) this.renderEvent(list, event);
+      for (const group of groupEvents(events)) this.renderGroup(list, group);
     }
 
     const composer = root.createDiv({ cls: "collab-activity-composer" });
@@ -97,26 +104,38 @@ export class ActivityView extends ItemView {
     this.scrollToBottom(list);
   }
 
-  private renderEvent(parent: HTMLElement, event: CollabEvent): void {
-    const isMessage = event.type === "message";
-    const row = parent.createDiv({ cls: `collab-activity-row ${isMessage ? "message" : "event"} type-${event.type}` });
+  private renderGroup(parent: HTMLElement, group: ActivityGroup): void {
+    const first = group.events[0];
+    const latest = group.events[group.events.length - 1] || first;
+    if (!first || !latest) return;
+
+    const row = parent.createDiv({ cls: "collab-activity-row" });
     const avatar = row.createDiv({ cls: "collab-activity-avatar" });
-    avatar.setText(actorInitial(event.actorName));
-    avatar.setAttr("aria-label", event.actorName || "Anonymous");
-    avatar.setAttr("title", event.actorName || "Anonymous");
-    avatar.style.backgroundColor = actorColor(event);
+    avatar.setText(actorInitial(first.actorName));
+    avatar.setAttr("aria-label", first.actorName || "Anonymous");
+    avatar.setAttr("title", first.actorName || "Anonymous");
+    avatar.style.backgroundColor = actorColor(first);
 
     const content = row.createDiv({ cls: "collab-activity-content" });
     const meta = content.createDiv({ cls: "collab-activity-meta" });
-    const action = meta.createSpan({ cls: `collab-activity-action type-${event.type}` });
+    meta.createSpan({ text: first.actorName || "Anonymous", cls: "collab-activity-author" });
+    meta.createSpan({ text: " · " + timeAgo(this.ctx?.now() || Date.now(), latest.at), cls: "collab-activity-time" });
+    const device = sameDevice(group.events);
+    if (device) meta.createSpan({ text: " · " + device, cls: "collab-activity-device" });
+
+    const items = content.createDiv({ cls: "collab-activity-items" });
+    for (const event of group.events) this.renderGroupItem(items, event);
+  }
+
+  private renderGroupItem(parent: HTMLElement, event: CollabEvent): void {
+    const isMessage = event.type === "message";
+    const item = parent.createDiv({ cls: `collab-activity-item ${isMessage ? "message" : "event"} type-${event.type}` });
+    const action = item.createSpan({ cls: `collab-activity-action type-${event.type}` });
     setIcon(action, actionIcon(event.type));
     action.setAttr("aria-label", actionLabel(event.type));
     action.setAttr("title", actionLabel(event.type));
-    meta.createSpan({ text: event.actorName || "Anonymous", cls: "collab-activity-author" });
-    meta.createSpan({ text: " · " + timeAgo(this.ctx?.now() || Date.now(), event.at), cls: "collab-activity-time" });
-    if (event.device) meta.createSpan({ text: " · " + event.device, cls: "collab-activity-device" });
 
-    const body = content.createDiv({ cls: "collab-activity-body" });
+    const body = item.createSpan({ cls: "collab-activity-body" });
     if (isMessage) {
       body.setText(event.text || "");
       return;
@@ -139,6 +158,36 @@ function timeAgo(now: number, then: number): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+function groupEvents(events: CollabEvent[]): ActivityGroup[] {
+  const groups: ActivityGroup[] = [];
+  for (const event of events) {
+    const key = actorKey(event);
+    const last = groups[groups.length - 1];
+    const previous = last?.events[last.events.length - 1];
+    if (
+      last &&
+      previous &&
+      last.actorKey === key &&
+      Math.max(0, event.at - previous.at) <= GROUP_WINDOW_MS
+    ) {
+      last.events.push(event);
+      continue;
+    }
+    groups.push({ actorKey: key, events: [event] });
+  }
+  return groups;
+}
+
+function actorKey(event: CollabEvent): string {
+  return event.actorUid || event.actorName || "anonymous";
+}
+
+function sameDevice(events: CollabEvent[]): string {
+  const first = events[0]?.device || "";
+  if (!first) return "";
+  return events.every((event) => (event.device || "") === first) ? first : "";
 }
 
 function actorInitial(name: string): string {

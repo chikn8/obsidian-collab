@@ -16267,6 +16267,7 @@ function renderSelfCaret(doc2, name, color) {
 // src/ui/ActivityView.ts
 var import_obsidian8 = require("obsidian");
 var ACTIVITY_VIEW_TYPE = "collab-activity";
+var GROUP_WINDOW_MS = 10 * 60 * 1e3;
 var ActivityView = class extends import_obsidian8.ItemView {
   constructor(leaf) {
     super(leaf);
@@ -16318,7 +16319,7 @@ var ActivityView = class extends import_obsidian8.ItemView {
     if (events.length === 0) {
       list.createEl("p", { text: "No activity yet.", cls: "collab-comments-empty" });
     } else {
-      for (const event of events) this.renderEvent(list, event);
+      for (const group of groupEvents(events)) this.renderGroup(list, group);
     }
     const composer = root.createDiv({ cls: "collab-activity-composer" });
     const input = composer.createEl("input", {
@@ -16355,25 +16356,34 @@ var ActivityView = class extends import_obsidian8.ItemView {
     sendBtn.onclick = send;
     this.scrollToBottom(list);
   }
-  renderEvent(parent, event) {
+  renderGroup(parent, group) {
     var _a2;
-    const isMessage = event.type === "message";
-    const row = parent.createDiv({ cls: `collab-activity-row ${isMessage ? "message" : "event"} type-${event.type}` });
+    const first = group.events[0];
+    const latest = group.events[group.events.length - 1] || first;
+    if (!first || !latest) return;
+    const row = parent.createDiv({ cls: "collab-activity-row" });
     const avatar = row.createDiv({ cls: "collab-activity-avatar" });
-    avatar.setText(actorInitial(event.actorName));
-    avatar.setAttr("aria-label", event.actorName || "Anonymous");
-    avatar.setAttr("title", event.actorName || "Anonymous");
-    avatar.style.backgroundColor = actorColor(event);
+    avatar.setText(actorInitial(first.actorName));
+    avatar.setAttr("aria-label", first.actorName || "Anonymous");
+    avatar.setAttr("title", first.actorName || "Anonymous");
+    avatar.style.backgroundColor = actorColor(first);
     const content = row.createDiv({ cls: "collab-activity-content" });
     const meta = content.createDiv({ cls: "collab-activity-meta" });
-    const action = meta.createSpan({ cls: `collab-activity-action type-${event.type}` });
+    meta.createSpan({ text: first.actorName || "Anonymous", cls: "collab-activity-author" });
+    meta.createSpan({ text: " \xB7 " + timeAgo(((_a2 = this.ctx) == null ? void 0 : _a2.now()) || Date.now(), latest.at), cls: "collab-activity-time" });
+    const device = sameDevice(group.events);
+    if (device) meta.createSpan({ text: " \xB7 " + device, cls: "collab-activity-device" });
+    const items = content.createDiv({ cls: "collab-activity-items" });
+    for (const event of group.events) this.renderGroupItem(items, event);
+  }
+  renderGroupItem(parent, event) {
+    const isMessage = event.type === "message";
+    const item = parent.createDiv({ cls: `collab-activity-item ${isMessage ? "message" : "event"} type-${event.type}` });
+    const action = item.createSpan({ cls: `collab-activity-action type-${event.type}` });
     (0, import_obsidian8.setIcon)(action, actionIcon(event.type));
     action.setAttr("aria-label", actionLabel(event.type));
     action.setAttr("title", actionLabel(event.type));
-    meta.createSpan({ text: event.actorName || "Anonymous", cls: "collab-activity-author" });
-    meta.createSpan({ text: " \xB7 " + timeAgo(((_a2 = this.ctx) == null ? void 0 : _a2.now()) || Date.now(), event.at), cls: "collab-activity-time" });
-    if (event.device) meta.createSpan({ text: " \xB7 " + event.device, cls: "collab-activity-device" });
-    const body = content.createDiv({ cls: "collab-activity-body" });
+    const body = item.createSpan({ cls: "collab-activity-body" });
     if (isMessage) {
       body.setText(event.text || "");
       return;
@@ -16396,6 +16406,29 @@ function timeAgo(now, then) {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+function groupEvents(events) {
+  const groups = [];
+  for (const event of events) {
+    const key = actorKey(event);
+    const last2 = groups[groups.length - 1];
+    const previous = last2 == null ? void 0 : last2.events[last2.events.length - 1];
+    if (last2 && previous && last2.actorKey === key && Math.max(0, event.at - previous.at) <= GROUP_WINDOW_MS) {
+      last2.events.push(event);
+      continue;
+    }
+    groups.push({ actorKey: key, events: [event] });
+  }
+  return groups;
+}
+function actorKey(event) {
+  return event.actorUid || event.actorName || "anonymous";
+}
+function sameDevice(events) {
+  var _a2;
+  const first = ((_a2 = events[0]) == null ? void 0 : _a2.device) || "";
+  if (!first) return "";
+  return events.every((event) => (event.device || "") === first) ? first : "";
 }
 function actorInitial(name) {
   const clean2 = (name || "Anonymous").trim();

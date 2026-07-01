@@ -16342,9 +16342,9 @@ var ActivityView = class extends import_obsidian8.ItemView {
         new import_obsidian8.Notice("This share is read-only on this device.");
         return;
       }
-      this.ctx.send(text2);
       input.value = "";
       this.draft = "";
+      this.ctx.send(text2);
       this.scrollToBottom(list);
     };
     input.addEventListener("keydown", (e) => {
@@ -16379,10 +16379,12 @@ var ActivityView = class extends import_obsidian8.ItemView {
   renderGroupItem(parent, event) {
     const isMessage = event.type === "message";
     const item = parent.createDiv({ cls: `collab-activity-item ${isMessage ? "message" : "event"} type-${event.type}` });
-    const action = item.createSpan({ cls: `collab-activity-action type-${event.type}` });
-    (0, import_obsidian8.setIcon)(action, actionIcon(event.type));
-    action.setAttr("aria-label", actionLabel(event.type));
-    action.setAttr("title", actionLabel(event.type));
+    if (!isMessage) {
+      const action = item.createSpan({ cls: `collab-activity-action type-${event.type}` });
+      (0, import_obsidian8.setIcon)(action, actionIcon(event.type));
+      action.setAttr("aria-label", actionLabel(event.type));
+      action.setAttr("title", actionLabel(event.type));
+    }
     const body = item.createSpan({ cls: "collab-activity-body" });
     if (isMessage) {
       body.setText(event.text || "");

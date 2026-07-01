@@ -89,9 +89,9 @@ export class ActivityView extends ItemView {
         new Notice("This share is read-only on this device.");
         return;
       }
-      this.ctx.send(text);
       input.value = "";
       this.draft = "";
+      this.ctx.send(text);
       this.scrollToBottom(list);
     };
     input.addEventListener("keydown", (e) => {
@@ -130,10 +130,12 @@ export class ActivityView extends ItemView {
   private renderGroupItem(parent: HTMLElement, event: CollabEvent): void {
     const isMessage = event.type === "message";
     const item = parent.createDiv({ cls: `collab-activity-item ${isMessage ? "message" : "event"} type-${event.type}` });
-    const action = item.createSpan({ cls: `collab-activity-action type-${event.type}` });
-    setIcon(action, actionIcon(event.type));
-    action.setAttr("aria-label", actionLabel(event.type));
-    action.setAttr("title", actionLabel(event.type));
+    if (!isMessage) {
+      const action = item.createSpan({ cls: `collab-activity-action type-${event.type}` });
+      setIcon(action, actionIcon(event.type));
+      action.setAttr("aria-label", actionLabel(event.type));
+      action.setAttr("title", actionLabel(event.type));
+    }
 
     const body = item.createSpan({ cls: "collab-activity-body" });
     if (isMessage) {

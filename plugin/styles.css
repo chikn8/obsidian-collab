@@ -390,7 +390,7 @@
   gap: 5px;
   align-items: flex-start;
 }
-.collab-activity-item.message .collab-activity-body {
+.collab-activity-item.is-message .collab-activity-body {
   color: var(--text-normal);
   font-style: normal;
   white-space: pre-wrap;
@@ -399,7 +399,7 @@
   width: 16px;
   height: 16px;
 }
-.collab-activity-item.event .collab-activity-body {
+.collab-activity-item.is-event .collab-activity-body {
   color: var(--text-muted);
   font-style: italic;
 }

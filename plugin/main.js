@@ -16378,7 +16378,7 @@ var ActivityView = class extends import_obsidian8.ItemView {
   }
   renderGroupItem(parent, event) {
     const isMessage = event.type === "message";
-    const item = parent.createDiv({ cls: `collab-activity-item ${isMessage ? "message" : "event"} type-${event.type}` });
+    const item = parent.createDiv({ cls: `collab-activity-item ${isMessage ? "is-message" : "is-event"} type-${event.type}` });
     if (isMessage) {
       item.createSpan({ cls: "collab-activity-action-spacer" });
     } else {

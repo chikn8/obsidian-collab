@@ -129,7 +129,7 @@ export class ActivityView extends ItemView {
 
   private renderGroupItem(parent: HTMLElement, event: CollabEvent): void {
     const isMessage = event.type === "message";
-    const item = parent.createDiv({ cls: `collab-activity-item ${isMessage ? "message" : "event"} type-${event.type}` });
+    const item = parent.createDiv({ cls: `collab-activity-item ${isMessage ? "is-message" : "is-event"} type-${event.type}` });
     if (isMessage) {
       item.createSpan({ cls: "collab-activity-action-spacer" });
     } else {

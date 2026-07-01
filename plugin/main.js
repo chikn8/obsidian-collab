@@ -9946,6 +9946,10 @@ function log(ns, ...args2) {
   record("debug", ns, "log", { args: args2 });
   if (DEBUG) console.log(`%c[collab:${ns}]`, "color:#54a0ff;font-weight:600", ...args2);
 }
+function warn2(ns, ...args2) {
+  record("warn", ns, "warn", { args: args2 });
+  console.warn(`[collab:${ns}]`, ...args2);
+}
 function err(ns, ...args2) {
   const row = record("error", ns, "error", { args: args2 });
   enqueueTelemetry(row);
@@ -10163,7 +10167,15 @@ var MuxConnection = class {
     }
     set.add(provider);
     provider.setConnected(this.connected);
-    if (this.connected) provider.onSocketOpen();
+    if (this.connected) {
+      provider.onSocketOpen();
+      queueMicrotask(() => {
+        var _a2;
+        if (this.connected && ((_a2 = this.providers.get(provider.roomName)) == null ? void 0 : _a2.has(provider))) {
+          provider.emitStatus("connected");
+        }
+      });
+    }
   }
   unregister(provider) {
     var _a2;
@@ -10214,13 +10226,16 @@ var MuxConnection = class {
     };
   }
   disconnect() {
-    var _a2;
     this.shouldConnect = false;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    (_a2 = this.ws) == null ? void 0 : _a2.close();
+    const ws = this.ws;
+    if (!ws) return;
+    this.ws = null;
+    ws.close();
+    this.notifyClosed();
   }
   send(roomName, inner) {
     if (!this.connected || !this.ws) return;
@@ -10240,14 +10255,18 @@ var MuxConnection = class {
   handleClosed(ws) {
     if (this.ws !== ws) return;
     this.ws = null;
-    this.providers.forEach((set) => set.forEach((p) => {
-      p.setConnected(false);
-      p.setSynced(false);
-      p.emitStatus("disconnected");
-    }));
+    this.notifyClosed();
     if (!this.shouldConnect || this.providers.size === 0) return;
     const delay = reconnectDelayForAttempt(this.attempts++);
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
+  }
+  notifyClosed() {
+    this.providers.forEach((set) => set.forEach((p) => {
+      p.setConnected(false);
+      p.setSynced(false);
+      p.clearRemoteAwareness();
+      p.emitStatus("disconnected");
+    }));
   }
   handleMessage(raw) {
     const bytes = raw instanceof ArrayBuffer ? new Uint8Array(raw) : toBytes(raw);
@@ -10351,6 +10370,12 @@ var MuxProvider = class {
   onSocketOpen() {
     this.sendSyncStep1();
     this.flushLocalAwareness();
+  }
+  /** Drop remote presence when the socket closes (mirrors y-websocket) —
+   *  otherwise ghost cursors linger until the 30s awareness timeout. */
+  clearRemoteAwareness() {
+    const remote = Array.from(this.awareness.getStates().keys()).filter((clientId) => clientId !== this.awareness.clientID);
+    if (remote.length > 0) removeAwarenessStates(this.awareness, remote, this);
   }
   connect() {
     this.conn.connect();
@@ -11003,15 +11028,30 @@ var EchoGuard = class {
 };
 
 // src/utils/textDiff.ts
+function isHighSurrogate(code) {
+  return code >= 55296 && code <= 56319;
+}
+function isLowSurrogate(code) {
+  return code >= 56320 && code <= 57343;
+}
+function splitsSurrogatePair(str, index) {
+  if (index <= 0 || index >= str.length) return false;
+  return isHighSurrogate(str.charCodeAt(index - 1)) && isLowSurrogate(str.charCodeAt(index));
+}
 function diffRange(oldStr, newStr) {
   let start = 0;
   const maxStart = Math.min(oldStr.length, newStr.length);
   while (start < maxStart && oldStr[start] === newStr[start]) start++;
+  if (splitsSurrogatePair(oldStr, start) || splitsSurrogatePair(newStr, start)) start--;
   let endOld = oldStr.length;
   let endNew = newStr.length;
   while (endOld > start && endNew > start && oldStr[endOld - 1] === newStr[endNew - 1]) {
     endOld--;
     endNew--;
+  }
+  if (splitsSurrogatePair(oldStr, endOld) || splitsSurrogatePair(newStr, endNew)) {
+    endOld++;
+    endNew++;
   }
   return { start, delCount: endOld - start, insert: newStr.substring(start, endNew) };
 }
@@ -11031,11 +11071,11 @@ function opsToSplices(ops, startOffset) {
   for (const [kind, ch] of ops) {
     if (kind === "equal") {
       flush();
-      oldIndex++;
+      oldIndex += ch.length;
     } else if (kind === "remove") {
       if (runStart == null) runStart = oldIndex;
-      delCount++;
-      oldIndex++;
+      delCount += ch.length;
+      oldIndex += ch.length;
     } else {
       if (runStart == null) runStart = oldIndex;
       insert += ch;
@@ -11114,13 +11154,17 @@ function diffRanges(oldStr, newStr, maxCells = 25e4) {
   let prefix = 0;
   const maxPrefix = Math.min(oldStr.length, newStr.length);
   while (prefix < maxPrefix && oldStr[prefix] === newStr[prefix]) prefix++;
+  if (splitsSurrogatePair(oldStr, prefix) || splitsSurrogatePair(newStr, prefix)) prefix--;
   let suffix = 0;
   const maxSuffix = Math.min(oldStr.length, newStr.length) - prefix;
   while (suffix < maxSuffix && oldStr[oldStr.length - 1 - suffix] === newStr[newStr.length - 1 - suffix]) {
     suffix++;
   }
-  const oldMid = oldStr.slice(prefix, oldStr.length - suffix);
-  const newMid = newStr.slice(prefix, newStr.length - suffix);
+  if (splitsSurrogatePair(oldStr, oldStr.length - suffix) || splitsSurrogatePair(newStr, newStr.length - suffix)) {
+    suffix--;
+  }
+  const oldMid = Array.from(oldStr.slice(prefix, oldStr.length - suffix));
+  const newMid = Array.from(newStr.slice(prefix, newStr.length - suffix));
   const m = oldMid.length;
   const n = newMid.length;
   if (m === 0 || n === 0) return [diffRange(oldStr, newStr)];
@@ -11230,6 +11274,29 @@ function backupExtension(fullPath) {
   var _a2, _b2;
   const ext = ((_b2 = (_a2 = fullPath.split("/").pop()) == null ? void 0 : _a2.split(".").pop()) == null ? void 0 : _b2.toLowerCase()) || "md";
   return ext === "canvas" ? "canvas" : "md";
+}
+function diskFpKey(app, roomName) {
+  const vaultId = app.appId || app.vault.getName();
+  return `obsidian-collab:diskfp:${vaultId}:${roomName}`;
+}
+function readLastFlushedFp(app, roomName) {
+  try {
+    return window.localStorage.getItem(diskFpKey(app, roomName));
+  } catch (e) {
+    return null;
+  }
+}
+function writeLastFlushedFp(app, roomName, fp) {
+  try {
+    window.localStorage.setItem(diskFpKey(app, roomName), fp);
+  } catch (e) {
+  }
+}
+function clearLastFlushedFp(app, roomName) {
+  try {
+    window.localStorage.removeItem(diskFpKey(app, roomName));
+  } catch (e) {
+  }
 }
 var FileProvider = class _FileProvider {
   constructor(params2) {
@@ -11355,20 +11422,31 @@ var FileProvider = class _FileProvider {
     const diskContent = initialContent || "";
     const idbContent = this.ytext.toString();
     if (diskContent.length > 0 && idbContent.length > 0 && idbContent !== diskContent) {
-      log(
-        "offline",
-        "reconciling offline disk edits",
-        this.filePath,
-        `(base ${idbContent.length} \u2192 disk ${diskContent.length} chars)`
-      );
-      await this.saveSnapshot(diskContent).catch((e) => log("offline", "pre-reconcile snapshot failed", e));
-      this.applyDiff(idbContent, diskContent);
-      trace("file", "offline-reconciled", {
-        path: this.filePath,
-        room: this.roomName,
-        baseLen: idbContent.length,
-        diskLen: diskContent.length
-      });
+      const lastFlushedFp = readLastFlushedFp(this.app, this.roomName);
+      if (lastFlushedFp && lastFlushedFp === fingerprint(diskContent)) {
+        log("offline", "disk matches last flush; skipping stale-disk reconcile", this.filePath);
+        trace("file", "stale-disk-reconcile-skipped", {
+          path: this.filePath,
+          room: this.roomName,
+          idbLen: idbContent.length,
+          diskLen: diskContent.length
+        });
+      } else {
+        log(
+          "offline",
+          "reconciling offline disk edits",
+          this.filePath,
+          `(base ${idbContent.length} \u2192 disk ${diskContent.length} chars)`
+        );
+        await this.saveSnapshot(diskContent).catch((e) => log("offline", "pre-reconcile snapshot failed", e));
+        this.applyDiff(idbContent, diskContent);
+        trace("file", "offline-reconciled", {
+          path: this.filePath,
+          room: this.roomName,
+          baseLen: idbContent.length,
+          diskLen: diskContent.length
+        });
+      }
     }
     this.provider = createProvider(
       this.settings.serverUrl,
@@ -11420,11 +11498,16 @@ var FileProvider = class _FileProvider {
     });
   }
   async finishInitialSync(startupDiskContent) {
-    var _a2, _b2, _c, _d;
+    var _a2, _b2, _c;
     try {
       if (this.destroyed || this.isInitialized) return;
-      const latestDiskContent = (_a2 = this.pendingLocalContent) != null ? _a2 : await this.readDiskContent(startupDiskContent);
-      this.pendingLocalContent = null;
+      let latestDiskContent;
+      if (this.pendingLocalContent != null) {
+        latestDiskContent = this.pendingLocalContent;
+        this.pendingLocalContent = null;
+      } else {
+        latestDiskContent = await this.readDiskContent(startupDiskContent);
+      }
       let mergedContent = this.ytext.toString();
       if (mergedContent.length === 0 && latestDiskContent.length > 0) {
         this.ydoc.transact(() => {
@@ -11432,15 +11515,26 @@ var FileProvider = class _FileProvider {
         }, "seed");
         mergedContent = latestDiskContent;
       } else if (latestDiskContent !== startupDiskContent) {
-        this.applyDiff(startupDiskContent, latestDiskContent, "startup-local-change");
-        (_b2 = this.onLocalEdit) == null ? void 0 : _b2.call(this);
+        const applied = this.applyDiffChecked(startupDiskContent, latestDiskContent, "startup-local-change");
+        if (applied) {
+          (_a2 = this.onLocalEdit) == null ? void 0 : _a2.call(this);
+        } else {
+          await this.saveSnapshot(latestDiskContent).catch((e) => log("offline", "startup-local-change snapshot failed", e));
+          trace("file", "startup-local-change-conflicted", {
+            path: this.filePath,
+            room: this.roomName,
+            startupLen: startupDiskContent.length,
+            latestLen: latestDiskContent.length
+          });
+        }
         mergedContent = this.ytext.toString();
         trace("file", "startup-local-change-applied", {
           path: this.filePath,
           room: this.roomName,
           startupLen: startupDiskContent.length,
           latestLen: latestDiskContent.length,
-          mergedLen: mergedContent.length
+          mergedLen: mergedContent.length,
+          applied
         });
       }
       if (latestDiskContent.length > 0 && mergedContent !== latestDiskContent) {
@@ -11453,13 +11547,13 @@ var FileProvider = class _FileProvider {
         );
       }
       await this.writeToFile(false, "initial-sync");
-      if (this.pendingLocalContent != null && !this.destroyed) {
+      while (this.pendingLocalContent != null && !this.destroyed) {
         const queued = this.pendingLocalContent;
         this.pendingLocalContent = null;
         const old = this.ytext.toString();
-        if (old !== queued) {
+        if (old !== queued && !this.echo.isEcho(this.filePath, queued)) {
           this.applyDiff(old, queued, "startup-local-change-late");
-          (_c = this.onLocalEdit) == null ? void 0 : _c.call(this);
+          (_b2 = this.onLocalEdit) == null ? void 0 : _b2.call(this);
           await this.writeToFile(false, "initial-sync-local-change");
           trace("file", "startup-local-change-drained", {
             path: this.filePath,
@@ -11472,7 +11566,7 @@ var FileProvider = class _FileProvider {
       }
       this.startObserver();
       this.isInitialized = true;
-      (_d = this.onReady) == null ? void 0 : _d.call(this);
+      (_c = this.onReady) == null ? void 0 : _c.call(this);
     } catch (e) {
       err("file", "initial sync finalization failed", { path: this.filePath, room: this.roomName }, e);
     }
@@ -11591,9 +11685,11 @@ var FileProvider = class _FileProvider {
           return content;
         });
         if (!wrote) {
+          writeLastFlushedFp(this.app, this.roomName, fingerprint(content));
           trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq: seq2, reason, cause: "unchanged", len: content.length });
           return;
         }
+        writeLastFlushedFp(this.app, this.roomName, fingerprint(content));
         trace("file", "write-ok", { path: this.filePath, room: this.roomName, seq: seq2, reason, len: content.length });
       } finally {
         endRemoteApply();
@@ -11649,6 +11745,7 @@ var FileProvider = class _FileProvider {
     }
     const old = this.ytext.toString();
     if (old === newContent) {
+      writeLastFlushedFp(this.app, this.roomName, fingerprint(newContent));
       trace("file", "local-change-skipped", {
         path: this.filePath,
         room: this.roomName,
@@ -11678,6 +11775,7 @@ var FileProvider = class _FileProvider {
         if (insert.length > 0) this.ytext.insert(start, insert);
       }
     });
+    writeLastFlushedFp(this.app, this.roomName, fingerprint(newContent));
   }
   /**
    * Apply a plugin-owned text rewrite as a CRDT edit, then flush it to disk.
@@ -11751,6 +11849,30 @@ var FileProvider = class _FileProvider {
         }
       }, origin);
     }
+  }
+  /**
+   * Apply a diff whose splices were computed against `oldContent`, but only if
+   * the CURRENT ytext still matches `oldContent` around every splice site.
+   * Guards against splicing at stale offsets after a concurrent remote merge
+   * shifted the doc. Returns false (and applies nothing) on mismatch.
+   */
+  applyDiffChecked(oldContent, newContent, origin) {
+    const splices = diffRanges(oldContent, newContent);
+    if (splices.length === 0) return true;
+    const current = this.ytext.toString();
+    for (const { start, delCount } of splices) {
+      const from2 = Math.max(0, start - 1);
+      const to = start + delCount + 1;
+      if (current.slice(from2, to) !== oldContent.slice(from2, to)) return false;
+    }
+    this.ydoc.transact(() => {
+      for (let i = splices.length - 1; i >= 0; i--) {
+        const { start, delCount, insert } = splices[i];
+        if (delCount > 0) this.ytext.delete(start, delCount);
+        if (insert.length > 0) this.ytext.insert(start, insert);
+      }
+    }, origin);
+    return true;
   }
   /** Current Y.Text content (for transferring/preserving across destroy). */
   getText() {
@@ -11839,6 +11961,7 @@ var FileProvider = class _FileProvider {
   /** Teardown AND wipe IndexedDB data (call when file is permanently deleted) */
   async destroyAndClearData() {
     this.destroyed = true;
+    clearLastFlushedFp(this.app, this.roomName);
     if (this.observer) {
       this.ytext.unobserve(this.observer);
       this.observer = null;
@@ -12243,10 +12366,15 @@ function hasBlockedSyncSegment(path) {
   return blockedSyncSegment(path) !== null;
 }
 function tombstoneLocalDecision(args2) {
-  if (args2.renamedTo) return "delete";
   const hasTombstoneOrigin = !!args2.tombstoneDeviceId || !!args2.tombstoneUid;
   const hasLocalEditOrigin = !!args2.localEditDeviceId || !!args2.localEditUid;
   const sameDeviceTombstone = !!args2.localDeviceId && !!args2.tombstoneDeviceId && args2.localDeviceId === args2.tombstoneDeviceId && (!args2.localUid || !args2.tombstoneUid || args2.localUid === args2.tombstoneUid);
+  if (args2.renamedTo) {
+    if (!sameDeviceTombstone && hasLocalEditOrigin && (args2.localEditAt || 0) - args2.deletedAt > RESURRECT_GRACE_MS) {
+      return "conflict-copy";
+    }
+    return "delete";
+  }
   if (sameDeviceTombstone) return "delete";
   const localChangedAt = args2.localEditAt || args2.localMtime;
   const delta = localChangedAt - args2.deletedAt;
@@ -12686,6 +12814,15 @@ var SyncManager = class {
     // windows (mobile / slow disk safe). See EchoGuard.ts.
     this.echo = new EchoGuard();
     this.processingManifest = false;
+    // Remote manifest events arriving during the startup reconcile are DEFERRED
+    // (not dropped) and replayed once the reconcile finishes; handleManifestChange
+    // re-reads the live entry per key, so replaying a stale event is idempotent.
+    this.pendingManifestEvents = [];
+    // All manifest processing (startup reconciles AND live change events) runs
+    // serialized through this chain — overlapping async runs used to race each
+    // other (tombstone vs in-flight provider creation, reconnect mid-reconcile).
+    this.manifestOpQueue = Promise.resolve();
+    this.destroyed = false;
     // Status
     this.syncStatus = "disconnected";
     // Presence indicators (file explorer) — full-path → rendered elements
@@ -12773,7 +12910,11 @@ var SyncManager = class {
     let fn = this.stampDebounce.get(relPath);
     if (!fn) {
       fn = (0, import_obsidian4.debounce)(() => {
-        if (!this.editsMap) return;
+        var _a2;
+        if (!this.editsMap || this.destroyed) return;
+        const entry = (_a2 = this.manifestMap) == null ? void 0 : _a2.get(relPath);
+        if (entry && !entry.exists) return;
+        if (!this.fileProviders.has(relPath) && !(this.app.vault.getAbstractFileByPath(this.toFullPath(relPath)) instanceof import_obsidian4.TFile)) return;
         this.editsMap.set(relPath, {
           by: this.settings.displayName,
           byUid: this.settings.uid,
@@ -12995,28 +13136,64 @@ var SyncManager = class {
             synced
           });
           if (synced) {
-            this.onManifestSynced();
+            this.enqueueManifestOp(() => this.onManifestSynced(), "startup-reconcile");
           }
         }
       },
       this.providerAuthParams()
     );
     this.manifestMap.observe((event) => {
-      if (this.processingManifest) return;
-      this.handleManifestChange(event);
+      var _a2, _b2;
+      if (this.processingManifest) {
+        this.pendingManifestEvents.push(event);
+        trace("manifest", "change-deferred-during-reconcile", {
+          shareId: this.histShareId,
+          keys: (_b2 = (_a2 = event.keysChanged) == null ? void 0 : _a2.size) != null ? _b2 : 0
+        });
+        return;
+      }
+      this.enqueueManifestOp(() => this.handleManifestChange(event), "manifest-change");
     });
     this.manifestProvider.awareness.on("change", () => {
       this.debouncedPresence();
     });
   }
+  /** Serialize a manifest task behind every previously queued one. Rejections
+   *  are contained per-task so one failed key/batch can't wedge the queue. */
+  enqueueManifestOp(fn, label) {
+    const run = () => {
+      if (this.destroyed) return Promise.resolve();
+      return fn().catch((e) => {
+        err("manifest", "manifest op failed", { shareId: this.histShareId, label }, e);
+      });
+    };
+    this.manifestOpQueue = this.manifestOpQueue.then(run, run);
+  }
   /** Called after initial manifest sync -- reconcile local folder with manifest */
   async onManifestSynced() {
-    var _a2, _b2;
     this.processingManifest = true;
     if (!this.onlineAnnounced) {
       this.onlineAnnounced = true;
       this.appendActivityEvent("online");
     }
+    try {
+      await this.runStartupReconcile();
+    } finally {
+      this.processingManifest = false;
+      const deferred = this.pendingManifestEvents.splice(0);
+      for (const event of deferred) {
+        this.enqueueManifestOp(() => this.handleManifestChange(event), "deferred-manifest-change");
+      }
+      if (deferred.length) {
+        trace("manifest", "deferred-events-replayed", {
+          shareId: this.histShareId,
+          events: deferred.length
+        });
+      }
+    }
+  }
+  async runStartupReconcile() {
+    var _a2, _b2;
     trace("manifest", "startup-reconcile-start", {
       shareId: this.histShareId,
       role: this.role,
@@ -13028,14 +13205,12 @@ var SyncManager = class {
       if (entry == null ? void 0 : entry.fileId) this.fileIds.set(relPath, entry.fileId);
     });
     const localFiles = this.getLocalFiles();
-    if (this.role === "editor") {
-      for (const filePath of localFiles) {
-        const relPath = this.toRelativePath(filePath);
-        if (!this.safeManifestRelPath(relPath, "startup local tombstone")) continue;
-        const entry = this.manifestMap.get(relPath);
-        if (entry && !entry.exists) {
-          await this.applyRemoteTombstone(relPath, entry, false);
-        }
+    for (const filePath of localFiles) {
+      const relPath = this.toRelativePath(filePath);
+      if (!this.safeManifestRelPath(relPath, "startup local tombstone")) continue;
+      const entry = this.manifestMap.get(relPath);
+      if (entry && !entry.exists) {
+        await this.applyRemoteTombstone(relPath, entry, false);
       }
     }
     if (this.role === "editor") {
@@ -13098,7 +13273,6 @@ var SyncManager = class {
         await this.guardedCreate(fullPath);
       }
     }
-    this.processingManifest = false;
     let providersStarted = 0;
     for (const [relPath, entry] of manifestEntries) {
       const safeRel = this.safeManifestRelPath(relPath, "startup provider");
@@ -13212,7 +13386,7 @@ var SyncManager = class {
    * Returns true if the file was resurrected (kept).
    */
   async applyRemoteTombstone(relPath, entry, notifyIfOpen) {
-    var _a2;
+    var _a2, _b2;
     const safeRel = this.safeManifestRelPath(relPath, "remote tombstone");
     if (!safeRel) return false;
     const fullPath = this.toFullPath(safeRel);
@@ -13309,6 +13483,11 @@ var SyncManager = class {
       this.fileProviders.delete(safeRel);
     }
     this.fileIds.delete(safeRel);
+    const stamp2 = this.stampDebounce.get(safeRel);
+    if (stamp2) {
+      (_b2 = stamp2.cancel) == null ? void 0 : _b2.call(stamp2);
+      this.stampDebounce.delete(safeRel);
+    }
     return false;
   }
   async createDeleteConflictCopy(safeRel, file, provider, isBinary, tombstoneEntry) {
@@ -14465,17 +14644,24 @@ var SyncManager = class {
   }
   /** Stop syncing this share */
   async destroy() {
-    var _a2;
+    var _a2, _b2, _c, _d, _e, _f;
+    this.destroyed = true;
+    this.pendingManifestEvents.length = 0;
     this.flushEditEvents();
     if (this.onlineAnnounced) this.appendActivityEvent("offline");
     for (const fn of this.editEventDebounce.values()) (_a2 = fn.cancel) == null ? void 0 : _a2.call(fn);
     this.editEventDebounce.clear();
     this.editEventCounts.clear();
+    for (const fn of this.stampDebounce.values()) (_b2 = fn.cancel) == null ? void 0 : _b2.call(fn);
+    this.stampDebounce.clear();
+    (_d = (_c = this.debouncedPresence).cancel) == null ? void 0 : _d.call(_c);
+    (_f = (_e = this.debouncedStatus).cancel) == null ? void 0 : _f.call(_e);
     this.clearPresenceUi();
     for (const [, fp] of this.fileProviders) fp.destroy();
     this.fileProviders.clear();
     if (this.manifestProvider) this.manifestProvider.destroy();
     if (this.manifestDoc) this.manifestDoc.destroy();
+    this.manifestProvider = null;
     this.eventsArray = null;
     this.onlineAnnounced = false;
     this.lastPresenceRelPath = null;
@@ -14682,11 +14868,11 @@ var StatusBarWidget = class {
     }
     this.el.createEl("span", { text: text2 });
     if (pending > 0 && status !== "connected") {
-      const warn2 = this.el.createEl("span", {
+      const warn3 = this.el.createEl("span", {
         text: ` \xB7 \u23F3 ${pending} change${pending !== 1 ? "s" : ""} pending`,
         cls: "collab-status-pending"
       });
-      warn2.setAttribute("aria-label", `${pending} local change${pending !== 1 ? "s" : ""} will sync when you reconnect`);
+      warn3.setAttribute("aria-label", `${pending} local change${pending !== 1 ? "s" : ""} will sync when you reconnect`);
     }
     if (this.shares.size > 0) {
       const lines = Array.from(this.shares.values()).map((s) => `${s.label}: ${s.status}${s.status === "connected" ? ` (${s.fileCount})` : ""}${s.pending ? ` \xB7 ${s.pending} pending` : ""}`).join("\n");
@@ -16264,6 +16450,8 @@ var ActivityView = class extends import_obsidian8.ItemView {
     this.ctx = null;
     this.unobserve = null;
     this.draft = "";
+    this.listEl = null;
+    this.countEl = null;
   }
   getViewType() {
     return ACTIVITY_VIEW_TYPE;
@@ -16287,30 +16475,28 @@ var ActivityView = class extends import_obsidian8.ItemView {
     (_a2 = this.unobserve) == null ? void 0 : _a2.call(this);
     this.unobserve = null;
     this.ctx = ctx;
-    if (ctx) this.unobserve = ctx.observe(() => this.render());
+    if (ctx) this.unobserve = ctx.observe(() => this.renderList());
     this.render();
   }
+  /** Builds the static chrome (header, list container, composer) once per context. */
   render() {
     const root = this.contentEl;
     root.empty();
     root.addClass("collab-activity-view");
+    this.listEl = null;
+    this.countEl = null;
     const header = root.createDiv({ cls: "collab-activity-header" });
     header.createEl("div", { text: this.ctx ? this.ctx.shareLabel : "Activity", cls: "collab-activity-title" });
     if (this.ctx) {
       const count2 = this.ctx.events().length;
-      header.createEl("div", { text: `${count2}`, cls: "collab-activity-count" });
+      this.countEl = header.createEl("div", { text: `${count2}`, cls: "collab-activity-count" });
     }
     if (!this.ctx) {
       root.createEl("p", { text: "Open or join a synced folder to see activity.", cls: "collab-comments-empty" });
       return;
     }
     const list = root.createDiv({ cls: "collab-activity-list" });
-    const events = this.ctx.events();
-    if (events.length === 0) {
-      list.createEl("p", { text: "No activity yet.", cls: "collab-comments-empty" });
-    } else {
-      for (const group of groupEvents(events)) this.renderGroup(list, group);
-    }
+    this.listEl = list;
     const composer = root.createDiv({ cls: "collab-activity-composer" });
     const input = composer.createEl("input", {
       type: "text",
@@ -16338,13 +16524,30 @@ var ActivityView = class extends import_obsidian8.ItemView {
       this.scrollToBottom(list);
     };
     input.addEventListener("keydown", (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === "Enter") {
         e.preventDefault();
         send();
       }
     });
     sendBtn.onclick = send;
-    this.scrollToBottom(list);
+    this.renderList();
+  }
+  /** Repaints only the message list so the composer keeps its draft, focus, and caret. */
+  renderList() {
+    var _a2;
+    const list = this.listEl;
+    if (!list || !this.ctx) return;
+    const events = this.ctx.events();
+    (_a2 = this.countEl) == null ? void 0 : _a2.setText(`${events.length}`);
+    const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight <= 40;
+    list.empty();
+    if (events.length === 0) {
+      list.createEl("p", { text: "No activity yet.", cls: "collab-comments-empty" });
+    } else {
+      for (const group of groupEvents(events)) this.renderGroup(list, group);
+    }
+    if (nearBottom) this.scrollToBottom(list);
   }
   renderGroup(parent, group) {
     var _a2;
@@ -16579,7 +16782,10 @@ async function ensureIdentityKeys(existing, uid) {
     }
     try {
       const signature2 = await signIdentity(uid, existing.publicKey, existing.privateKey);
-      return { publicKey: existing.publicKey, privateKey: existing.privateKey, signature: signature2 };
+      if (await verifyIdentity(uid, existing.publicKey, signature2)) {
+        return { publicKey: existing.publicKey, privateKey: existing.privateKey, signature: signature2 };
+      }
+      warn2("identity", "re-signed identity failed verification; regenerating keypair");
     } catch (e) {
     }
   }
@@ -16791,12 +16997,30 @@ function buildRestoreHunks(oldText, newText, options = {}) {
   return hunks;
 }
 function applyRestoreHunk(currentText, hunk) {
-  const hadTrailingNewline = currentText.endsWith("\n");
-  const lines = splitLines(currentText);
-  const start = Math.max(0, Math.min(lines.length, hunk.newStart - 1));
-  const deleteCount = Math.max(0, Math.min(hunk.newDeleteCount, lines.length - start));
-  lines.splice(start, deleteCount, ...hunk.insertLines);
-  return lines.join("\n") + (hadTrailingNewline ? "\n" : "");
+  const boundaries = [0];
+  for (let i = 0; i < currentText.length; i++) {
+    if (currentText[i] === "\n") boundaries.push(i + 1);
+  }
+  if (boundaries[boundaries.length - 1] !== currentText.length) boundaries.push(currentText.length);
+  const lineCount = boundaries.length - 1;
+  const start = Math.max(0, Math.min(lineCount, hunk.newStart - 1));
+  const deleteCount = Math.max(0, Math.min(hunk.newDeleteCount, lineCount - start));
+  let rangeStart = boundaries[start];
+  const rangeEnd = boundaries[start + deleteCount];
+  const crlfCount = (currentText.match(/\r\n/g) || []).length;
+  const lfOnlyCount = (currentText.match(/\n/g) || []).length - crlfCount;
+  const eol = crlfCount > lfOnlyCount ? "\r\n" : "\n";
+  const endsAtEof = rangeEnd === currentText.length;
+  const keepTrailingEol = !endsAtEof || currentText.endsWith("\n");
+  let replacement = hunk.insertLines.length ? hunk.insertLines.join(eol) + (keepTrailingEol ? eol : "") : "";
+  if (replacement && rangeStart === currentText.length && rangeStart > 0 && !currentText.endsWith("\n")) {
+    replacement = eol + replacement;
+  }
+  if (!replacement && deleteCount > 0 && endsAtEof && rangeStart > 0 && !currentText.endsWith("\n")) {
+    if (currentText[rangeStart - 1] === "\n") rangeStart--;
+    if (currentText[rangeStart - 1] === "\r") rangeStart--;
+  }
+  return currentText.slice(0, rangeStart) + replacement + currentText.slice(rangeEnd);
 }
 
 // src/ui/HistoryView.ts
@@ -17117,8 +17341,26 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     this.boundProvider = null;
     this.boundPath = null;
     this.boundPresence = null;
+    // Bind/unbind mutate shared bound* state across multiple awaits, and fire from
+    // leaf-change events, the watchdog, and retry timers concurrently. Overlapping
+    // runs used to each construct a PresenceController and orphan the loser's
+    // awareness listeners (presence ping-pong runaway) — serialize them all.
+    this.bindOpQueue = Promise.resolve();
+    // Same shape for share start/stop: the has()-check in startShare sits across
+    // an await, so concurrent starts for one id leaked a duplicate live manager.
+    this.shareOpQueue = Promise.resolve();
     this.bindWatchdogTimer = null;
     this.bindWatchdogUntil = 0;
+  }
+  enqueueBindOp(fn) {
+    const next = this.bindOpQueue.then(fn, fn);
+    this.bindOpQueue = next.then(() => void 0, () => void 0);
+    return next;
+  }
+  enqueueShareOp(fn) {
+    const next = this.shareOpQueue.then(fn, fn);
+    this.shareOpQueue = next.then(() => void 0, () => void 0);
+    return next;
   }
   async onload() {
     var _a2;
@@ -17335,7 +17577,10 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
   async startAllShares() {
     for (const share of this.settings.shares) await this.startShare(share);
   }
-  async startShare(share) {
+  startShare(share) {
+    return this.enqueueShareOp(() => this.startShareNow(share));
+  }
+  async startShareNow(share) {
     if (this.syncManagers.has(share.id)) return;
     await this.ensureLocalIdentity();
     const m = new SyncManager(
@@ -17364,7 +17609,10 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       new import_obsidian10.Notice(`Collab could not start "${share.label || share.localFolder}". Check the server URL and share settings.`);
     }
   }
-  async stopShare(id2) {
+  stopShare(id2) {
+    return this.enqueueShareOp(() => this.stopShareNow(id2));
+  }
+  async stopShareNow(id2) {
     const m = this.syncManagers.get(id2);
     if (m) {
       if (this.boundPath && this.managerOwning(this.boundPath) === m) {
@@ -17484,7 +17732,10 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     (_b2 = this.getHistoryView()) == null ? void 0 : _b2.setContext(this.buildHistoryContext());
     this.refreshActivityContext();
   }
-  async bindActiveEditor(activeFile, attempt) {
+  bindActiveEditor(activeFile, attempt) {
+    return this.enqueueBindOp(() => this.bindActiveEditorNow(activeFile, attempt));
+  }
+  async bindActiveEditorNow(activeFile, attempt) {
     var _a2, _b2, _c, _d;
     if (attempt > 0 && ((_b2 = (_a2 = this.app.workspace.getActiveFile()) == null ? void 0 : _a2.path) != null ? _b2 : null) !== ((_c = activeFile == null ? void 0 : activeFile.path) != null ? _c : null)) {
       return;
@@ -17495,7 +17746,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     const marker = ev ? currentCollabBindingPath(ev) : null;
     trace("bind", "active-leaf", { path, attempt, hasEditorView: !!ev, marker });
     if ((this.boundView || this.boundProvider) && (this.boundPath !== path || this.boundView !== ev)) {
-      await this.unbindActiveEditor("active-leaf-change", path, ev);
+      await this.unbindActiveEditorNow("active-leaf-change", path, ev);
     }
     if (!ev || !path || !activeFile) {
       if (!ev && path && activeFile && this.managerOwning(path) && attempt < 20) {
@@ -17508,7 +17759,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     if (this.boundPath === path && this.boundView === ev && marker === path) return;
     if (this.boundPath === path && this.boundView === ev && marker !== path) {
       trace("bind", "binding-marker-missing", { path, marker });
-      await this.unbindActiveEditor("binding-marker-missing", path, ev);
+      await this.unbindActiveEditorNow("binding-marker-missing", path, ev);
     }
     let provider = null;
     for (const m of this.syncManagers.values()) {
@@ -17600,7 +17851,10 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     for (const m of this.syncManagers.values()) if (m.isInLinkedFolder(path)) return m;
     return null;
   }
-  async unbindActiveEditor(reason, nextPath = null, nextView = null) {
+  unbindActiveEditor(reason, nextPath = null, nextView = null) {
+    return this.enqueueBindOp(() => this.unbindActiveEditorNow(reason, nextPath, nextView));
+  }
+  async unbindActiveEditorNow(reason, nextPath = null, nextView = null) {
     var _a2, _b2;
     if (!this.boundView && !this.boundProvider && !this.boundPresence) return;
     const oldPath = this.boundPath;
@@ -17726,7 +17980,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     var _a2, _b2;
     if (share.legacy) return null;
     const epoch = (_a2 = share.epoch) != null ? _a2 : 1;
-    if (role === (share.role || "editor")) {
+    if (role === (share.role || "editor") && !share.inviteId) {
       return encodeShareCode(this.settings.serverUrl, share.id, share.key, role, epoch, void 0, void 0, share.label);
     }
     if (share.ownerKey) {
@@ -17921,7 +18175,13 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       new import_obsidian10.Notice(`That folder overlaps an existing share ("${overlap.label}").`);
       return;
     }
-    await this.ensureFolder(folder);
+    try {
+      await this.ensureFolder(folder);
+    } catch (e) {
+      err("share", "share folder create failed", folder, e);
+      new import_obsidian10.Notice(`Could not create folder "${folder}": ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
     const minted = await this.mintShare();
     if (!minted) return;
     const share = {
@@ -18006,8 +18266,13 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       new import_obsidian10.Notice("You already have this shared folder.");
       return;
     }
-    if (!this.settings.serverUrl || this.settings.serverUrl === DEFAULT_SETTINGS.serverUrl) {
+    const configuredUrl = (this.settings.serverUrl || "").replace(/\/+$/, "");
+    const codeUrl = (decoded.s || "").replace(/\/+$/, "");
+    if (!configuredUrl || this.settings.serverUrl === DEFAULT_SETTINGS.serverUrl) {
       this.settings.serverUrl = decoded.s;
+    } else if (codeUrl && configuredUrl !== codeUrl) {
+      new import_obsidian10.Notice(`This share code is for a different server (${codeUrl}) than this vault uses (${configuredUrl}). Update the server URL in settings first if you meant to switch.`);
+      return;
     }
     const folder = cleanShareFolder(localFolder || this.suggestJoinFolder(decoded.l, decoded.id));
     const overlap = this.folderOverlaps(folder);
@@ -18015,7 +18280,13 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       new import_obsidian10.Notice(`That folder overlaps an existing share ("${overlap.label}").`);
       return;
     }
-    await this.ensureFolder(folder);
+    try {
+      await this.ensureFolder(folder);
+    } catch (e) {
+      err("share", "join folder create failed", folder, e);
+      new import_obsidian10.Notice(`Could not create folder "${folder}": ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
     const share = {
       id: decoded.id,
       key: decoded.k,
@@ -18094,17 +18365,18 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     }
   }
   async onunload() {
-    var _a2, _b2, _c, _d, _e, _f, _g, _h, _i;
+    var _a2, _b2, _c, _d, _e, _f, _g, _h, _i, _j, _k;
     (_b2 = (_a2 = this.debouncedRestart).cancel) == null ? void 0 : _b2.call(_a2);
     (_d = (_c = this.debouncedPresenceDomRefresh).cancel) == null ? void 0 : _d.call(_c);
     (_f = (_e = this.debouncedActiveEditorRefresh).cancel) == null ? void 0 : _f.call(_e);
-    for (const fn of this.modifyDebounceMap.values()) (_g = fn.cancel) == null ? void 0 : _g.call(fn);
+    (_h = (_g = this.debouncedLiveIdentityRefresh).cancel) == null ? void 0 : _h.call(_g);
+    for (const fn of this.modifyDebounceMap.values()) (_i = fn.cancel) == null ? void 0 : _i.call(fn);
     this.modifyDebounceMap.clear();
-    (_h = this.presenceDomObserver) == null ? void 0 : _h.disconnect();
+    (_j = this.presenceDomObserver) == null ? void 0 : _j.disconnect();
     this.presenceDomObserver = null;
     trace("presence", "dom-observer-stopped");
     await this.unbindActiveEditor("plugin-unload");
-    await ((_i = this.instanceWatch) == null ? void 0 : _i.stop());
+    await ((_k = this.instanceWatch) == null ? void 0 : _k.stop());
     await this.stopAllShares();
     console.log("Obsidian Collab plugin unloaded");
   }

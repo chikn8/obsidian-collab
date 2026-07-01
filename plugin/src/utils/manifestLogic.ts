@@ -94,7 +94,6 @@ export function tombstoneLocalDecision(args: {
   localEditDeviceId?: string;
   localEditUid?: string;
 }): TombstoneLocalDecision {
-  if (args.renamedTo) return "delete";
   const hasTombstoneOrigin = !!args.tombstoneDeviceId || !!args.tombstoneUid;
   const hasLocalEditOrigin = !!args.localEditDeviceId || !!args.localEditUid;
   const sameDeviceTombstone =
@@ -102,6 +101,21 @@ export function tombstoneLocalDecision(args: {
     !!args.tombstoneDeviceId &&
     args.localDeviceId === args.tombstoneDeviceId &&
     (!args.localUid || !args.tombstoneUid || args.localUid === args.tombstoneUid);
+
+  if (args.renamedTo) {
+    // A rename never resurrects — the content moved to the new path. But local
+    // edits at the old path provably NEWER than the rename (edit provenance
+    // required; raw mtime skew doesn't qualify) must not vanish silently: keep
+    // them as a visible conflict copy before the old path is removed.
+    if (
+      !sameDeviceTombstone &&
+      hasLocalEditOrigin &&
+      (args.localEditAt || 0) - args.deletedAt > RESURRECT_GRACE_MS
+    ) {
+      return "conflict-copy";
+    }
+    return "delete";
+  }
   if (sameDeviceTombstone) return "delete";
 
   const localChangedAt = args.localEditAt || args.localMtime;

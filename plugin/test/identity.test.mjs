@@ -26,6 +26,13 @@ check("keeps valid signature", reused.signature === identity.signature);
 const backfilled = await ensureIdentityKeys({ publicKey: identity.publicKey, privateKey: identity.privateKey }, uid);
 check("backfills missing signature", await verifyIdentityForTest(uid, backfilled.publicKey, backfilled.signature));
 
+// A mismatched keypair re-signs "successfully" but the signature never
+// verifies against the stored public key — it must be replaced wholesale.
+const other = await ensureIdentityKeys({}, uid);
+const healed = await ensureIdentityKeys({ publicKey: identity.publicKey, privateKey: other.privateKey }, uid);
+check("mismatched keypair is replaced", healed.publicKey !== identity.publicKey && healed.publicKey !== other.publicKey);
+check("replacement identity verifies", await verifyIdentityForTest(uid, healed.publicKey, healed.signature));
+
 console.log("");
 if (failures > 0) { console.error(`FAILED — ${failures} assertion(s) failed`); process.exit(1); }
 else console.log("ALL PASSED");

@@ -126,7 +126,7 @@ export class CommentsView extends ItemView {
       this.ctx!.notifyThreadEvent(t, "reply", text, notified);
       replyInput.value = "";
     };
-    replyInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); send(); } });
+    replyInput.addEventListener("keydown", (e) => { if (e.isComposing || e.keyCode === 229) return; if (e.key === "Enter") { e.preventDefault(); send(); } });
 
     const resolveBtn = actions.createEl("button", { cls: "collab-comment-btn" });
     setIcon(resolveBtn, t.resolved ? "rotate-ccw" : "check");

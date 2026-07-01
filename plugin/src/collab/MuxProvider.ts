@@ -74,7 +74,17 @@ class MuxConnection {
     }
     set.add(provider);
     provider.setConnected(this.connected);
-    if (this.connected) provider.onSocketOpen();
+    if (this.connected) {
+      provider.onSocketOpen();
+      // Status is normally emitted from the socket "open" event, so a provider
+      // joining an already-open connection would never hear "connected".
+      // Listeners attach after the constructor registers — defer the emit.
+      queueMicrotask(() => {
+        if (this.connected && this.providers.get(provider.roomName)?.has(provider)) {
+          provider.emitStatus("connected");
+        }
+      });
+    }
   }
 
   unregister(provider: MuxProvider): void {
@@ -132,7 +142,14 @@ class MuxConnection {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    this.ws?.close();
+    const ws = this.ws;
+    if (!ws) return;
+    // Drop the socket and notify providers NOW. A reconnect cycle (disconnect
+    // then connect) swaps this.ws before the async close event fires, so the
+    // ws-swap guard in handleClosed would otherwise swallow the transition.
+    this.ws = null;
+    ws.close();
+    this.notifyClosed();
   }
 
   send(roomName: string, inner: Uint8Array): void {
@@ -155,14 +172,19 @@ class MuxConnection {
   private handleClosed(ws: WebSocket): void {
     if (this.ws !== ws) return;
     this.ws = null;
-    this.providers.forEach((set) => set.forEach((p) => {
-      p.setConnected(false);
-      p.setSynced(false);
-      p.emitStatus("disconnected");
-    }));
+    this.notifyClosed();
     if (!this.shouldConnect || this.providers.size === 0) return;
     const delay = reconnectDelayForAttempt(this.attempts++);
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
+  }
+
+  private notifyClosed(): void {
+    this.providers.forEach((set) => set.forEach((p) => {
+      p.setConnected(false);
+      p.setSynced(false);
+      p.clearRemoteAwareness();
+      p.emitStatus("disconnected");
+    }));
   }
 
   private handleMessage(raw: any): void {
@@ -294,6 +316,14 @@ export class MuxProvider {
   onSocketOpen(): void {
     this.sendSyncStep1();
     this.flushLocalAwareness();
+  }
+
+  /** Drop remote presence when the socket closes (mirrors y-websocket) —
+   *  otherwise ghost cursors linger until the 30s awareness timeout. */
+  clearRemoteAwareness(): void {
+    const remote = Array.from(this.awareness.getStates().keys())
+      .filter((clientId) => clientId !== this.awareness.clientID);
+    if (remote.length > 0) awarenessProtocol.removeAwarenessStates(this.awareness, remote, this);
   }
 
   connect(): void {

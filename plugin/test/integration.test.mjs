@@ -272,6 +272,56 @@ console.log("Provider connection failures are observable");
   A.fp.destroy();
 }
 
+// ── 6. Dropped flush must not revert newer synced content on restart ─────────
+// The critical stale-disk case: A quits with an editor-bound (deferred) write
+// pending, so disk is STALE while IDB holds newer synced content. Startup used
+// to diff IDB → disk and generate ops reverting the newer content on every
+// peer. The last-flushed fingerprint (localStorage) detects "disk unchanged
+// since our own last write" and lets the CRDT win instead.
+console.log("Restart after a dropped flush does not revert newer synced content");
+{
+  __resetIdb(); __resetHubs();
+  // FileProvider's fingerprint store uses window.localStorage — fake it.
+  const lsStore = new Map();
+  globalThis.window = { localStorage: {
+    getItem: (k) => (lsStore.has(k) ? lsStore.get(k) : null),
+    setItem: (k, v) => { lsStore.set(k, String(v)); },
+    removeItem: (k) => { lsStore.delete(k); },
+  } };
+  try {
+    const room = "@test:file:stale-disk";
+    const A = await makeClient("A", room, "note.md", "v1 content");
+    const B = await makeClient("B", room, "note.md", "");
+    await sleep(900);
+    check("precondition: B received A's content", B.disk() === "v1 content", `B="${B.disk()}"`);
+
+    // A binds an editor → disk writes deferred; B edits; A's doc advances but
+    // A's disk stays stale. Then A "quits" without the unbind flush.
+    await A.fp.setEditorBound(true);
+    await B.edit("v1 content EDITED");
+    await sleep(300);
+    check("precondition: A's doc has B's edit", A.fp.getYText().toString() === "v1 content EDITED");
+    check("precondition: A's disk is stale", A.disk() === "v1 content", `disk="${A.disk()}"`);
+    A.fp.destroy();
+
+    // Restart A against the stale disk.
+    const fp2 = new FileProvider({
+      app: A.app, settings: SETTINGS("A"), filePath: "note.md", roomName: room, shareId: "test",
+      token: "t", authParams: {}, echo: A.echo,
+      onStatusChange: () => {}, onUsersChange: () => {}, onLocalEdit: () => {}, onPending: () => {},
+    });
+    await fp2.start(A.disk());
+    await sleep(900);
+
+    check("restarted doc kept the newer content", fp2.getYText().toString() === "v1 content EDITED", `doc="${fp2.getYText().toString()}"`);
+    check("peer's doc was NOT reverted", B.fp.getYText().toString() === "v1 content EDITED", `B doc="${B.fp.getYText().toString()}"`);
+    check("stale disk was rewritten from the merged doc", A.disk() === "v1 content EDITED", `disk="${A.disk()}"`);
+    fp2.destroy(); B.fp.destroy();
+  } finally {
+    delete globalThis.window;
+  }
+}
+
 console.log("");
 if (failures > 0) { console.error(`FAILED — ${failures} assertion(s) failed`); process.exit(1); }
 else { console.log("ALL PASSED"); process.exit(0); }

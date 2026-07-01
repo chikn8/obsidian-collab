@@ -84,6 +84,101 @@ console.log("diffRanges property: separated edits stay separated");
   check("large distant edits stay separate", largeSplices.length >= 2, JSON.stringify(largeSplices));
 }
 
+// ── Surrogate-pair safety: splice boundaries never split code points ──────────
+console.log("Surrogate safety: boundaries land on code points in old AND new");
+{
+  const isHigh = (c) => c >= 0xd800 && c <= 0xdbff;
+  const isLow = (c) => c >= 0xdc00 && c <= 0xdfff;
+  const splitsPair = (str, i) =>
+    i > 0 && i < str.length && isHigh(str.charCodeAt(i - 1)) && isLow(str.charCodeAt(i));
+  const boundariesOk = (oldStr, newStr, splices) => {
+    let shift = 0;
+    for (const { start, delCount, insert } of splices) {
+      const newStart = start + shift;
+      if (splitsPair(oldStr, start) || splitsPair(oldStr, start + delCount)) return false;
+      if (splitsPair(newStr, newStart) || splitsPair(newStr, newStart + insert.length)) return false;
+      if (insert.length && isLow(insert.charCodeAt(0))) return false;
+      if (insert.length && isHigh(insert.charCodeAt(insert.length - 1))) return false;
+      shift += insert.length - delCount;
+    }
+    return true;
+  };
+  const exact = (name, a, b) => {
+    const single = diffRange(a, b);
+    check(`${name}: diffRange reproduces`, applySplice(a, single) === b,
+      JSON.stringify(single));
+    check(`${name}: diffRange boundaries safe`, boundariesOk(a, b, [single]));
+    const multi = diffRanges(a, b);
+    check(`${name}: diffRanges reproduces`, applySplices(a, multi) === b,
+      JSON.stringify(multi));
+    check(`${name}: diffRanges boundaries safe`, boundariesOk(a, b, multi));
+  };
+
+  exact("emoji replace", "😀", "😁");
+  exact("insert between emoji", "😀😀", "😀🎉😀");
+  exact("delete one emoji from run", "😀😀😀", "😀😀");
+  exact("CJK + emoji mix", "你好😀世界", "你好😁世界了");
+  // Prefix collision: shared high surrogate, differing low half.
+  exact("prefix collision", "a😀b", "a😁b");
+  // Suffix collision: differing high surrogate, shared low half (U+1F600 vs U+1FA00).
+  exact("suffix collision", "x😀", "x🨀");
+  exact("suffix collision multi", "p😀q😀", "p🨀q🨀");
+  // Astral char at both ends of the changed span.
+  exact("astral both ends", "𝕏middle𝕏", "𝕐middle𝕐");
+
+  // 😀 -> 😁 applied to a real Y.Text must not produce U+FFFD.
+  {
+    const doc = new Y.Doc();
+    const text = doc.getText("codemirror");
+    text.insert(0, "😀");
+    const splices = diffRanges(text.toString(), "😁");
+    doc.transact(() => {
+      for (let i = splices.length - 1; i >= 0; i--) {
+        const { start, delCount, insert } = splices[i];
+        if (delCount > 0) text.delete(start, delCount);
+        if (insert.length > 0) text.insert(start, insert);
+      }
+    });
+    check("Y.Text emoji edit stays intact", text.toString() === "😁", JSON.stringify(text.toString()));
+    check("Y.Text emoji edit has no U+FFFD", !text.toString().includes("�"));
+  }
+
+  // Forced Myers path (tiny maxCells) keeps code-point boundaries too.
+  {
+    const a = "a😀😀😀😀b";
+    const b = "a😀🎉😀😀B";
+    const splices = diffRanges(a, b, 1);
+    check("Myers path reproduces", applySplices(a, splices) === b, JSON.stringify(splices));
+    check("Myers path boundaries safe", boundariesOk(a, b, splices));
+  }
+
+  // Property loop: random emoji-heavy edit pairs stay exact and boundary-safe.
+  let seed = 4242;
+  const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 0xffffffff; };
+  const alpha = ["😀", "😁", "🎉", "𝕏", "你", "界", "a", "b", "\n"];
+  const randStr = (max) => {
+    const n = Math.floor(rnd() * max);
+    let s = "";
+    for (let i = 0; i < n; i++) s += alpha[Math.floor(rnd() * alpha.length)];
+    return s;
+  };
+  let ok = true;
+  let worst = "";
+  for (let i = 0; i < 400; i++) {
+    const a = randStr(14);
+    const b = randStr(14);
+    const single = diffRange(a, b);
+    const multi = diffRanges(a, b);
+    if (applySplice(a, single) !== b || !boundariesOk(a, b, [single])) {
+      ok = false; worst = `diffRange a=${JSON.stringify(a)} b=${JSON.stringify(b)}`; break;
+    }
+    if (applySplices(a, multi) !== b || !boundariesOk(a, b, multi)) {
+      ok = false; worst = `diffRanges a=${JSON.stringify(a)} b=${JSON.stringify(b)}`; break;
+    }
+  }
+  check("400 random emoji pairs stay exact and boundary-safe", ok, worst);
+}
+
 // ── 2. Offline reconcile against IDB base merges with concurrent remote edit ───
 console.log("Offline reconcile (base-aware) merges with concurrent remote edit");
 {

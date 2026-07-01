@@ -23,6 +23,8 @@ export class ActivityView extends ItemView {
   private ctx: ActivityContext | null = null;
   private unobserve: (() => void) | null = null;
   private draft = "";
+  private listEl: HTMLElement | null = null;
+  private countEl: HTMLElement | null = null;
 
   constructor(leaf: WorkspaceLeaf) {
     super(leaf);
@@ -39,20 +41,23 @@ export class ActivityView extends ItemView {
     this.unobserve?.();
     this.unobserve = null;
     this.ctx = ctx;
-    if (ctx) this.unobserve = ctx.observe(() => this.render());
+    if (ctx) this.unobserve = ctx.observe(() => this.renderList());
     this.render();
   }
 
+  /** Builds the static chrome (header, list container, composer) once per context. */
   private render(): void {
     const root = this.contentEl;
     root.empty();
     root.addClass("collab-activity-view");
+    this.listEl = null;
+    this.countEl = null;
 
     const header = root.createDiv({ cls: "collab-activity-header" });
     header.createEl("div", { text: this.ctx ? this.ctx.shareLabel : "Activity", cls: "collab-activity-title" });
     if (this.ctx) {
       const count = this.ctx.events().length;
-      header.createEl("div", { text: `${count}`, cls: "collab-activity-count" });
+      this.countEl = header.createEl("div", { text: `${count}`, cls: "collab-activity-count" });
     }
 
     if (!this.ctx) {
@@ -61,12 +66,7 @@ export class ActivityView extends ItemView {
     }
 
     const list = root.createDiv({ cls: "collab-activity-list" });
-    const events = this.ctx.events();
-    if (events.length === 0) {
-      list.createEl("p", { text: "No activity yet.", cls: "collab-comments-empty" });
-    } else {
-      for (const group of groupEvents(events)) this.renderGroup(list, group);
-    }
+    this.listEl = list;
 
     const composer = root.createDiv({ cls: "collab-activity-composer" });
     const input = composer.createEl("input", {
@@ -95,13 +95,31 @@ export class ActivityView extends ItemView {
       this.scrollToBottom(list);
     };
     input.addEventListener("keydown", (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === "Enter") {
         e.preventDefault();
         send();
       }
     });
     sendBtn.onclick = send;
-    this.scrollToBottom(list);
+    this.renderList();
+  }
+
+  /** Repaints only the message list so the composer keeps its draft, focus, and caret. */
+  private renderList(): void {
+    const list = this.listEl;
+    if (!list || !this.ctx) return;
+    const events = this.ctx.events();
+    this.countEl?.setText(`${events.length}`);
+    const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight <= 40;
+    list.empty();
+    if (events.length === 0) {
+      list.createEl("p", { text: "No activity yet.", cls: "collab-comments-empty" });
+    } else {
+      for (const group of groupEvents(events)) this.renderGroup(list, group);
+    }
+    // Only follow the tail when the user was already at (or near) the bottom.
+    if (nearBottom) this.scrollToBottom(list);
   }
 
   private renderGroup(parent: HTMLElement, group: ActivityGroup): void {

@@ -15,16 +15,41 @@ export interface TextSplice {
 
 type DiffOp = ["equal" | "remove" | "add", string];
 
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
+}
+
+/**
+ * True when a splice boundary at `index` would land between the halves of a
+ * surrogate pair in `str`. Yjs stores UTF-16 but encodes updates as UTF-8, so
+ * a boundary inside a pair permanently corrupts the text on peers (U+FFFD).
+ */
+function splitsSurrogatePair(str: string, index: number): boolean {
+  if (index <= 0 || index >= str.length) return false;
+  return isHighSurrogate(str.charCodeAt(index - 1)) && isLowSurrogate(str.charCodeAt(index));
+}
+
 export function diffRange(oldStr: string, newStr: string): TextSplice {
   let start = 0;
   const maxStart = Math.min(oldStr.length, newStr.length);
   while (start < maxStart && oldStr[start] === newStr[start]) start++;
+  // Back off a prefix that ends between the halves of a surrogate pair.
+  if (splitsSurrogatePair(oldStr, start) || splitsSurrogatePair(newStr, start)) start--;
 
   let endOld = oldStr.length;
   let endNew = newStr.length;
   while (endOld > start && endNew > start && oldStr[endOld - 1] === newStr[endNew - 1]) {
     endOld--;
     endNew--;
+  }
+  // Same guard for the suffix: shrink it so both boundaries stay on code points.
+  if (splitsSurrogatePair(oldStr, endOld) || splitsSurrogatePair(newStr, endNew)) {
+    endOld++;
+    endNew++;
   }
 
   return { start, delCount: endOld - start, insert: newStr.substring(start, endNew) };
@@ -45,13 +70,14 @@ function opsToSplices(ops: DiffOp[], startOffset: number): TextSplice[] {
   };
 
   for (const [kind, ch] of ops) {
+    // Ops carry whole code points, so `ch` may be 1 or 2 UTF-16 units long.
     if (kind === "equal") {
       flush();
-      oldIndex++;
+      oldIndex += ch.length;
     } else if (kind === "remove") {
       if (runStart == null) runStart = oldIndex;
-      delCount++;
-      oldIndex++;
+      delCount += ch.length;
+      oldIndex += ch.length;
     } else {
       if (runStart == null) runStart = oldIndex;
       insert += ch;
@@ -61,7 +87,7 @@ function opsToSplices(ops: DiffOp[], startOffset: number): TextSplice[] {
   return splices;
 }
 
-function myersDiffOps(oldMid: string, newMid: string, maxEdits: number): DiffOp[] | null {
+function myersDiffOps(oldMid: string[], newMid: string[], maxEdits: number): DiffOp[] | null {
   const m = oldMid.length;
   const n = newMid.length;
   const max = m + n;
@@ -93,7 +119,7 @@ function myersDiffOps(oldMid: string, newMid: string, maxEdits: number): DiffOp[
   return null;
 }
 
-function backtrackMyers(oldMid: string, newMid: string, trace: Array<Map<number, number>>): DiffOp[] {
+function backtrackMyers(oldMid: string[], newMid: string[], trace: Array<Map<number, number>>): DiffOp[] {
   const ops: DiffOp[] = [];
   let x = oldMid.length;
   let y = newMid.length;
@@ -135,6 +161,8 @@ export function diffRanges(oldStr: string, newStr: string, maxCells = 250_000): 
   let prefix = 0;
   const maxPrefix = Math.min(oldStr.length, newStr.length);
   while (prefix < maxPrefix && oldStr[prefix] === newStr[prefix]) prefix++;
+  // Back off a prefix that ends between the halves of a surrogate pair.
+  if (splitsSurrogatePair(oldStr, prefix) || splitsSurrogatePair(newStr, prefix)) prefix--;
 
   let suffix = 0;
   const maxSuffix = Math.min(oldStr.length, newStr.length) - prefix;
@@ -144,9 +172,18 @@ export function diffRanges(oldStr: string, newStr: string, maxCells = 250_000): 
   ) {
     suffix++;
   }
+  // Same guard for the suffix boundary in either string.
+  if (
+    splitsSurrogatePair(oldStr, oldStr.length - suffix) ||
+    splitsSurrogatePair(newStr, newStr.length - suffix)
+  ) {
+    suffix--;
+  }
 
-  const oldMid = oldStr.slice(prefix, oldStr.length - suffix);
-  const newMid = newStr.slice(prefix, newStr.length - suffix);
+  // Diff the middles by code point (not UTF-16 unit) so no splice boundary
+  // produced by the LCS/Myers paths can land inside a surrogate pair.
+  const oldMid = Array.from(oldStr.slice(prefix, oldStr.length - suffix));
+  const newMid = Array.from(newStr.slice(prefix, newStr.length - suffix));
   const m = oldMid.length;
   const n = newMid.length;
   if (m === 0 || n === 0) return [diffRange(oldStr, newStr)];

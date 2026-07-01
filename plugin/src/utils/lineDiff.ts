@@ -228,10 +228,40 @@ export function buildRestoreHunks(oldText: string, newText: string, options: Pic
 }
 
 export function applyRestoreHunk(currentText: string, hunk: RestoreHunk): string {
-  const hadTrailingNewline = currentText.endsWith("\n");
-  const lines = splitLines(currentText);
-  const start = Math.max(0, Math.min(lines.length, hunk.newStart - 1));
-  const deleteCount = Math.max(0, Math.min(hunk.newDeleteCount, lines.length - start));
-  lines.splice(start, deleteCount, ...hunk.insertLines);
-  return lines.join("\n") + (hadTrailingNewline ? "\n" : "");
+  // Splice the hunk's character range out of the original text so untouched
+  // lines keep their exact bytes (CRLF endings included) instead of being
+  // split, re-joined with "\n", and rewritten across the whole file.
+  const boundaries: number[] = [0];
+  for (let i = 0; i < currentText.length; i++) {
+    if (currentText[i] === "\n") boundaries.push(i + 1);
+  }
+  if (boundaries[boundaries.length - 1] !== currentText.length) boundaries.push(currentText.length);
+  const lineCount = boundaries.length - 1;
+
+  const start = Math.max(0, Math.min(lineCount, hunk.newStart - 1));
+  const deleteCount = Math.max(0, Math.min(hunk.newDeleteCount, lineCount - start));
+  let rangeStart = boundaries[start];
+  const rangeEnd = boundaries[start + deleteCount];
+
+  // Restored lines use the file's dominant terminator (splitLines strips \r).
+  const crlfCount = (currentText.match(/\r\n/g) || []).length;
+  const lfOnlyCount = (currentText.match(/\n/g) || []).length - crlfCount;
+  const eol = crlfCount > lfOnlyCount ? "\r\n" : "\n";
+
+  const endsAtEof = rangeEnd === currentText.length;
+  const keepTrailingEol = !endsAtEof || currentText.endsWith("\n");
+  let replacement = hunk.insertLines.length
+    ? hunk.insertLines.join(eol) + (keepTrailingEol ? eol : "")
+    : "";
+  if (replacement && rangeStart === currentText.length && rangeStart > 0 && !currentText.endsWith("\n")) {
+    // Appending after a final line without a terminator needs a separator.
+    replacement = eol + replacement;
+  }
+  if (!replacement && deleteCount > 0 && endsAtEof && rangeStart > 0 && !currentText.endsWith("\n")) {
+    // Deleting the final line(s) of a file without a trailing newline also
+    // removes the terminator that separated them from the preceding line.
+    if (currentText[rangeStart - 1] === "\n") rangeStart--;
+    if (currentText[rangeStart - 1] === "\r") rangeStart--;
+  }
+  return currentText.slice(0, rangeStart) + replacement + currentText.slice(rangeEnd);
 }

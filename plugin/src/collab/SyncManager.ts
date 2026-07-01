@@ -90,6 +90,15 @@ export class SyncManager {
   // windows (mobile / slow disk safe). See EchoGuard.ts.
   private echo = new EchoGuard();
   private processingManifest = false;
+  // Remote manifest events arriving during the startup reconcile are DEFERRED
+  // (not dropped) and replayed once the reconcile finishes; handleManifestChange
+  // re-reads the live entry per key, so replaying a stale event is idempotent.
+  private pendingManifestEvents: Y.YMapEvent<any>[] = [];
+  // All manifest processing (startup reconciles AND live change events) runs
+  // serialized through this chain — overlapping async runs used to race each
+  // other (tombstone vs in-flight provider creation, reconnect mid-reconcile).
+  private manifestOpQueue: Promise<void> = Promise.resolve();
+  private destroyed = false;
 
   // Status
   private syncStatus: SyncStatus = "disconnected";
@@ -190,7 +199,14 @@ export class SyncManager {
     let fn = this.stampDebounce.get(relPath);
     if (!fn) {
       fn = debounce(() => {
-        if (!this.editsMap) return;
+        if (!this.editsMap || this.destroyed) return;
+        // The 3s debounce can outlive the file: a stamp landing after the
+        // file's own delete/rename reads as "edited after delete" to every
+        // peer's tombstone logic and spawns spurious conflict copies.
+        const entry = this.manifestMap?.get(relPath) as ManifestEntry | undefined;
+        if (entry && !entry.exists) return;
+        if (!this.fileProviders.has(relPath) &&
+            !(this.app.vault.getAbstractFileByPath(this.toFullPath(relPath)) instanceof TFile)) return;
         this.editsMap.set(relPath, {
           by: this.settings.displayName,
           byUid: this.settings.uid,
@@ -419,7 +435,7 @@ export class SyncManager {
             synced,
           });
           if (synced) {
-            this.onManifestSynced();
+            this.enqueueManifestOp(() => this.onManifestSynced(), "startup-reconcile");
           }
         },
       },
@@ -428,14 +444,33 @@ export class SyncManager {
 
     // Observe manifest changes from remote
     this.manifestMap.observe((event) => {
-      if (this.processingManifest) return;
-      this.handleManifestChange(event);
+      if (this.processingManifest) {
+        this.pendingManifestEvents.push(event);
+        trace("manifest", "change-deferred-during-reconcile", {
+          shareId: this.histShareId,
+          keys: event.keysChanged?.size ?? 0,
+        });
+        return;
+      }
+      this.enqueueManifestOp(() => this.handleManifestChange(event), "manifest-change");
     });
 
     // Awareness drives file-explorer presence avatars (debounced + diffed)
     this.manifestProvider.awareness.on("change", () => {
       this.debouncedPresence();
     });
+  }
+
+  /** Serialize a manifest task behind every previously queued one. Rejections
+   *  are contained per-task so one failed key/batch can't wedge the queue. */
+  private enqueueManifestOp(fn: () => Promise<void>, label: string): void {
+    const run = () => {
+      if (this.destroyed) return Promise.resolve();
+      return fn().catch((e) => {
+        err("manifest", "manifest op failed", { shareId: this.histShareId, label }, e);
+      });
+    };
+    this.manifestOpQueue = this.manifestOpQueue.then(run, run);
   }
 
   /** Called after initial manifest sync -- reconcile local folder with manifest */
@@ -445,6 +480,26 @@ export class SyncManager {
       this.onlineAnnounced = true;
       this.appendActivityEvent("online");
     }
+    try {
+      await this.runStartupReconcile();
+    } finally {
+      // finally: an error mid-reconcile must never leave processingManifest
+      // stuck true — that would silently drop every future manifest event.
+      this.processingManifest = false;
+      const deferred = this.pendingManifestEvents.splice(0);
+      for (const event of deferred) {
+        this.enqueueManifestOp(() => this.handleManifestChange(event), "deferred-manifest-change");
+      }
+      if (deferred.length) {
+        trace("manifest", "deferred-events-replayed", {
+          shareId: this.histShareId,
+          events: deferred.length,
+        });
+      }
+    }
+  }
+
+  private async runStartupReconcile(): Promise<void> {
     trace("manifest", "startup-reconcile-start", {
       shareId: this.histShareId,
       role: this.role,
@@ -466,15 +521,16 @@ export class SyncManager {
 
     // First reconcile tombstones for local files. This must run BEFORE publishing
     // local files, otherwise a remote delete would be flipped back to exists:true
-    // and silently resurrected on every offline client's startup.
-    if (this.role === "editor") {
-      for (const filePath of localFiles) {
-        const relPath = this.toRelativePath(filePath);
-        if (!this.safeManifestRelPath(relPath, "startup local tombstone")) continue;
-        const entry = this.manifestMap!.get(relPath) as ManifestEntry | undefined;
-        if (entry && !entry.exists) {
-          await this.applyRemoteTombstone(relPath, entry, false);
-        }
+    // and silently resurrected on every offline client's startup. All roles:
+    // viewers/commenters resolve to a plain local delete inside
+    // applyRemoteTombstone (no manifest writes), and skipping them here made
+    // remotely-deleted files accumulate forever on read-only clients.
+    for (const filePath of localFiles) {
+      const relPath = this.toRelativePath(filePath);
+      if (!this.safeManifestRelPath(relPath, "startup local tombstone")) continue;
+      const entry = this.manifestMap!.get(relPath) as ManifestEntry | undefined;
+      if (entry && !entry.exists) {
+        await this.applyRemoteTombstone(relPath, entry, false);
       }
     }
 
@@ -544,7 +600,9 @@ export class SyncManager {
       }
     }
 
-    this.processingManifest = false;
+    // processingManifest stays true through the provider stagger below — remote
+    // events arriving mid-stagger are deferred and replayed by onManifestSynced,
+    // so a tombstone can't race a provider creation still in flight here.
 
     // Create FileProviders for all existing files. Stagger startup so each file's
     // initial seed doesn't all fire onto one mux socket at the same instant — a
@@ -789,6 +847,12 @@ export class SyncManager {
       this.fileProviders.delete(safeRel);
     }
     this.fileIds.delete(safeRel);
+    // Kill any pending edit stamp for the dead path (see stampEdit).
+    const stamp = this.stampDebounce.get(safeRel);
+    if (stamp) {
+      (stamp as any).cancel?.();
+      this.stampDebounce.delete(safeRel);
+    }
     return false;
   }
 
@@ -2044,11 +2108,17 @@ export class SyncManager {
 
   /** Stop syncing this share */
   async destroy(): Promise<void> {
+    this.destroyed = true;
+    this.pendingManifestEvents.length = 0;
     this.flushEditEvents();
     if (this.onlineAnnounced) this.appendActivityEvent("offline");
     for (const fn of this.editEventDebounce.values()) (fn as any).cancel?.();
     this.editEventDebounce.clear();
     this.editEventCounts.clear();
+    for (const fn of this.stampDebounce.values()) (fn as any).cancel?.();
+    this.stampDebounce.clear();
+    ((this.debouncedPresence as any).cancel as (() => void) | undefined)?.();
+    ((this.debouncedStatus as any).cancel as (() => void) | undefined)?.();
     this.clearPresenceUi();
 
     for (const [, fp] of this.fileProviders) fp.destroy();
@@ -2056,6 +2126,7 @@ export class SyncManager {
 
     if (this.manifestProvider) this.manifestProvider.destroy();
     if (this.manifestDoc) this.manifestDoc.destroy();
+    this.manifestProvider = null;
     this.eventsArray = null;
     this.onlineAnnounced = false;
     this.lastPresenceRelPath = null;

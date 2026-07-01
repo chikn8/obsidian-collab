@@ -289,6 +289,72 @@ try {
   check("cursor awareness stays in its logical room",
     !Array.from(providers[3].awareness.getStates().values()).some((state) => state?.user?.uid === "a" && state?.cursor?.head));
 
+  // ── late registration on an already-open shared socket ──────────
+  const lateDoc = new Y.Doc();
+  const lateStatuses = [];
+  const lateSyncs = [];
+  const socketsBeforeLate = FakeWebSocket.created.length;
+  const late = new MuxProvider({ serverUrl, shareId, roomName: roomA, ydoc: lateDoc, params: paramsA });
+  late.on("status", (event) => lateStatuses.push(event.status));
+  late.on("sync", (synced) => lateSyncs.push(synced));
+  check("late provider reuses the open shared socket", FakeWebSocket.created.length === socketsBeforeLate);
+  check("late provider reports wsconnected immediately", late.wsconnected === true);
+  await waitFor(() => lateStatuses.includes("connected"), 1000,
+    `late provider connected status ${JSON.stringify(lateStatuses)}`);
+  check("late provider hears connected on an already-open socket", lateStatuses.includes("connected"));
+  await waitFor(
+    () => lateSyncs.includes(true) && lateDoc.getText("codemirror").toString() === "room A reply",
+    1000,
+    `late provider sync ${JSON.stringify({ text: lateDoc.getText("codemirror").toString(), lateSyncs })}`
+  );
+  check("late provider syncs existing room content", lateDoc.getText("codemirror").toString() === "room A reply");
+  late.destroy();
+  lateDoc.destroy();
+
+  // ── reconnect cycle (disconnect + connect, as FileProvider.reconnect does) ──
+  const cycleStatuses = [];
+  const cycleSyncs = [];
+  const sibStatuses = [];
+  const sibSyncs = [];
+  providers[2].on("status", (event) => cycleStatuses.push(event.status));
+  providers[2].on("sync", (synced) => cycleSyncs.push(synced));
+  providers[3].on("status", (event) => sibStatuses.push(event.status));
+  providers[3].on("sync", (synced) => sibSyncs.push(synced));
+  const socketsBeforeCycle = FakeWebSocket.created.length;
+  providers[2].disconnect();
+  check("disconnect clears remote awareness states",
+    !Array.from(providers[2].awareness.getStates().values()).some((state) => state?.user?.uid === "a"),
+    JSON.stringify(Array.from(providers[2].awareness.getStates().values())));
+  check("disconnect keeps the local awareness state",
+    providers[2].awareness.getLocalState() !== null);
+  check("initiating room hears disconnected + sync false",
+    cycleStatuses.includes("disconnected") && cycleSyncs.includes(false) && providers[2].wsconnected === false);
+  check("sibling room hears disconnected + sync false",
+    sibStatuses.includes("disconnected") && sibSyncs.includes(false) && providers[3].wsconnected === false);
+  providers[2].connect();
+  await waitFor(
+    () => providers[2].wsconnected && providers[3].wsconnected && cycleSyncs.includes(true) && sibSyncs.includes(true),
+    1000,
+    `mux reconnect cycle ${JSON.stringify({ cycleStatuses, cycleSyncs, sibStatuses, sibSyncs })}`
+  );
+  check("both rooms get disconnected→connecting→connected on reconnect",
+    cycleStatuses.join(",").includes("disconnected,connecting,connected") &&
+      sibStatuses.join(",").includes("disconnected,connecting,connected"),
+    JSON.stringify({ cycleStatuses, sibStatuses }));
+  check("reconnect cycles exactly one physical socket",
+    FakeWebSocket.created.length === socketsBeforeCycle + 1,
+    `created=${FakeWebSocket.created.length}`);
+
+  const cursor2 = Y.createRelativePositionFromTypeIndex(a1.getText("codemirror"), 2);
+  providers[0].awareness.setLocalStateField("cursor", { anchor: cursor2, head: cursor2 });
+  await waitFor(
+    () => Array.from(providers[2].awareness.getStates().values()).some((state) => state?.user?.uid === "a"),
+    1000,
+    `awareness after reconnect ${JSON.stringify(Array.from(providers[2].awareness.getStates().values()))}`
+  );
+  check("remote awareness returns after the reconnect cycle",
+    Array.from(providers[2].awareness.getStates().values()).some((state) => state?.user?.uid === "a"));
+
   providers[0].destroy();
   providers[0] = null;
   await sleep(20);

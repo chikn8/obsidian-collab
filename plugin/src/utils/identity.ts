@@ -1,3 +1,5 @@
+import { warn } from "./log";
+
 export interface IdentityKeys {
   publicKey: string;
   privateKey: string;
@@ -85,7 +87,12 @@ export async function ensureIdentityKeys(existing: Partial<IdentityKeys>, uid: s
     }
     try {
       const signature = await signIdentity(uid, existing.publicKey, existing.privateKey);
-      return { publicKey: existing.publicKey, privateKey: existing.privateKey, signature };
+      // A mismatched keypair signs fine but never verifies; only keep the
+      // re-signed identity if the stored public key actually accepts it.
+      if (await verifyIdentity(uid, existing.publicKey, signature)) {
+        return { publicKey: existing.publicKey, privateKey: existing.privateKey, signature };
+      }
+      warn("identity", "re-signed identity failed verification; regenerating keypair");
     } catch {
       // Fall through and replace a corrupt local keypair.
     }

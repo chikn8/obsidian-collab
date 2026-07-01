@@ -55,6 +55,26 @@ export default class CollabPlugin extends Plugin {
   private boundProvider: FileProvider | null = null;
   private boundPath: string | null = null;
   private boundPresence: PresenceController | null = null;
+  // Bind/unbind mutate shared bound* state across multiple awaits, and fire from
+  // leaf-change events, the watchdog, and retry timers concurrently. Overlapping
+  // runs used to each construct a PresenceController and orphan the loser's
+  // awareness listeners (presence ping-pong runaway) — serialize them all.
+  private bindOpQueue: Promise<void> = Promise.resolve();
+  // Same shape for share start/stop: the has()-check in startShare sits across
+  // an await, so concurrent starts for one id leaked a duplicate live manager.
+  private shareOpQueue: Promise<void> = Promise.resolve();
+
+  private enqueueBindOp<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.bindOpQueue.then(fn, fn);
+    this.bindOpQueue = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  private enqueueShareOp<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.shareOpQueue.then(fn, fn);
+    this.shareOpQueue = next.then(() => undefined, () => undefined);
+    return next;
+  }
   private bindWatchdogTimer: number | null = null;
   private bindWatchdogUntil = 0;
 
@@ -306,7 +326,11 @@ export default class CollabPlugin extends Plugin {
     for (const share of this.settings.shares) await this.startShare(share);
   }
 
-  private async startShare(share: Share): Promise<void> {
+  private startShare(share: Share): Promise<void> {
+    return this.enqueueShareOp(() => this.startShareNow(share));
+  }
+
+  private async startShareNow(share: Share): Promise<void> {
     if (this.syncManagers.has(share.id)) return;
     await this.ensureLocalIdentity();
     const m = new SyncManager(
@@ -336,7 +360,11 @@ export default class CollabPlugin extends Plugin {
     }
   }
 
-  private async stopShare(id: string): Promise<void> {
+  private stopShare(id: string): Promise<void> {
+    return this.enqueueShareOp(() => this.stopShareNow(id));
+  }
+
+  private async stopShareNow(id: string): Promise<void> {
     const m = this.syncManagers.get(id);
     if (m) {
       if (this.boundPath && this.managerOwning(this.boundPath) === m) {
@@ -481,7 +509,11 @@ export default class CollabPlugin extends Plugin {
     this.refreshActivityContext();
   }
 
-  private async bindActiveEditor(activeFile: TFile | null, attempt: number): Promise<void> {
+  private bindActiveEditor(activeFile: TFile | null, attempt: number): Promise<void> {
+    return this.enqueueBindOp(() => this.bindActiveEditorNow(activeFile, attempt));
+  }
+
+  private async bindActiveEditorNow(activeFile: TFile | null, attempt: number): Promise<void> {
     // Ignore stale retries fired after the user already switched files.
     if (attempt > 0 && (this.app.workspace.getActiveFile()?.path ?? null) !== (activeFile?.path ?? null)) {
       return;
@@ -494,7 +526,7 @@ export default class CollabPlugin extends Plugin {
 
     // Unbind the previous editor if we've moved away from it
     if ((this.boundView || this.boundProvider) && (this.boundPath !== path || this.boundView !== ev)) {
-      await this.unbindActiveEditor("active-leaf-change", path, ev);
+      await this.unbindActiveEditorNow("active-leaf-change", path, ev);
     }
 
     if (!ev || !path || !activeFile) {
@@ -508,7 +540,7 @@ export default class CollabPlugin extends Plugin {
     if (this.boundPath === path && this.boundView === ev && marker === path) return; // actually bound
     if (this.boundPath === path && this.boundView === ev && marker !== path) {
       trace("bind", "binding-marker-missing", { path, marker });
-      await this.unbindActiveEditor("binding-marker-missing", path, ev);
+      await this.unbindActiveEditorNow("binding-marker-missing", path, ev);
     }
 
     // Find the provider owning this file
@@ -616,7 +648,11 @@ export default class CollabPlugin extends Plugin {
     return null;
   }
 
-  private async unbindActiveEditor(reason: string, nextPath: string | null = null, nextView: unknown = null): Promise<void> {
+  private unbindActiveEditor(reason: string, nextPath: string | null = null, nextView: unknown = null): Promise<void> {
+    return this.enqueueBindOp(() => this.unbindActiveEditorNow(reason, nextPath, nextView));
+  }
+
+  private async unbindActiveEditorNow(reason: string, nextPath: string | null = null, nextView: unknown = null): Promise<void> {
     if (!this.boundView && !this.boundProvider && !this.boundPresence) return;
     const oldPath = this.boundPath;
     trace("bind", "unbind-start", {
@@ -738,7 +774,11 @@ export default class CollabPlugin extends Plugin {
   async generateShareCode(share: Share, role: Role): Promise<string | null> {
     if (share.legacy) return null;
     const epoch = share.epoch ?? 1;
-    if (role === (share.role || "editor")) {
+    // Fast path only for non-invite keys: an invite-scoped key folds its
+    // inviteId into the server HMAC, so re-encoding it without the id produces
+    // a code the server always rejects. Invitees fall through to the owner/
+    // secret paths (and get the proper "no owner access" notice without them).
+    if (role === (share.role || "editor") && !share.inviteId) {
       return encodeShareCode(this.settings.serverUrl, share.id, share.key, role, epoch, undefined, undefined, share.label);
     }
 
@@ -951,7 +991,13 @@ export default class CollabPlugin extends Plugin {
       new Notice(`That folder overlaps an existing share ("${overlap.label}").`);
       return;
     }
-    await this.ensureFolder(folder);
+    try {
+      await this.ensureFolder(folder);
+    } catch (e) {
+      err("share", "share folder create failed", folder, e);
+      new Notice(`Could not create folder "${folder}": ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
 
     const minted = await this.mintShare();
     if (!minted) return;
@@ -1040,9 +1086,16 @@ export default class CollabPlugin extends Plugin {
       new Notice("You already have this shared folder.");
       return;
     }
-    // Adopt the server URL from the code if we don't have one yet
-    if (!this.settings.serverUrl || this.settings.serverUrl === DEFAULT_SETTINGS.serverUrl) {
+    // Adopt the server URL from the code if we don't have one yet. If we DO
+    // have a different server configured, joining would silently target the
+    // wrong server and fail obscurely later — surface that now instead.
+    const configuredUrl = (this.settings.serverUrl || "").replace(/\/+$/, "");
+    const codeUrl = (decoded.s || "").replace(/\/+$/, "");
+    if (!configuredUrl || this.settings.serverUrl === DEFAULT_SETTINGS.serverUrl) {
       this.settings.serverUrl = decoded.s;
+    } else if (codeUrl && configuredUrl !== codeUrl) {
+      new Notice(`This share code is for a different server (${codeUrl}) than this vault uses (${configuredUrl}). Update the server URL in settings first if you meant to switch.`);
+      return;
     }
     const folder = cleanShareFolder(localFolder || this.suggestJoinFolder(decoded.l, decoded.id));
     const overlap = this.folderOverlaps(folder);
@@ -1050,7 +1103,13 @@ export default class CollabPlugin extends Plugin {
       new Notice(`That folder overlaps an existing share ("${overlap.label}").`);
       return;
     }
-    await this.ensureFolder(folder);
+    try {
+      await this.ensureFolder(folder);
+    } catch (e) {
+      err("share", "join folder create failed", folder, e);
+      new Notice(`Could not create folder "${folder}": ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
 
     const share: Share = {
       id: decoded.id,
@@ -1139,6 +1198,7 @@ export default class CollabPlugin extends Plugin {
     (this.debouncedRestart as any).cancel?.();
     (this.debouncedPresenceDomRefresh as any).cancel?.();
     (this.debouncedActiveEditorRefresh as any).cancel?.();
+    (this.debouncedLiveIdentityRefresh as any).cancel?.();
     for (const fn of this.modifyDebounceMap.values()) (fn as any).cancel?.();
     this.modifyDebounceMap.clear();
     this.presenceDomObserver?.disconnect();

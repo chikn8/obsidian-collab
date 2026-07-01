@@ -70,6 +70,48 @@ console.log("line diff\n");
   check("restores only selected hunk", partial === "one\ntwo\nthree\nFOUR\n", partial);
 }
 
+{
+  const saved = "one\r\ntwo\r\nthree\r\nfour\r\n";
+  const current = "ONE\r\ntwo\r\nthree\r\nFOUR\r\n";
+  const hunks = buildRestoreHunks(saved, current);
+  const partial = applyRestoreHunk(current, hunks[0]);
+  check("CRLF one-hunk restore leaves untouched lines byte-identical",
+    partial === "one\r\ntwo\r\nthree\r\nFOUR\r\n", JSON.stringify(partial));
+  check("CRLF full restore round-trips", applyRestoreHunk(partial, buildRestoreHunks(saved, partial)[0]) === saved);
+}
+
+{
+  const saved = "a\r\nc\r\n";
+  const current = "a\r\nb\r\nc\r\n";
+  const hunk = buildRestoreHunks(saved, current)[0];
+  const restored = applyRestoreHunk(current, hunk);
+  check("CRLF deletion hunk keeps CRLF elsewhere", restored === saved, JSON.stringify(restored));
+}
+
+{
+  const saved = "a\r\nb\r\nc\r\n";
+  const current = "a\r\nc\r\n";
+  const hunk = buildRestoreHunks(saved, current)[0];
+  const restored = applyRestoreHunk(current, hunk);
+  check("CRLF insertion hunk uses dominant terminator", restored === saved, JSON.stringify(restored));
+}
+
+{
+  const saved = "a\nb";
+  const current = "a\nb\nc";
+  const hunk = buildRestoreHunks(saved, current)[0];
+  const restored = applyRestoreHunk(current, hunk);
+  check("deleting final line without trailing newline", restored === saved, JSON.stringify(restored));
+}
+
+{
+  const saved = "a\nb\nc";
+  const current = "a\nb";
+  const hunk = buildRestoreHunks(saved, current)[0];
+  const restored = applyRestoreHunk(current, hunk);
+  check("appending after final line without trailing newline", restored === saved, JSON.stringify(restored));
+}
+
 console.log("");
 if (failures > 0) { console.error(`FAILED — ${failures} assertion(s) failed`); process.exit(1); }
 else console.log("ALL PASSED");

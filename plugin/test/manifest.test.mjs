@@ -234,6 +234,49 @@ console.log("Delete-vs-edit tombstone decision");
     shouldResurrect({ localMtime: deletedAt + 999999, deletedAt, renamedTo: "new.md" }) === false);
   check("decision: rename tombstone → delete",
     tombstoneLocalDecision({ localMtime: deletedAt + 999999, deletedAt, renamedTo: "new.md" }) === "delete");
+  check("decision: rename tombstone + provenance-backed newer local edit → conflict copy",
+    tombstoneLocalDecision({
+      localMtime: deletedAt + 999999,
+      deletedAt,
+      renamedTo: "new.md",
+      tombstoneUid: "uid-a",
+      tombstoneDeviceId: "device-a",
+      localEditAt: deletedAt + RESURRECT_GRACE_MS + 10,
+      localEditUid: "uid-b",
+      localEditDeviceId: "device-b",
+    }) === "conflict-copy");
+  check("decision: rename tombstone + newer mtime WITHOUT edit provenance → delete (skew-safe)",
+    tombstoneLocalDecision({
+      localMtime: deletedAt + 999999,
+      deletedAt,
+      renamedTo: "new.md",
+      tombstoneUid: "uid-a",
+      tombstoneDeviceId: "device-a",
+    }) === "delete");
+  check("decision: rename tombstone from the SAME device → delete (own rename)",
+    tombstoneLocalDecision({
+      localMtime: deletedAt + 999999,
+      deletedAt,
+      renamedTo: "new.md",
+      localUid: "uid-a",
+      localDeviceId: "device-a",
+      tombstoneUid: "uid-a",
+      tombstoneDeviceId: "device-a",
+      localEditAt: deletedAt + RESURRECT_GRACE_MS + 10,
+      localEditUid: "uid-a",
+      localEditDeviceId: "device-a",
+    }) === "delete");
+  check("decision: rename tombstone + local edit within grace → delete (no spurious copies)",
+    tombstoneLocalDecision({
+      localMtime: deletedAt + 500,
+      deletedAt,
+      renamedTo: "new.md",
+      tombstoneUid: "uid-a",
+      tombstoneDeviceId: "device-a",
+      localEditAt: deletedAt + 500,
+      localEditUid: "uid-b",
+      localEditDeviceId: "device-b",
+    }) === "delete");
 }
 
 // ── 6. Two-client delete/edit skew simulation ────────────────────────────────

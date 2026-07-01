@@ -2,7 +2,7 @@ import { App, TFile, Notice } from "obsidian";
 import * as Y from "yjs";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { createProvider } from "./YjsProvider";
-import { EchoGuard, beginRemoteApply, endRemoteApply } from "./EchoGuard";
+import { EchoGuard, beginRemoteApply, endRemoteApply, fingerprint } from "./EchoGuard";
 import { diffRanges } from "../utils/textDiff";
 import { err, log, trace } from "../utils/log";
 import { pluginDataPath } from "../utils/pluginPaths";
@@ -20,6 +20,31 @@ function trashDir(app: App): string {
 function backupExtension(fullPath: string): string {
   const ext = fullPath.split("/").pop()?.split(".").pop()?.toLowerCase() || "md";
   return ext === "canvas" ? "canvas" : "md";
+}
+
+// ── Last-flushed disk fingerprint ─────────────────────────────────────────────
+// Device-local record of the content the plugin last knew to be on disk for a
+// room (updated after every plugin write and every ingested vault modify). At
+// startup this distinguishes "disk changed while we were off" (a real offline
+// edit that must join the CRDT merge) from "disk is stale because a deferred
+// flush never landed" (e.g. force-quit while editor-bound) — diffing the latter
+// into Yjs would generate ops REVERTING newer synced content on every peer.
+// localStorage: survives restarts, device-local by nature; on any failure we
+// degrade to the legacy disk-wins behavior.
+function diskFpKey(app: App, roomName: string): string {
+  // appId is unique per vault (same-named vaults on one machine must not share
+  // fingerprints — each has its own on-disk copy); fall back to the vault name.
+  const vaultId = (app as any).appId || app.vault.getName();
+  return `obsidian-collab:diskfp:${vaultId}:${roomName}`;
+}
+function readLastFlushedFp(app: App, roomName: string): string | null {
+  try { return window.localStorage.getItem(diskFpKey(app, roomName)); } catch { return null; }
+}
+function writeLastFlushedFp(app: App, roomName: string, fp: string): void {
+  try { window.localStorage.setItem(diskFpKey(app, roomName), fp); } catch { /* degrade to legacy behavior */ }
+}
+function clearLastFlushedFp(app: App, roomName: string): void {
+  try { window.localStorage.removeItem(diskFpKey(app, roomName)); } catch { /* nothing to clean */ }
 }
 
 /**
@@ -214,19 +239,36 @@ export class FileProvider {
     const idbContent = this.ytext.toString();
 
     if (diskContent.length > 0 && idbContent.length > 0 && idbContent !== diskContent) {
-      // IDB gives us a real CRDT base, so the disk delta is a legitimate offline
-      // edit. If IDB is empty, defer until after server sync; inserting a whole
-      // local file before seeing the server can duplicate the room on join.
-      log("offline", "reconciling offline disk edits", this.filePath,
-        `(base ${idbContent.length} → disk ${diskContent.length} chars)`);
-      await this.saveSnapshot(diskContent).catch((e) => log("offline", "pre-reconcile snapshot failed", e));
-      this.applyDiff(idbContent, diskContent);
-      trace("file", "offline-reconciled", {
-        path: this.filePath,
-        room: this.roomName,
-        baseLen: idbContent.length,
-        diskLen: diskContent.length,
-      });
+      const lastFlushedFp = readLastFlushedFp(this.app, this.roomName);
+      if (lastFlushedFp && lastFlushedFp === fingerprint(diskContent)) {
+        // Disk is byte-identical to the plugin's own last flush — nothing was
+        // edited while we were off. IDB differing means it holds NEWER content
+        // whose disk write never landed (e.g. quit with an editor-bound write
+        // deferred). Diffing disk into Yjs here would generate ops reverting
+        // that newer content on every peer; skip — finishInitialSync rewrites
+        // the file from the merged doc instead.
+        log("offline", "disk matches last flush; skipping stale-disk reconcile", this.filePath);
+        trace("file", "stale-disk-reconcile-skipped", {
+          path: this.filePath,
+          room: this.roomName,
+          idbLen: idbContent.length,
+          diskLen: diskContent.length,
+        });
+      } else {
+        // IDB gives us a real CRDT base, so the disk delta is a legitimate offline
+        // edit. If IDB is empty, defer until after server sync; inserting a whole
+        // local file before seeing the server can duplicate the room on join.
+        log("offline", "reconciling offline disk edits", this.filePath,
+          `(base ${idbContent.length} → disk ${diskContent.length} chars)`);
+        await this.saveSnapshot(diskContent).catch((e) => log("offline", "pre-reconcile snapshot failed", e));
+        this.applyDiff(idbContent, diskContent);
+        trace("file", "offline-reconciled", {
+          path: this.filePath,
+          room: this.roomName,
+          baseLen: idbContent.length,
+          diskLen: diskContent.length,
+        });
+      }
     }
 
     // ── Connect WebSocket ───────────────────────────────────────
@@ -285,8 +327,16 @@ export class FileProvider {
     try {
       if (this.destroyed || this.isInitialized) return;
 
-      const latestDiskContent = this.pendingLocalContent ?? await this.readDiskContent(startupDiskContent);
-      this.pendingLocalContent = null;
+      // Only consume pendingLocalContent when we actually use it — a vault
+      // modify landing during the disk read below must stay queued for the
+      // drain loop at the end, not be silently discarded.
+      let latestDiskContent: string;
+      if (this.pendingLocalContent != null) {
+        latestDiskContent = this.pendingLocalContent;
+        this.pendingLocalContent = null;
+      } else {
+        latestDiskContent = await this.readDiskContent(startupDiskContent);
+      }
 
       let mergedContent = this.ytext.toString();
 
@@ -302,9 +352,23 @@ export class FileProvider {
       } else if (latestDiskContent !== startupDiskContent) {
         // A vault modify arrived while the provider was still bootstrapping.
         // Capture only the user's delta from the startup disk snapshot, then
-        // let it merge with the server state that has just arrived.
-        this.applyDiff(startupDiskContent, latestDiskContent, "startup-local-change");
-        this.onLocalEdit?.();
+        // let it merge with the server state that has just arrived. The splice
+        // offsets were computed against the startup snapshot — apply them only
+        // if the merged doc still matches at those offsets (remote ops may have
+        // shifted the ground under them); otherwise preserve the disk version
+        // as a snapshot instead of splicing at wrong positions.
+        const applied = this.applyDiffChecked(startupDiskContent, latestDiskContent, "startup-local-change");
+        if (applied) {
+          this.onLocalEdit?.();
+        } else {
+          await this.saveSnapshot(latestDiskContent).catch((e) => log("offline", "startup-local-change snapshot failed", e));
+          trace("file", "startup-local-change-conflicted", {
+            path: this.filePath,
+            room: this.roomName,
+            startupLen: startupDiskContent.length,
+            latestLen: latestDiskContent.length,
+          });
+        }
         mergedContent = this.ytext.toString();
         trace("file", "startup-local-change-applied", {
           path: this.filePath,
@@ -312,6 +376,7 @@ export class FileProvider {
           startupLen: startupDiskContent.length,
           latestLen: latestDiskContent.length,
           mergedLen: mergedContent.length,
+          applied,
         });
       }
 
@@ -332,11 +397,16 @@ export class FileProvider {
       // CRDT merge done → write merged result to disk, including empty notes.
       await this.writeToFile(false, "initial-sync");
 
-      if (this.pendingLocalContent != null && !this.destroyed) {
+      // Drain in a loop: each await below is a window in which another vault
+      // modify can queue fresh pendingLocalContent; a single-shot drain would
+      // strand that content unapplied once isInitialized flips true.
+      while (this.pendingLocalContent != null && !this.destroyed) {
         const queued: string = this.pendingLocalContent;
         this.pendingLocalContent = null;
         const old = this.ytext.toString();
-        if (old !== queued) {
+        // applyLocalChange queues before its echo check runs, so `queued` can be
+        // the echo of our own initial-sync write — never diff that back in.
+        if (old !== queued && !this.echo.isEcho(this.filePath, queued)) {
           this.applyDiff(old, queued, "startup-local-change-late");
           this.onLocalEdit?.();
           await this.writeToFile(false, "initial-sync-local-change");
@@ -483,9 +553,13 @@ export class FileProvider {
           return content;
         });
         if (!wrote) {
+          // Disk already equals `content` — still a positive observation of the
+          // on-disk state, so refresh the last-flushed fingerprint.
+          writeLastFlushedFp(this.app, this.roomName, fingerprint(content));
           trace("file", "write-skipped", { path: this.filePath, room: this.roomName, seq, reason, cause: "unchanged", len: content.length });
           return;
         }
+        writeLastFlushedFp(this.app, this.roomName, fingerprint(content));
         trace("file", "write-ok", { path: this.filePath, room: this.roomName, seq, reason, len: content.length });
       } finally {
         endRemoteApply();
@@ -544,6 +618,7 @@ export class FileProvider {
     }
     const old = this.ytext.toString();
     if (old === newContent) {
+      writeLastFlushedFp(this.app, this.roomName, fingerprint(newContent));
       trace("file", "local-change-skipped", {
         path: this.filePath,
         room: this.roomName,
@@ -577,6 +652,8 @@ export class FileProvider {
         if (insert.length > 0) this.ytext.insert(start, insert);
       }
     });
+    // Disk now holds newContent and it has been captured into Yjs.
+    writeLastFlushedFp(this.app, this.roomName, fingerprint(newContent));
   }
 
   /**
@@ -655,6 +732,31 @@ export class FileProvider {
         }
       }, origin);
     }
+  }
+
+  /**
+   * Apply a diff whose splices were computed against `oldContent`, but only if
+   * the CURRENT ytext still matches `oldContent` around every splice site.
+   * Guards against splicing at stale offsets after a concurrent remote merge
+   * shifted the doc. Returns false (and applies nothing) on mismatch.
+   */
+  private applyDiffChecked(oldContent: string, newContent: string, origin?: unknown): boolean {
+    const splices = diffRanges(oldContent, newContent);
+    if (splices.length === 0) return true;
+    const current = this.ytext.toString();
+    for (const { start, delCount } of splices) {
+      const from = Math.max(0, start - 1);
+      const to = start + delCount + 1;
+      if (current.slice(from, to) !== oldContent.slice(from, to)) return false;
+    }
+    this.ydoc.transact(() => {
+      for (let i = splices.length - 1; i >= 0; i--) {
+        const { start, delCount, insert } = splices[i];
+        if (delCount > 0) this.ytext.delete(start, delCount);
+        if (insert.length > 0) this.ytext.insert(start, insert);
+      }
+    }, origin);
+    return true;
   }
 
   /** Current Y.Text content (for transferring/preserving across destroy). */
@@ -750,6 +852,7 @@ export class FileProvider {
   /** Teardown AND wipe IndexedDB data (call when file is permanently deleted) */
   async destroyAndClearData(): Promise<void> {
     this.destroyed = true;
+    clearLastFlushedFp(this.app, this.roomName);
     if (this.observer) {
       this.ytext.unobserve(this.observer);
       this.observer = null;

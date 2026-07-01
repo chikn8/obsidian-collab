@@ -60,6 +60,8 @@ export class Vault {
   }
   on(ev, cb) { this.listeners[ev].push(cb); return { ev, cb }; }
   _emit(ev, ...args) { for (const cb of this.listeners[ev]) cb(...args); }
+  getName() { return "fake-vault"; }
+  // (real vaults with the same name are distinguished by App.appId)
   getAbstractFileByPath(p) { return this.tree.get(p) || null; }
   async read(file) { return this.content.get(file.path) ?? ""; }
   async readBinary(file) {
@@ -99,8 +101,11 @@ export class Vault {
   async createFolder(path) { this.tree.set(path, new TFolder(path)); }
 }
 
+let __appCounter = 0;
+
 export class App {
   constructor() {
+    this.appId = `fake-app-${++__appCounter}`;
     this.vault = new Vault();
     this.workspace = { getActiveFile: () => null, on: () => ({}), getActiveViewOfType: () => null };
   }

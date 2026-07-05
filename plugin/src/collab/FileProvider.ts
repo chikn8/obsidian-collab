@@ -22,6 +22,14 @@ function backupExtension(fullPath: string): string {
   return ext === "canvas" ? "canvas" : "md";
 }
 
+const STALE_DISK_GUARDRAIL_MIN_DELETE = 1024;
+const STALE_DISK_GUARDRAIL_MIN_RATIO = 0.15;
+
+function offlineConflictStamp(date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}${pad(date.getMinutes())}`;
+}
+
 // ── Last-flushed disk fingerprint ─────────────────────────────────────────────
 // Device-local record of the content the plugin last knew to be on disk for a
 // room (updated after every plugin write and every ingested vault modify). At
@@ -258,16 +266,43 @@ export class FileProvider {
         // IDB gives us a real CRDT base, so the disk delta is a legitimate offline
         // edit. If IDB is empty, defer until after server sync; inserting a whole
         // local file before seeing the server can duplicate the room on join.
-        log("offline", "reconciling offline disk edits", this.filePath,
-          `(base ${idbContent.length} → disk ${diskContent.length} chars)`);
-        await this.saveSnapshot(diskContent).catch((e) => log("offline", "pre-reconcile snapshot failed", e));
-        this.applyDiff(idbContent, diskContent);
-        trace("file", "offline-reconciled", {
-          path: this.filePath,
-          room: this.roomName,
-          baseLen: idbContent.length,
-          diskLen: diskContent.length,
-        });
+        const splices = diffRanges(idbContent, diskContent);
+        const deletedChars = splices.reduce((n, s) => n + s.delCount, 0);
+        if (
+          lastFlushedFp === null &&
+          deletedChars >= STALE_DISK_GUARDRAIL_MIN_DELETE &&
+          deletedChars >= idbContent.length * STALE_DISK_GUARDRAIL_MIN_RATIO
+        ) {
+          const conflictPath = await this.saveOfflineConflictFile(diskContent);
+          await this.saveSnapshot(diskContent).catch((e) => log("offline", "stale-disk guardrail snapshot failed", e));
+          const fileName = this.filePath.split("/").pop() || this.filePath;
+          const conflictName = conflictPath?.split("/").pop();
+          log("offline", "stale-disk guardrail quarantined disk copy", this.filePath,
+            `(deleted ${deletedChars}/${idbContent.length} chars)`, conflictPath || "conflict create failed");
+          new Notice(
+            conflictName
+              ? `Local copy of "${fileName}" was much older than the synced version — kept it as "${conflictName}"`
+              : `Local copy of "${fileName}" was much older than the synced version — backup saved`
+          );
+          trace("file", "stale-disk-guardrail", {
+            path: this.filePath,
+            room: this.roomName,
+            idbLen: idbContent.length,
+            diskLen: diskContent.length,
+            deletedChars,
+          });
+        } else {
+          log("offline", "reconciling offline disk edits", this.filePath,
+            `(base ${idbContent.length} → disk ${diskContent.length} chars)`);
+          await this.saveSnapshot(diskContent).catch((e) => log("offline", "pre-reconcile snapshot failed", e));
+          this.applyDiff(idbContent, diskContent);
+          trace("file", "offline-reconciled", {
+            path: this.filePath,
+            room: this.roomName,
+            baseLen: idbContent.length,
+            diskLen: diskContent.length,
+          });
+        }
       }
     }
 
@@ -732,6 +767,29 @@ export class FileProvider {
         }
       }, origin);
     }
+  }
+
+  private async saveOfflineConflictFile(content: string): Promise<string | null> {
+    const slash = this.filePath.lastIndexOf("/");
+    const dir = slash >= 0 ? this.filePath.slice(0, slash + 1) : "";
+    const name = slash >= 0 ? this.filePath.slice(slash + 1) : this.filePath;
+    const ext = backupExtension(this.filePath) || "md";
+    const dotExt = `.${ext}`;
+    const stem = name.toLowerCase().endsWith(dotExt) ? name.slice(0, -dotExt.length) : name || "Untitled";
+    const stamp = offlineConflictStamp(new Date(Date.now()));
+
+    for (let i = 0; i < 5; i++) {
+      const suffix = i === 0 ? "" : ` ${i + 1}`;
+      const path = `${dir}${stem} (offline conflict ${stamp}${suffix}).${ext}`;
+      if (this.app.vault.getAbstractFileByPath(path)) continue;
+      try {
+        await this.app.vault.create(path, content);
+        return path;
+      } catch (e) {
+        if (i === 4) log("offline", "offline conflict create failed", this.filePath, path, e);
+      }
+    }
+    return null;
   }
 
   /**

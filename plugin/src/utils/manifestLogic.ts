@@ -8,6 +8,7 @@ import type { ManifestEntry } from "../types";
 export const RESURRECT_GRACE_MS = 2000;
 export const SYNCABLE_TEXT_EXTENSIONS = ["md"] as const;
 export const BLOCKED_SYNC_SEGMENTS = ["node_modules", ".git"] as const;
+export type MapChangeKey = { key: string; action: string };
 export type TombstoneLocalDecision = "delete" | "resurrect" | "conflict-copy";
 export type ConflictKind = "delete" | "binary-update";
 
@@ -23,6 +24,14 @@ export interface ConflictFile {
   localModifiedAt?: number;
   remoteHash?: string;
   localHash?: string;
+}
+
+export function extractMapChangeKeys(event: any): MapChangeKey[] {
+  const changes: MapChangeKey[] = [];
+  for (const [key, change] of event.changes.keys) {
+    changes.push({ key, action: change.action });
+  }
+  return changes;
 }
 
 function mutationPart(value: string | undefined, fallback: string): string {

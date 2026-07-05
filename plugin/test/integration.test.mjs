@@ -18,6 +18,20 @@ import { getRecentDiagnostics } from "../src/utils/log";
 let failures = 0;
 const check = (n, c, e = "") => { if (c) console.log(`  ✓ ${n}`); else { failures++; console.error(`  ✗ ${n} ${e}`); } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const installLocalStorageFake = () => {
+  const lsStore = new Map();
+  globalThis.window = { localStorage: {
+    getItem: (k) => (lsStore.has(k) ? lsStore.get(k) : null),
+    setItem: (k, v) => { lsStore.set(k, String(v)); },
+    removeItem: (k) => { lsStore.delete(k); },
+  } };
+  return lsStore;
+};
+const richLines = (label) => Array.from({ length: 120 }, (_, i) =>
+  `${label} line ${String(i).padStart(3, "0")}: ${"abcdefghi ".repeat(3)}${i}\n`
+).join("");
+const conflictPaths = (app, filePath) => [...app.vault.content.keys()]
+  .filter((path) => path !== filePath && /offline conflict/.test(path));
 
 const SETTINGS = (uid) => ({
   serverUrl: "ws://fake", serverPassword: "", serverSecret: "",
@@ -282,12 +296,7 @@ console.log("Restart after a dropped flush does not revert newer synced content"
 {
   __resetIdb(); __resetHubs();
   // FileProvider's fingerprint store uses window.localStorage — fake it.
-  const lsStore = new Map();
-  globalThis.window = { localStorage: {
-    getItem: (k) => (lsStore.has(k) ? lsStore.get(k) : null),
-    setItem: (k, v) => { lsStore.set(k, String(v)); },
-    removeItem: (k) => { lsStore.delete(k); },
-  } };
+  installLocalStorageFake();
   try {
     const room = "@test:file:stale-disk";
     const A = await makeClient("A", room, "note.md", "v1 content");
@@ -316,6 +325,82 @@ console.log("Restart after a dropped flush does not revert newer synced content"
     check("restarted doc kept the newer content", fp2.getYText().toString() === "v1 content EDITED", `doc="${fp2.getYText().toString()}"`);
     check("peer's doc was NOT reverted", B.fp.getYText().toString() === "v1 content EDITED", `B doc="${B.fp.getYText().toString()}"`);
     check("stale disk was rewritten from the merged doc", A.disk() === "v1 content EDITED", `disk="${A.disk()}"`);
+    fp2.destroy(); B.fp.destroy();
+  } finally {
+    delete globalThis.window;
+  }
+}
+
+// ── 7. Missing fingerprint + large stale disk delete is quarantined ────────────
+console.log("Missing fingerprint + mass deletion is quarantined, not applied");
+{
+  __resetIdb(); __resetHubs();
+  const lsStore = installLocalStorageFake();
+  try {
+    const room = "@test:file:missing-fp-mass-delete";
+    const filePath = "note.md";
+    const rich = richLines("rich");
+    const stale = `${rich.slice(0, 800)}\nlegacy-only-line from stale disk\n`;
+    const A = await makeClient("A", room, filePath, rich);
+    const B = await makeClient("B", room, filePath, "");
+    await sleep(900);
+    check("precondition: rich content reached B", B.fp.getYText().toString() === rich, `B doc len=${B.fp.getYText().toString().length}`);
+
+    A.fp.destroy();
+    A.app.vault.content.set(filePath, stale);
+    lsStore.clear();
+
+    const fp2 = new FileProvider({
+      app: A.app, settings: SETTINGS("A"), filePath, roomName: room, shareId: "test",
+      token: "t", authParams: {}, echo: A.echo,
+      onStatusChange: () => {}, onUsersChange: () => {}, onLocalEdit: () => {}, onPending: () => {},
+    });
+    await fp2.start(A.disk());
+    await sleep(900);
+
+    const conflicts = conflictPaths(A.app, filePath);
+    check("restarted doc kept the rich synced content", fp2.getYText().toString() === rich, `doc len=${fp2.getYText().toString().length}`);
+    check("peer doc was not mass-deleted", B.fp.getYText().toString() === rich, `B doc len=${B.fp.getYText().toString().length}`);
+    check("stale disk was rewritten to rich content", A.disk() === rich, `disk len=${A.disk().length}`);
+    check("offline conflict file was created", conflicts.length === 1, conflicts.join(","));
+    check("offline conflict contains stale disk text", A.app.vault.content.get(conflicts[0]) === stale);
+    fp2.destroy(); B.fp.destroy();
+  } finally {
+    delete globalThis.window;
+  }
+}
+
+// ── 8. Missing fingerprint + small disk edit keeps legacy reconciliation ───────
+console.log("Missing fingerprint + small offline edit still reconciles");
+{
+  __resetIdb(); __resetHubs();
+  const lsStore = installLocalStorageFake();
+  try {
+    const room = "@test:file:missing-fp-small-edit";
+    const filePath = "note.md";
+    const rich = richLines("small");
+    const smallEdit = rich.replace("small line 042:", "small line 042 locally edited:");
+    const A = await makeClient("A", room, filePath, rich);
+    const B = await makeClient("B", room, filePath, "");
+    await sleep(900);
+    check("precondition: rich content reached B", B.fp.getYText().toString() === rich, `B doc len=${B.fp.getYText().toString().length}`);
+
+    A.fp.destroy();
+    A.app.vault.content.set(filePath, smallEdit);
+    lsStore.clear();
+
+    const fp2 = new FileProvider({
+      app: A.app, settings: SETTINGS("A"), filePath, roomName: room, shareId: "test",
+      token: "t", authParams: {}, echo: A.echo,
+      onStatusChange: () => {}, onUsersChange: () => {}, onLocalEdit: () => {}, onPending: () => {},
+    });
+    await fp2.start(A.disk());
+    await sleep(900);
+
+    const conflicts = conflictPaths(A.app, filePath);
+    check("small offline edit survived into restarted doc", fp2.getYText().toString() === smallEdit, `doc="${fp2.getYText().toString().slice(0, 120)}"`);
+    check("small offline edit reached peer", B.fp.getYText().toString() === smallEdit, `B doc="${B.fp.getYText().toString().slice(0, 120)}"`);
+    check("small offline edit did not create a conflict file", conflicts.length === 0, conflicts.join(","));
     fp2.destroy(); B.fp.destroy();
   } finally {
     delete globalThis.window;

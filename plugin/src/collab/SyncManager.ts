@@ -10,6 +10,7 @@ import { binaryRemoteDecision, buffersEqual, isSyncableBinaryPath, MAX_SYNCABLE_
 import { err, log, trace } from "../utils/log";
 import { rewriteObsidianLinks } from "../utils/wikiLinks";
 import {
+  extractMapChangeKeys,
   isRecoverableTombstone,
   isSyncablePath,
   isSyncableTextPath,
@@ -22,6 +23,7 @@ import {
   shouldApplyRenameSideEffects,
   tombstoneLocalDecision,
   type ConflictFile,
+  type MapChangeKey,
 } from "../utils/manifestLogic";
 import { colorFor, MANIFEST_SCHEMA_VERSION } from "../types";
 import type { CollabPluginSettings, ConnectedUser, SyncStatus, Share, ManifestEntry } from "../types";
@@ -93,7 +95,7 @@ export class SyncManager {
   // Remote manifest events arriving during the startup reconcile are DEFERRED
   // (not dropped) and replayed once the reconcile finishes; handleManifestChange
   // re-reads the live entry per key, so replaying a stale event is idempotent.
-  private pendingManifestEvents: Y.YMapEvent<any>[] = [];
+  private pendingManifestChanges: MapChangeKey[][] = [];
   // All manifest processing (startup reconciles AND live change events) runs
   // serialized through this chain — overlapping async runs used to race each
   // other (tombstone vs in-flight provider creation, reconnect mid-reconcile).
@@ -444,15 +446,16 @@ export class SyncManager {
 
     // Observe manifest changes from remote
     this.manifestMap.observe((event) => {
+      const changes = extractMapChangeKeys(event);
       if (this.processingManifest) {
-        this.pendingManifestEvents.push(event);
+        this.pendingManifestChanges.push(changes);
         trace("manifest", "change-deferred-during-reconcile", {
           shareId: this.histShareId,
-          keys: event.keysChanged?.size ?? 0,
+          keys: changes.length,
         });
         return;
       }
-      this.enqueueManifestOp(() => this.handleManifestChange(event), "manifest-change");
+      this.enqueueManifestOp(() => this.handleManifestChange(changes), "manifest-change");
     });
 
     // Awareness drives file-explorer presence avatars (debounced + diffed)
@@ -486,14 +489,15 @@ export class SyncManager {
       // finally: an error mid-reconcile must never leave processingManifest
       // stuck true — that would silently drop every future manifest event.
       this.processingManifest = false;
-      const deferred = this.pendingManifestEvents.splice(0);
-      for (const event of deferred) {
-        this.enqueueManifestOp(() => this.handleManifestChange(event), "deferred-manifest-change");
+      const deferred = this.pendingManifestChanges.splice(0);
+      for (const changes of deferred) {
+        this.enqueueManifestOp(() => this.handleManifestChange(changes), "deferred-manifest-change");
       }
       if (deferred.length) {
         trace("manifest", "deferred-events-replayed", {
           shareId: this.histShareId,
           events: deferred.length,
+          keys: deferred.reduce((sum, changes) => sum + changes.length, 0),
         });
       }
     }
@@ -666,8 +670,9 @@ export class SyncManager {
   }
 
   /** Handle remote manifest changes */
-  private async handleManifestChange(event: Y.YMapEvent<any>): Promise<void> {
-    for (const [key, change] of event.changes.keys) {
+  private async handleManifestChange(changes: MapChangeKey[]): Promise<void> {
+    for (const change of changes) {
+      const key = change.key;
       const relPath = this.safeManifestRelPath(key, "manifest change");
       if (!relPath) continue;
       const entry = this.manifestMap!.get(key) as ManifestEntry | undefined;
@@ -2109,7 +2114,7 @@ export class SyncManager {
   /** Stop syncing this share */
   async destroy(): Promise<void> {
     this.destroyed = true;
-    this.pendingManifestEvents.length = 0;
+    this.pendingManifestChanges.length = 0;
     this.flushEditEvents();
     if (this.onlineAnnounced) this.appendActivityEvent("offline");
     for (const fn of this.editEventDebounce.values()) (fn as any).cancel?.();

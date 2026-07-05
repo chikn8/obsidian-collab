@@ -8,6 +8,7 @@
 import * as Y from "yjs";
 import {
   conflictFileFromManifest,
+  extractMapChangeKeys,
   isRecoverableTombstone,
   isSyncablePath,
   isSyncableTextPath,
@@ -25,6 +26,64 @@ let failures = 0;
 function check(name, cond, extra = "") {
   if (cond) console.log(`  ✓ ${name}`);
   else { failures++; console.error(`  ✗ ${name} ${extra}`); }
+}
+
+// ── 0. Manifest Y.Map event changes must be captured synchronously ───────────
+console.log("Manifest Y.Map change extraction");
+{
+  const doc = new Y.Doc();
+  const files = doc.getMap("files");
+  files.set("delete.md", { exists: true });
+
+  const extracted = [];
+  files.observe((event) => {
+    extracted.push(extractMapChangeKeys(event));
+  });
+
+  files.set("add.md", { exists: true });
+  files.set("add.md", { exists: true, lastModified: 2 });
+  files.delete("delete.md");
+
+  const expected = [
+    [{ key: "add.md", action: "add" }],
+    [{ key: "add.md", action: "update" }],
+    [{ key: "delete.md", action: "delete" }],
+  ];
+  check("extracts add/update/delete keys synchronously",
+    JSON.stringify(extracted) === JSON.stringify(expected),
+    JSON.stringify(extracted));
+}
+
+console.log("Manifest Y.Map late raw event access guard");
+{
+  const doc = new Y.Doc();
+  const files = doc.getMap("files");
+  let rawEvent;
+  files.observe((event) => { rawEvent = event; });
+  files.set("late.md", { exists: true });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  let threw = false;
+  let lateChanges = null;
+  try {
+    lateChanges = Array.from(rawEvent.changes.keys, ([key, change]) => ({ key, action: change.action }));
+  } catch (e) {
+    threw = String(e?.message || e).includes("You must not compute changes after the event-handler fired");
+  }
+
+  if (threw) {
+    check("raw Y.Map event changes throw after handler", true);
+  } else {
+    const fallbackDoc = new Y.Doc();
+    const fallbackFiles = fallbackDoc.getMap("files");
+    let fallbackExtracted = null;
+    fallbackFiles.observe((event) => { fallbackExtracted = extractMapChangeKeys(event); });
+    fallbackFiles.set("late.md", { exists: true });
+    check("fallback extraction matches late raw changes",
+      JSON.stringify(fallbackExtracted) === JSON.stringify(lateChanges),
+      `extracted=${JSON.stringify(fallbackExtracted)} late=${JSON.stringify(lateChanges)}`);
+  }
 }
 
 // ── 1. Rename content-transfer: full Y.Doc clone preserves text + comments ─────

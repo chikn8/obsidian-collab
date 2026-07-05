@@ -11275,6 +11275,12 @@ function backupExtension(fullPath) {
   const ext = ((_b2 = (_a2 = fullPath.split("/").pop()) == null ? void 0 : _a2.split(".").pop()) == null ? void 0 : _b2.toLowerCase()) || "md";
   return ext === "canvas" ? "canvas" : "md";
 }
+var STALE_DISK_GUARDRAIL_MIN_DELETE = 1024;
+var STALE_DISK_GUARDRAIL_MIN_RATIO = 0.15;
+function offlineConflictStamp(date = /* @__PURE__ */ new Date()) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}${pad(date.getMinutes())}`;
+}
 function diskFpKey(app, roomName) {
   const vaultId = app.appId || app.vault.getName();
   return `obsidian-collab:diskfp:${vaultId}:${roomName}`;
@@ -11432,20 +11438,46 @@ var FileProvider = class _FileProvider {
           diskLen: diskContent.length
         });
       } else {
-        log(
-          "offline",
-          "reconciling offline disk edits",
-          this.filePath,
-          `(base ${idbContent.length} \u2192 disk ${diskContent.length} chars)`
-        );
-        await this.saveSnapshot(diskContent).catch((e) => log("offline", "pre-reconcile snapshot failed", e));
-        this.applyDiff(idbContent, diskContent);
-        trace("file", "offline-reconciled", {
-          path: this.filePath,
-          room: this.roomName,
-          baseLen: idbContent.length,
-          diskLen: diskContent.length
-        });
+        const splices = diffRanges(idbContent, diskContent);
+        const deletedChars = splices.reduce((n, s) => n + s.delCount, 0);
+        if (lastFlushedFp === null && deletedChars >= STALE_DISK_GUARDRAIL_MIN_DELETE && deletedChars >= idbContent.length * STALE_DISK_GUARDRAIL_MIN_RATIO) {
+          const conflictPath = await this.saveOfflineConflictFile(diskContent);
+          await this.saveSnapshot(diskContent).catch((e) => log("offline", "stale-disk guardrail snapshot failed", e));
+          const fileName = this.filePath.split("/").pop() || this.filePath;
+          const conflictName = conflictPath == null ? void 0 : conflictPath.split("/").pop();
+          log(
+            "offline",
+            "stale-disk guardrail quarantined disk copy",
+            this.filePath,
+            `(deleted ${deletedChars}/${idbContent.length} chars)`,
+            conflictPath || "conflict create failed"
+          );
+          new import_obsidian2.Notice(
+            conflictName ? `Local copy of "${fileName}" was much older than the synced version \u2014 kept it as "${conflictName}"` : `Local copy of "${fileName}" was much older than the synced version \u2014 backup saved`
+          );
+          trace("file", "stale-disk-guardrail", {
+            path: this.filePath,
+            room: this.roomName,
+            idbLen: idbContent.length,
+            diskLen: diskContent.length,
+            deletedChars
+          });
+        } else {
+          log(
+            "offline",
+            "reconciling offline disk edits",
+            this.filePath,
+            `(base ${idbContent.length} \u2192 disk ${diskContent.length} chars)`
+          );
+          await this.saveSnapshot(diskContent).catch((e) => log("offline", "pre-reconcile snapshot failed", e));
+          this.applyDiff(idbContent, diskContent);
+          trace("file", "offline-reconciled", {
+            path: this.filePath,
+            room: this.roomName,
+            baseLen: idbContent.length,
+            diskLen: diskContent.length
+          });
+        }
       }
     }
     this.provider = createProvider(
@@ -11849,6 +11881,27 @@ var FileProvider = class _FileProvider {
         }
       }, origin);
     }
+  }
+  async saveOfflineConflictFile(content) {
+    const slash = this.filePath.lastIndexOf("/");
+    const dir = slash >= 0 ? this.filePath.slice(0, slash + 1) : "";
+    const name = slash >= 0 ? this.filePath.slice(slash + 1) : this.filePath;
+    const ext = backupExtension(this.filePath) || "md";
+    const dotExt = `.${ext}`;
+    const stem = name.toLowerCase().endsWith(dotExt) ? name.slice(0, -dotExt.length) : name || "Untitled";
+    const stamp2 = offlineConflictStamp(new Date(Date.now()));
+    for (let i = 0; i < 5; i++) {
+      const suffix = i === 0 ? "" : ` ${i + 1}`;
+      const path = `${dir}${stem} (offline conflict ${stamp2}${suffix}).${ext}`;
+      if (this.app.vault.getAbstractFileByPath(path)) continue;
+      try {
+        await this.app.vault.create(path, content);
+        return path;
+      } catch (e) {
+        if (i === 4) log("offline", "offline conflict create failed", this.filePath, path, e);
+      }
+    }
+    return null;
   }
   /**
    * Apply a diff whose splices were computed against `oldContent`, but only if
@@ -12329,6 +12382,13 @@ function countRun(line, start, ch) {
 var RESURRECT_GRACE_MS = 2e3;
 var SYNCABLE_TEXT_EXTENSIONS = ["md"];
 var BLOCKED_SYNC_SEGMENTS = ["node_modules", ".git"];
+function extractMapChangeKeys(event) {
+  const changes = [];
+  for (const [key, change] of event.changes.keys) {
+    changes.push({ key, action: change.action });
+  }
+  return changes;
+}
 function mutationPart(value, fallback) {
   const clean2 = (value || "").trim().replace(/[^A-Za-z0-9_.-]+/g, "_").slice(0, 80);
   return clean2 || fallback;
@@ -12817,7 +12877,7 @@ var SyncManager = class {
     // Remote manifest events arriving during the startup reconcile are DEFERRED
     // (not dropped) and replayed once the reconcile finishes; handleManifestChange
     // re-reads the live entry per key, so replaying a stale event is idempotent.
-    this.pendingManifestEvents = [];
+    this.pendingManifestChanges = [];
     // All manifest processing (startup reconciles AND live change events) runs
     // serialized through this chain — overlapping async runs used to race each
     // other (tombstone vs in-flight provider creation, reconnect mid-reconcile).
@@ -13143,16 +13203,16 @@ var SyncManager = class {
       this.providerAuthParams()
     );
     this.manifestMap.observe((event) => {
-      var _a2, _b2;
+      const changes = extractMapChangeKeys(event);
       if (this.processingManifest) {
-        this.pendingManifestEvents.push(event);
+        this.pendingManifestChanges.push(changes);
         trace("manifest", "change-deferred-during-reconcile", {
           shareId: this.histShareId,
-          keys: (_b2 = (_a2 = event.keysChanged) == null ? void 0 : _a2.size) != null ? _b2 : 0
+          keys: changes.length
         });
         return;
       }
-      this.enqueueManifestOp(() => this.handleManifestChange(event), "manifest-change");
+      this.enqueueManifestOp(() => this.handleManifestChange(changes), "manifest-change");
     });
     this.manifestProvider.awareness.on("change", () => {
       this.debouncedPresence();
@@ -13180,14 +13240,15 @@ var SyncManager = class {
       await this.runStartupReconcile();
     } finally {
       this.processingManifest = false;
-      const deferred = this.pendingManifestEvents.splice(0);
-      for (const event of deferred) {
-        this.enqueueManifestOp(() => this.handleManifestChange(event), "deferred-manifest-change");
+      const deferred = this.pendingManifestChanges.splice(0);
+      for (const changes of deferred) {
+        this.enqueueManifestOp(() => this.handleManifestChange(changes), "deferred-manifest-change");
       }
       if (deferred.length) {
         trace("manifest", "deferred-events-replayed", {
           shareId: this.histShareId,
-          events: deferred.length
+          events: deferred.length,
+          keys: deferred.reduce((sum, changes) => sum + changes.length, 0)
         });
       }
     }
@@ -13323,8 +13384,9 @@ var SyncManager = class {
     if (changed) log("delete", "manifest migrated v2: assigned", changed, "fileId(s)");
   }
   /** Handle remote manifest changes */
-  async handleManifestChange(event) {
-    for (const [key, change] of event.changes.keys) {
+  async handleManifestChange(changes) {
+    for (const change of changes) {
+      const key = change.key;
       const relPath = this.safeManifestRelPath(key, "manifest change");
       if (!relPath) continue;
       const entry = this.manifestMap.get(key);
@@ -14646,7 +14708,7 @@ var SyncManager = class {
   async destroy() {
     var _a2, _b2, _c, _d, _e, _f;
     this.destroyed = true;
-    this.pendingManifestEvents.length = 0;
+    this.pendingManifestChanges.length = 0;
     this.flushEditEvents();
     if (this.onlineAnnounced) this.appendActivityEvent("offline");
     for (const fn of this.editEventDebounce.values()) (_a2 = fn.cancel) == null ? void 0 : _a2.call(fn);

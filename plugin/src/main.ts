@@ -35,6 +35,7 @@ export default class CollabPlugin extends Plugin {
   private statusBar!: StatusBarWidget;
   private instanceWatch: InstanceWatch | null = null;
   private syncManagers: Map<string, SyncManager> = new Map();
+  private lastActivityShareId: string | null = null;
   private modifyDebounceMap: Map<string, ReturnType<typeof debounce>> = new Map();
   private debouncedRestart = debounce(() => {
     this.restartShares().catch((e) => {
@@ -372,6 +373,7 @@ export default class CollabPlugin extends Plugin {
       }
       await m.destroy();
       this.syncManagers.delete(id);
+      if (this.lastActivityShareId === id) this.lastActivityShareId = null;
       this.refreshActivityContext();
     }
     this.statusBar.removeShare(id);
@@ -633,14 +635,31 @@ export default class CollabPlugin extends Plugin {
   private activityManager(): SyncManager | null {
     if (this.boundPath) {
       const manager = this.managerOwning(this.boundPath);
-      if (manager) return manager;
+      if (manager) {
+        this.rememberActivityManager(manager);
+        return manager;
+      }
     }
     const active = this.activeFocusedFile();
     if (active) {
       const manager = this.managerOwning(active.path);
-      if (manager) return manager;
+      if (manager) {
+        this.rememberActivityManager(manager);
+        return manager;
+      }
     }
+    const lastManager = this.lastActivityShareId ? this.syncManagers.get(this.lastActivityShareId) : null;
+    if (lastManager) return lastManager;
     return this.syncManagers.values().next().value ?? null;
+  }
+
+  private rememberActivityManager(manager: SyncManager): void {
+    for (const [id, m] of this.syncManagers.entries()) {
+      if (m === manager) {
+        this.lastActivityShareId = id;
+        return;
+      }
+    }
   }
 
   private managerOwning(path: string): SyncManager | null {

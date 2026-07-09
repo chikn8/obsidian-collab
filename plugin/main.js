@@ -17384,6 +17384,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     this.settings = DEFAULT_SETTINGS;
     this.instanceWatch = null;
     this.syncManagers = /* @__PURE__ */ new Map();
+    this.lastActivityShareId = null;
     this.modifyDebounceMap = /* @__PURE__ */ new Map();
     this.debouncedRestart = (0, import_obsidian10.debounce)(() => {
       this.restartShares().catch((e) => {
@@ -17682,6 +17683,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       }
       await m.destroy();
       this.syncManagers.delete(id2);
+      if (this.lastActivityShareId === id2) this.lastActivityShareId = null;
       this.refreshActivityContext();
     }
     this.statusBar.removeShare(id2);
@@ -17900,14 +17902,30 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     var _a2;
     if (this.boundPath) {
       const manager = this.managerOwning(this.boundPath);
-      if (manager) return manager;
+      if (manager) {
+        this.rememberActivityManager(manager);
+        return manager;
+      }
     }
     const active = this.activeFocusedFile();
     if (active) {
       const manager = this.managerOwning(active.path);
-      if (manager) return manager;
+      if (manager) {
+        this.rememberActivityManager(manager);
+        return manager;
+      }
     }
+    const lastManager = this.lastActivityShareId ? this.syncManagers.get(this.lastActivityShareId) : null;
+    if (lastManager) return lastManager;
     return (_a2 = this.syncManagers.values().next().value) != null ? _a2 : null;
+  }
+  rememberActivityManager(manager) {
+    for (const [id2, m] of this.syncManagers.entries()) {
+      if (m === manager) {
+        this.lastActivityShareId = id2;
+        return;
+      }
+    }
   }
   managerOwning(path) {
     for (const m of this.syncManagers.values()) if (m.isInLinkedFolder(path)) return m;

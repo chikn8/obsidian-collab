@@ -13,6 +13,7 @@ export type CollabEventType =
   | "resurrect"
   | "conflict"
   | "binary"
+  | "error"
   | "system";
 
 export interface CollabEvent {
@@ -50,6 +51,7 @@ export interface CollabEventInput {
 }
 
 const MAX_TEXT = 2000;
+const MAX_ERROR_TEXT = 220;
 const MAX_PATH = 512;
 const MAX_DETAIL_STRING = 256;
 
@@ -67,7 +69,7 @@ export function normalizeEvent(input: CollabEventInput): CollabEvent {
   const path = cleanString(input.path, MAX_PATH);
   const oldPath = cleanString(input.oldPath, MAX_PATH);
   const newPath = cleanString(input.newPath, MAX_PATH);
-  const text = cleanString(input.text, MAX_TEXT);
+  const text = cleanString(input.text, input.type === "error" ? MAX_ERROR_TEXT : MAX_TEXT);
   const count = finiteNumber(input.count);
   const details = cleanDetails(input.details);
   if (device) event.device = device;
@@ -124,6 +126,8 @@ export function formatEvent(event: CollabEvent): string {
       return event.path && event.newPath ? `${who} kept a conflict copy of ${event.path} at ${event.newPath}` : `${who} created a conflict copy`;
     case "binary":
       return path ? `${who} updated attachment ${path}` : `${who} updated an attachment`;
+    case "error":
+      return event.text ? `Plugin error: ${event.text}${path ? ` (${path})` : ""}` : "Plugin error";
     case "system":
       return event.text || "System event";
     default:

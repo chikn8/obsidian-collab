@@ -11,7 +11,7 @@ import { selfSelectionExtension } from "./collab/SelfSelection";
 import { deviceScopedColor } from "./collab/YjsProvider";
 import { ActivityView, ACTIVITY_VIEW_TYPE } from "./ui/ActivityView";
 import { promptModal } from "./ui/modals";
-import { configureDiagnostics, exportDiagnosticBundle, log, err, setDiagnosticLogging, startDiagnosticTrace, trace } from "./utils/log";
+import { configureDiagnostics, exportDiagnosticBundle, findErrPathArg, formatErrArgsForActivity, log, err, setDiagnosticLogging, setErrSink, startDiagnosticTrace, trace } from "./utils/log";
 import { getJson, postJson } from "./utils/http";
 import { ensureIdentityKeys } from "./utils/identity";
 import { readLegacyPluginData } from "./utils/pluginPaths";
@@ -89,6 +89,7 @@ export default class CollabPlugin extends Plugin {
       clientTelemetry: this.clientTelemetryConfig(),
       context: () => this.diagnosticContext(),
     });
+    setErrSink((ns, args) => this.routeErrorToActivity(ns, args));
     log("load", "starting; uid=", this.settings.uid?.slice(0, 8), "shares=", this.settings.shares.length);
 
     this.statusBar = new StatusBarWidget(this.addStatusBarItem());
@@ -667,6 +668,15 @@ export default class CollabPlugin extends Plugin {
     return null;
   }
 
+  private routeErrorToActivity(ns: string, args: unknown[]): void {
+    const path = findErrPathArg(args, (candidate) => !!this.managerOwning(candidate));
+    if (!path) return;
+    const manager = this.managerOwning(path);
+    if (!manager) return;
+    const relPath = path === manager.localFolder ? undefined : manager.toRel(path);
+    manager.reportErrorEvent(formatErrArgsForActivity(ns, args), relPath);
+  }
+
   private unbindActiveEditor(reason: string, nextPath: string | null = null, nextView: unknown = null): Promise<void> {
     return this.enqueueBindOp(() => this.unbindActiveEditorNow(reason, nextPath, nextView));
   }
@@ -1214,6 +1224,7 @@ export default class CollabPlugin extends Plugin {
   }
 
   async onunload(): Promise<void> {
+    setErrSink(null);
     (this.debouncedRestart as any).cancel?.();
     (this.debouncedPresenceDomRefresh as any).cancel?.();
     (this.debouncedActiveEditorRefresh as any).cancel?.();

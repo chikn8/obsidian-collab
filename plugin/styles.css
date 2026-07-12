@@ -442,6 +442,11 @@
 .collab-activity-action.type-conflict { background: #f97316; }
 .collab-activity-action.type-binary { background: #64748b; }
 .collab-activity-action.type-system { background: #6b7280; }
+.collab-activity-action.type-error { background: #b91c1c; }
+.collab-activity-item.type-error .collab-activity-body {
+  color: var(--text-error);
+  opacity: 0.82;
+}
 .collab-activity-time,
 .collab-activity-device {
   flex: 0 0 auto;

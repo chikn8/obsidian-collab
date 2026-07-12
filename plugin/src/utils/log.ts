@@ -2,6 +2,7 @@ import type { App } from "obsidian";
 import { pluginDataPath } from "./pluginPaths";
 
 type Level = "debug" | "info" | "warn" | "error";
+type ErrSink = (ns: string, args: unknown[], row: LogRow) => void;
 
 export interface LogRow {
   seq: number;
@@ -51,6 +52,8 @@ let telemetryInFlight = false;
 let telemetryDroppedRows = 0;
 let telemetryFailures = 0;
 let telemetryLastFailureAt = "";
+let errSink: ErrSink | null = null;
+let inErrSink = false;
 const sessionStartedAt = Date.now();
 
 const sessionId =
@@ -132,10 +135,38 @@ export function warn(ns: string, ...args: unknown[]): void {
   console.warn(`[collab:${ns}]`, ...args);
 }
 
+export function setErrSink(fn: ErrSink | null): void {
+  errSink = fn;
+}
+
 export function err(ns: string, ...args: unknown[]): void {
   const row = record("error", ns, "error", { args });
   enqueueTelemetry(row);
+  if (errSink && !inErrSink) {
+    inErrSink = true;
+    try {
+      errSink(ns, args, row);
+    } catch {
+      // Error activity reporting must never become a recursive error source.
+    } finally {
+      inErrSink = false;
+    }
+  }
   console.error(`[collab:${ns}]`, ...args);
+}
+
+export function formatErrArgsForActivity(ns: string, args: unknown[], max = 220): string {
+  const sanitizedArgs = sanitizeRecord({ args }).args;
+  const values = Array.isArray(sanitizedArgs) ? sanitizedArgs : args;
+  const text = values.map(formatActivityPart).filter(Boolean).join(" ");
+  return trimActivityMessage(`${ns}: ${text || "plugin error"}`, max);
+}
+
+export function findErrPathArg(args: unknown[], ownsPath: (path: string) => boolean): string | null {
+  for (const arg of args) {
+    if (typeof arg === "string" && ownsPath(arg)) return arg;
+  }
+  return null;
 }
 
 function record(level: Level, ns: string, event: string, fields: Record<string, unknown> = {}): LogRow {
@@ -288,7 +319,7 @@ function clean(value: unknown, key: string, depth: number): unknown {
 function cleanString(value: string, key: string): string {
   if (SECRET_KEY_RE.test(key)) return "[redacted]";
   if (key.toLowerCase().includes("uid")) return redactUid(value);
-  return trim(value);
+  return trim(redactSecretFragments(value));
 }
 
 function trim(value: string): string {
@@ -299,6 +330,29 @@ function trim(value: string): string {
 function redactUid(uid: string): string {
   if (uid.length <= 8) return uid;
   return `${uid.slice(0, 4)}…${uid.slice(-4)}`;
+}
+
+function formatActivityPart(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return redactSecretFragments(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return redactSecretFragments(JSON.stringify(value));
+  } catch {
+    return redactSecretFragments(String(value));
+  }
+}
+
+function redactSecretFragments(value: string): string {
+  return value
+    .replace(/\b(bearer)\s+[-._~+/=A-Za-z0-9]+/gi, "$1 [redacted]")
+    .replace(/\b(secret|password|token|key|code|auth|credential)=([^&\s]+)/gi, "$1=[redacted]")
+    .replace(/\b(secret|password|token|key|code|auth|credential):\s*([^,\s}]+)/gi, "$1: [redacted]");
+}
+
+function trimActivityMessage(value: string, max: number): string {
+  const clean = value.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim();
+  return clean.length <= max ? clean : `${clean.slice(0, max)}...`;
 }
 
 function diagnosticDir(): string {

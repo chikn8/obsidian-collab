@@ -9895,6 +9895,8 @@ var telemetryInFlight = false;
 var telemetryDroppedRows = 0;
 var telemetryFailures = 0;
 var telemetryLastFailureAt = "";
+var errSink = null;
+var inErrSink = false;
 var sessionStartedAt = Date.now();
 var _a, _b;
 var sessionId = ((_b = (_a = globalThis.crypto) == null ? void 0 : _a.randomUUID) == null ? void 0 : _b.call(_a)) || `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -9950,10 +9952,34 @@ function warn2(ns, ...args2) {
   record("warn", ns, "warn", { args: args2 });
   console.warn(`[collab:${ns}]`, ...args2);
 }
+function setErrSink(fn) {
+  errSink = fn;
+}
 function err(ns, ...args2) {
   const row = record("error", ns, "error", { args: args2 });
   enqueueTelemetry(row);
+  if (errSink && !inErrSink) {
+    inErrSink = true;
+    try {
+      errSink(ns, args2, row);
+    } catch (e) {
+    } finally {
+      inErrSink = false;
+    }
+  }
   console.error(`[collab:${ns}]`, ...args2);
+}
+function formatErrArgsForActivity(ns, args2, max2 = 220) {
+  const sanitizedArgs = sanitizeRecord({ args: args2 }).args;
+  const values = Array.isArray(sanitizedArgs) ? sanitizedArgs : args2;
+  const text2 = values.map(formatActivityPart).filter(Boolean).join(" ");
+  return trimActivityMessage(`${ns}: ${text2 || "plugin error"}`, max2);
+}
+function findErrPathArg(args2, ownsPath) {
+  for (const arg of args2) {
+    if (typeof arg === "string" && ownsPath(arg)) return arg;
+  }
+  return null;
 }
 function record(level, ns, event, fields = {}) {
   const now = Date.now();
@@ -10096,7 +10122,7 @@ function clean(value, key, depth) {
 function cleanString(value, key) {
   if (SECRET_KEY_RE.test(key)) return "[redacted]";
   if (key.toLowerCase().includes("uid")) return redactUid(value);
-  return trim(value);
+  return trim(redactSecretFragments(value));
 }
 function trim(value) {
   if (value.length <= MAX_STRING) return value;
@@ -10105,6 +10131,23 @@ function trim(value) {
 function redactUid(uid) {
   if (uid.length <= 8) return uid;
   return `${uid.slice(0, 4)}\u2026${uid.slice(-4)}`;
+}
+function formatActivityPart(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return redactSecretFragments(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return redactSecretFragments(JSON.stringify(value));
+  } catch (e) {
+    return redactSecretFragments(String(value));
+  }
+}
+function redactSecretFragments(value) {
+  return value.replace(/\b(bearer)\s+[-._~+/=A-Za-z0-9]+/gi, "$1 [redacted]").replace(/\b(secret|password|token|key|code|auth|credential)=([^&\s]+)/gi, "$1=[redacted]").replace(/\b(secret|password|token|key|code|auth|credential):\s*([^,\s}]+)/gi, "$1: [redacted]");
+}
+function trimActivityMessage(value, max2) {
+  const clean2 = value.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim();
+  return clean2.length <= max2 ? clean2 : `${clean2.slice(0, max2)}...`;
 }
 function diagnosticDir() {
   return appRef ? pluginDataPath(appRef, "diagnostics") : ".obsidian/plugins/live-collab/diagnostics";
@@ -12737,6 +12780,7 @@ function isElementLike(value) {
 
 // src/collab/EventLog.ts
 var MAX_TEXT = 2e3;
+var MAX_ERROR_TEXT = 220;
 var MAX_PATH = 512;
 var MAX_DETAIL_STRING = 256;
 function normalizeEvent(input) {
@@ -12753,7 +12797,7 @@ function normalizeEvent(input) {
   const path = cleanString2(input.path, MAX_PATH);
   const oldPath = cleanString2(input.oldPath, MAX_PATH);
   const newPath = cleanString2(input.newPath, MAX_PATH);
-  const text2 = cleanString2(input.text, MAX_TEXT);
+  const text2 = cleanString2(input.text, input.type === "error" ? MAX_ERROR_TEXT : MAX_TEXT);
   const count2 = finiteNumber(input.count);
   const details = cleanDetails(input.details);
   if (device) event.device = device;
@@ -12808,6 +12852,8 @@ function formatEvent(event) {
       return event.path && event.newPath ? `${who} kept a conflict copy of ${event.path} at ${event.newPath}` : `${who} created a conflict copy`;
     case "binary":
       return path ? `${who} updated attachment ${path}` : `${who} updated an attachment`;
+    case "error":
+      return event.text ? `Plugin error: ${event.text}${path ? ` (${path})` : ""}` : "Plugin error";
     case "system":
       return event.text || "System event";
     default:
@@ -12837,6 +12883,44 @@ function cleanDetails(details) {
   return out;
 }
 
+// src/collab/ErrorActivityGuard.ts
+var ERROR_DEDUPE_MS = 5 * 6e4;
+var ERROR_RATE_WINDOW_MS = 60 * 6e4;
+var ERROR_RATE_LIMIT = 10;
+var ERROR_RATE_MUTED_MESSAGE = "error reporting muted for this share (rate limit)";
+var ErrorActivityGuard = class {
+  constructor() {
+    this.eventTimes = [];
+    this.dedupe = /* @__PURE__ */ new Map();
+    this.rateMuted = false;
+  }
+  next(message, path, now = Date.now()) {
+    this.prune(now);
+    const dedupeKey = `${message}
+${path || ""}`;
+    const lastAt = this.dedupe.get(dedupeKey) || 0;
+    if (now - lastAt < ERROR_DEDUPE_MS) return "skip";
+    if (this.eventTimes.length >= ERROR_RATE_LIMIT) {
+      if (!this.rateMuted) {
+        this.rateMuted = true;
+        return "muted";
+      }
+      return "skip";
+    }
+    this.rateMuted = false;
+    this.dedupe.set(dedupeKey, now);
+    this.eventTimes.push(now);
+    return "post";
+  }
+  prune(now) {
+    this.eventTimes = this.eventTimes.filter((at) => now - at < ERROR_RATE_WINDOW_MS);
+    for (const [key, at] of this.dedupe) {
+      if (now - at >= ERROR_DEDUPE_MS) this.dedupe.delete(key);
+    }
+    if (this.eventTimes.length < ERROR_RATE_LIMIT) this.rateMuted = false;
+  }
+};
+
 // src/collab/SyncManager.ts
 function newFileId() {
   var _a2, _b2;
@@ -12863,6 +12947,8 @@ var SyncManager = class {
     this.fileIds = /* @__PURE__ */ new Map();
     this.manifestMutationSeq = 0;
     this.eventSeq = 0;
+    this.errorActivityGuard = new ErrorActivityGuard();
+    this.reportingErrorEvent = false;
     this.lastPresenceRelPath = null;
     this.onlineAnnounced = false;
     this.editEventDebounce = /* @__PURE__ */ new Map();
@@ -13064,6 +13150,23 @@ var SyncManager = class {
       return;
     }
     this.appendActivityEvent("message", { text: text2 });
+  }
+  reportErrorEvent(message, path) {
+    if (this.reportingErrorEvent) return;
+    if (this.role !== "editor") return;
+    if (!this.eventsArray) return;
+    const now = Date.now();
+    const text2 = cleanErrorEventMessage(message);
+    if (!text2) return;
+    this.reportingErrorEvent = true;
+    try {
+      const action = this.errorActivityGuard.next(text2, path, now);
+      if (action === "post") this.appendActivityEvent("error", { text: text2, path });
+      else if (action === "muted") this.appendActivityEvent("error", { text: ERROR_RATE_MUTED_MESSAGE });
+    } catch (e) {
+    } finally {
+      this.reportingErrorEvent = false;
+    }
   }
   diagnosticSnapshot() {
     var _a2, _b2;
@@ -14795,6 +14898,9 @@ var SyncManager = class {
     return hasBlockedSyncSegment(path);
   }
 };
+function cleanErrorEventMessage(value) {
+  return value.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim();
+}
 
 // src/collab/InstanceWatch.ts
 var import_obsidian5 = require("obsidian");
@@ -16725,6 +16831,8 @@ function actionIcon(type) {
       return "triangle-alert";
     case "binary":
       return "paperclip";
+    case "error":
+      return "octagon-alert";
     case "system":
       return "info";
     default:
@@ -16757,6 +16865,8 @@ function actionLabel(type) {
       return "Conflict copy";
     case "binary":
       return "Attachment update";
+    case "error":
+      return "Plugin error";
     case "system":
       return "System";
     default:
@@ -17436,6 +17546,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       clientTelemetry: this.clientTelemetryConfig(),
       context: () => this.diagnosticContext()
     });
+    setErrSink((ns, args2) => this.routeErrorToActivity(ns, args2));
     log("load", "starting; uid=", (_a2 = this.settings.uid) == null ? void 0 : _a2.slice(0, 8), "shares=", this.settings.shares.length);
     this.statusBar = new StatusBarWidget(this.addStatusBarItem());
     this.addSettingTab(new CollabSettingsTab(this.app, this));
@@ -17930,6 +18041,14 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
   managerOwning(path) {
     for (const m of this.syncManagers.values()) if (m.isInLinkedFolder(path)) return m;
     return null;
+  }
+  routeErrorToActivity(ns, args2) {
+    const path = findErrPathArg(args2, (candidate) => !!this.managerOwning(candidate));
+    if (!path) return;
+    const manager = this.managerOwning(path);
+    if (!manager) return;
+    const relPath = path === manager.localFolder ? void 0 : manager.toRel(path);
+    manager.reportErrorEvent(formatErrArgsForActivity(ns, args2), relPath);
   }
   unbindActiveEditor(reason, nextPath = null, nextView = null) {
     return this.enqueueBindOp(() => this.unbindActiveEditorNow(reason, nextPath, nextView));
@@ -18446,6 +18565,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
   }
   async onunload() {
     var _a2, _b2, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+    setErrSink(null);
     (_b2 = (_a2 = this.debouncedRestart).cancel) == null ? void 0 : _b2.call(_a2);
     (_d = (_c = this.debouncedPresenceDomRefresh).cancel) == null ? void 0 : _d.call(_c);
     (_f = (_e = this.debouncedActiveEditorRefresh).cancel) == null ? void 0 : _f.call(_e);

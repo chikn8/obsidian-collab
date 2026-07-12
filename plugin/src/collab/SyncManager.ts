@@ -43,6 +43,7 @@ import {
   tabPresenceTarget,
 } from "./PresenceDom";
 import { appendEvent, listEvents, type CollabEvent, type CollabEventInput, type CollabEventType } from "./EventLog";
+import { ErrorActivityGuard, ERROR_RATE_MUTED_MESSAGE } from "./ErrorActivityGuard";
 
 /** Stable file identity. crypto.randomUUID where available, else a random fallback. */
 function newFileId(): string {
@@ -79,6 +80,8 @@ export class SyncManager {
   private fileIds: Map<string, string> = new Map();
   private manifestMutationSeq = 0;
   private eventSeq = 0;
+  private errorActivityGuard = new ErrorActivityGuard();
+  private reportingErrorEvent = false;
   private lastPresenceRelPath: string | null = null;
   private onlineAnnounced = false;
   private editEventDebounce: Map<string, () => void> = new Map();
@@ -292,6 +295,26 @@ export class SyncManager {
       return;
     }
     this.appendActivityEvent("message", { text });
+  }
+
+  reportErrorEvent(message: string, path?: string): void {
+    if (this.reportingErrorEvent) return;
+    if (this.role !== "editor") return;
+    if (!this.eventsArray) return;
+    const now = Date.now();
+    const text = cleanErrorEventMessage(message);
+    if (!text) return;
+
+    this.reportingErrorEvent = true;
+    try {
+      const action = this.errorActivityGuard.next(text, path, now);
+      if (action === "post") this.appendActivityEvent("error", { text, path });
+      else if (action === "muted") this.appendActivityEvent("error", { text: ERROR_RATE_MUTED_MESSAGE });
+    } catch {
+      // Never let activity error reporting create a secondary plugin error.
+    } finally {
+      this.reportingErrorEvent = false;
+    }
   }
 
   diagnosticSnapshot(): Record<string, unknown> {
@@ -2213,4 +2236,8 @@ export class SyncManager {
   private isBlockedSyncFolder(path: string): boolean {
     return hasBlockedSyncSegment(path);
   }
+}
+
+function cleanErrorEventMessage(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim();
 }

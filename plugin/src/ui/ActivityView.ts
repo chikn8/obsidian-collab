@@ -238,6 +238,7 @@ function actionIcon(type: CollabEvent["type"]): string {
     case "resurrect": return "rotate-ccw";
     case "conflict": return "triangle-alert";
     case "binary": return "paperclip";
+    case "error": return "octagon-alert";
     case "system": return "info";
     default: return "circle";
   }
@@ -257,6 +258,7 @@ function actionLabel(type: CollabEvent["type"]): string {
     case "resurrect": return "Recovered local edit";
     case "conflict": return "Conflict copy";
     case "binary": return "Attachment update";
+    case "error": return "Plugin error";
     case "system": return "System";
     default: return "Activity";
   }

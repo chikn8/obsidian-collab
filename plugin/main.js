@@ -11015,6 +11015,19 @@ var EchoGuard = class {
     trace("loop", hit ? "echo-match" : "echo-miss", { path, fp, len: content.length, kind: "modify" });
     return hit;
   }
+  /**
+   * True when `content` matches a live plugin write mark for `path`.
+   *
+   * Unlike `isEcho`, this is a strict peek: it deliberately does not age or
+   * remove marks, because editor-bind reconciliation must not affect vault
+   * event echo handling.
+   */
+  hasRecentFingerprint(path, content) {
+    var _a2, _b2;
+    const fp = fingerprint(content);
+    const now = Date.now();
+    return (_b2 = (_a2 = this.marks.get(path)) == null ? void 0 : _a2.some((m) => m.fp === fp && now - m.ts <= this.ttl)) != null ? _b2 : false;
+  }
   /** True when an incoming create for `path` is a plugin-initiated create. Consumes. */
   isCreatedEcho(path) {
     const hit = this.matches(path, CREATED, true);
@@ -14471,6 +14484,10 @@ var SyncManager = class {
     if (!this.isInLinkedFolder(fullPath)) return null;
     return (_a2 = this.fileProviders.get(this.toRelativePath(fullPath))) != null ? _a2 : null;
   }
+  /** True when a vault-path buffer is an unmodified recent plugin disk write. */
+  hasRecentPluginWrite(fullPath, content) {
+    return this.isInLinkedFolder(fullPath) && this.echo.hasRecentFingerprint(fullPath, content);
+  }
   // ── Deleted-file recovery (Phase B) ────────────────────────────────────────
   /** Tombstoned (deleted) files in this share's manifest — the "Deleted files" list. */
   listDeletedFiles() {
@@ -16248,6 +16265,33 @@ function originName2(origin) {
   return typeof origin;
 }
 
+// src/collab/EditorBindReconcile.ts
+var BIND_GUARDRAIL_MIN_DELETE = 1024;
+var BIND_GUARDRAIL_MIN_RATIO = 0.15;
+function planBindContentReconcile(yContent, viewContent, viewLooksPristine = false) {
+  if (yContent === viewContent) return { action: "none", applied: "none", splices: [], deletedChars: 0 };
+  const splices = diffRanges(yContent, viewContent);
+  const deletedChars = splices.reduce((n, s) => n + s.delCount, 0);
+  if (viewLooksPristine) {
+    return { action: "ytext-wins", applied: "ytext-wins-pristine", splices, deletedChars };
+  }
+  const action = deletedChars > BIND_GUARDRAIL_MIN_DELETE && deletedChars > yContent.length * BIND_GUARDRAIL_MIN_RATIO ? "ytext-wins" : "view-diff";
+  return { action, applied: action, splices, deletedChars };
+}
+function applyBindContentPlanToYText(ytext, plan) {
+  if (plan.action !== "view-diff" || plan.splices.length === 0) return;
+  const apply = () => {
+    for (let i = plan.splices.length - 1; i >= 0; i--) {
+      const { start, delCount, insert } = plan.splices[i];
+      if (delCount > 0) ytext.delete(start, delCount);
+      if (insert.length > 0) ytext.insert(start, insert);
+    }
+  };
+  const doc2 = ytext.doc;
+  if (doc2) doc2.transact(apply, "bind-content-reconcile");
+  else apply();
+}
+
 // src/collab/EditorBinding.ts
 var collabCompartment = new import_state2.Compartment();
 var collabBindingPath = import_state2.Facet.define({
@@ -16259,7 +16303,41 @@ function getEditorView(markdownView) {
   const cm = (_a2 = markdownView == null ? void 0 : markdownView.editor) == null ? void 0 : _a2.cm;
   return cm instanceof import_view2.EditorView ? cm : cm != null ? cm : null;
 }
-function bindEditor(view, ytext, awareness, path, extra = []) {
+function replaceViewContent(view, content) {
+  const docLen = view.state.doc.length;
+  const clamp3 = (pos) => Math.max(0, Math.min(content.length, pos));
+  const selection = import_state2.EditorSelection.create(
+    view.state.selection.ranges.map((range) => import_state2.EditorSelection.range(clamp3(range.anchor), clamp3(range.head))),
+    Math.min(view.state.selection.mainIndex, view.state.selection.ranges.length - 1)
+  );
+  view.dispatch({
+    changes: { from: 0, to: docLen, insert: content },
+    selection
+  });
+}
+function reconcileEditorContentBeforeBind(view, ytext, path, viewLooksPristine) {
+  var _a2;
+  const viewText = view.state.doc.toString();
+  const yText = ytext.toString();
+  if (viewText === yText) return;
+  const plan = planBindContentReconcile(yText, viewText, (_a2 = viewLooksPristine == null ? void 0 : viewLooksPristine(viewText)) != null ? _a2 : false);
+  trace("bind", "bind-content-mismatch", {
+    path,
+    viewLen: viewText.length,
+    yLen: yText.length,
+    applied: plan.applied
+  });
+  err("bind", "editor buffer diverged from synced doc", path || "", {
+    viewLen: viewText.length,
+    yLen: yText.length,
+    applied: plan.applied
+  });
+  if (plan.action === "view-diff") applyBindContentPlanToYText(ytext, plan);
+  else replaceViewContent(view, yText);
+  if (view.state.doc.toString() !== ytext.toString()) replaceViewContent(view, ytext.toString());
+}
+function bindEditor(view, ytext, awareness, path, extra = [], viewLooksPristine) {
+  reconcileEditorContentBeforeBind(view, ytext, path, viewLooksPristine);
   view.dispatch({
     effects: collabCompartment.reconfigure([
       collabBindingPath.of(path || ""),
@@ -17967,7 +18045,10 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     if (presence) extras.push(presence.extension(true));
     if (role !== "editor") extras.push(readOnlyExtension());
     await provider.setEditorBound(true);
-    bindEditor(ev, ytext, awareness, path, extras);
+    bindEditor(ev, ytext, awareness, path, extras, (viewText) => {
+      var _a3;
+      return (_a3 = manager == null ? void 0 : manager.hasRecentPluginWrite(path, viewText)) != null ? _a3 : false;
+    });
     presence == null ? void 0 : presence.start();
     manager == null ? void 0 : manager.refreshPresenceUi();
     this.boundView = ev;

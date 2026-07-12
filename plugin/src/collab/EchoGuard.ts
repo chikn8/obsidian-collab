@@ -109,6 +109,19 @@ export class EchoGuard {
     return hit;
   }
 
+  /**
+   * True when `content` matches a live plugin write mark for `path`.
+   *
+   * Unlike `isEcho`, this is a strict peek: it deliberately does not age or
+   * remove marks, because editor-bind reconciliation must not affect vault
+   * event echo handling.
+   */
+  hasRecentFingerprint(path: string, content: string): boolean {
+    const fp = fingerprint(content);
+    const now = Date.now();
+    return this.marks.get(path)?.some((m) => m.fp === fp && now - m.ts <= this.ttl) ?? false;
+  }
+
   /** True when an incoming create for `path` is a plugin-initiated create. Consumes. */
   isCreatedEcho(path: string): boolean {
     const hit = this.matches(path, CREATED, true);

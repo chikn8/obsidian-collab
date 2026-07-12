@@ -586,7 +586,7 @@ export default class CollabPlugin extends Plugin {
     if (role !== "editor") extras.push(readOnlyExtension());
 
     await provider.setEditorBound(true);
-    bindEditor(ev, ytext, awareness, path, extras);
+    bindEditor(ev, ytext, awareness, path, extras, (viewText) => manager?.hasRecentPluginWrite(path, viewText) ?? false);
     presence?.start();
     manager?.refreshPresenceUi();
 

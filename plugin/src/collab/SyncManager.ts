@@ -1759,6 +1759,11 @@ export class SyncManager {
     return this.fileProviders.get(this.toRelativePath(fullPath)) ?? null;
   }
 
+  /** True when a vault-path buffer is an unmodified recent plugin disk write. */
+  hasRecentPluginWrite(fullPath: string, content: string): boolean {
+    return this.isInLinkedFolder(fullPath) && this.echo.hasRecentFingerprint(fullPath, content);
+  }
+
   // ── Deleted-file recovery (Phase B) ────────────────────────────────────────
 
   /** Tombstoned (deleted) files in this share's manifest — the "Deleted files" list. */

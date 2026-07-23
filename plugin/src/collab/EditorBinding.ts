@@ -9,6 +9,7 @@ import {
   planBindContentReconcile,
   shouldRetryBindContentReconcile,
 } from "./EditorBindReconcile";
+import { clearUnboundEditorContent, matchesUnboundEditorContent } from "./EditorBindStash";
 import { err, trace } from "../utils/log";
 
 /**
@@ -50,7 +51,7 @@ function replaceViewContent(view: EditorView, content: string): void {
   });
 }
 
-const BIND_RECONCILE_SETTLE_MS = 120;
+const BIND_RECONCILE_SETTLE_MS = 250;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -67,7 +68,16 @@ export async function reconcileEditorBeforeBind(
   let yText = ytext.toString();
   if (viewText === yText) return true;
 
-  let plan = planBindContentReconcile(yText, viewText, viewLooksPristine?.(viewText) ?? false);
+  const planForCurrentContent = () => {
+    const looksPristine = viewLooksPristine?.(viewText) ?? false;
+    return planBindContentReconcile(
+      yText,
+      viewText,
+      looksPristine,
+      !looksPristine && !!path && matchesUnboundEditorContent(path, viewText)
+    );
+  };
+  let plan = planForCurrentContent();
   if (shouldRetryBindContentReconcile(plan)) {
     trace("bind", "bind-content-settle-retry", {
       path,
@@ -83,7 +93,7 @@ export async function reconcileEditorBeforeBind(
     viewText = view.state.doc.toString();
     yText = ytext.toString();
     if (viewText === yText) return true;
-    plan = planBindContentReconcile(yText, viewText, viewLooksPristine?.(viewText) ?? false);
+    plan = planForCurrentContent();
   }
 
   trace("bind", "bind-content-mismatch", {
@@ -110,10 +120,8 @@ export function bindEditor(
   ytext: Y.Text,
   awareness: Awareness,
   path?: string,
-  extra: Extension[] = [],
-  viewLooksPristine?: (viewText: string) => boolean
+  extra: Extension[] = []
 ): void {
-  void viewLooksPristine;
   if (view.state.doc.toString() !== ytext.toString()) replaceViewContent(view, ytext.toString());
   // yCollab handles text sync/undo. Cursor awareness is local so we can keep
   // identity, focus clearing, and diagnostics under our control.
@@ -125,6 +133,7 @@ export function bindEditor(
       ...extra,
     ]),
   });
+  if (path) clearUnboundEditorContent(path);
 }
 
 export function unbindEditor(view: EditorView): void {

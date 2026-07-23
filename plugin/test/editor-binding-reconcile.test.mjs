@@ -15,6 +15,11 @@ import {
   planBindContentReconcile,
 } from "../src/collab/EditorBindReconcile.ts";
 import { EchoGuard } from "../src/collab/EchoGuard.ts";
+import {
+  clearUnboundEditorContent,
+  matchesUnboundEditorContent,
+  stashUnboundEditorContent,
+} from "../src/collab/EditorBindStash.ts";
 
 let failures = 0;
 function check(name, cond, extra = "") {
@@ -74,6 +79,56 @@ console.log("editor binding reconcile\n");
 }
 
 {
+  const view = "v".repeat(38);
+  const yContent = `${view}${"p".repeat(371)}`;
+  const plan = planBindContentReconcile(yContent, view);
+  check("38-vs-409 stale buffer is not applied as a view diff",
+    yContent.length === 409 && plan.action === "ytext-wins" && plan.applied === "ytext-wins-large-delete",
+    `viewLen=${view.length} yLen=${yContent.length} deleted=${plan.deletedChars} applied=${plan.applied}`);
+}
+
+{
+  const view = "starttypedend";
+  const atBudget = planBindContentReconcile(`start${"x".repeat(128)}end`, view);
+  const overBudget = planBindContentReconcile(`start${"x".repeat(129)}end`, view);
+  check("128 deleted chars remains eligible for a view diff",
+    atBudget.action === "view-diff" && atBudget.deletedChars === 128 && atBudget.insertedChars < 2048,
+    `action=${atBudget.action} deleted=${atBudget.deletedChars} inserted=${atBudget.insertedChars}`);
+  check("129 deleted chars makes ytext win",
+    overBudget.action === "ytext-wins" && overBudget.applied === "ytext-wins-large-delete" && overBudget.deletedChars === 129,
+    `action=${overBudget.action} deleted=${overBudget.deletedChars} applied=${overBudget.applied}`);
+}
+
+{
+  const path = "Shared/stashed-note.md";
+  const at = 1_000_000;
+  const view = "local buffer\n";
+  const yContent = "local buffer\npeer addition\n";
+  stashUnboundEditorContent(path, view, at);
+  const stashedPlan = planBindContentReconcile(
+    yContent,
+    view,
+    false,
+    matchesUnboundEditorContent(path, view, at + 1)
+  );
+  check("unbound Y.Text stash makes matching stale buffer yield to ytext",
+    stashedPlan.action === "ytext-wins" && stashedPlan.applied === "ytext-wins-stale-buffer",
+    `action=${stashedPlan.action} applied=${stashedPlan.applied}`);
+  clearUnboundEditorContent(path);
+  check("stash is cleared after a successful bind", !matchesUnboundEditorContent(path, view, at + 1));
+
+  stashUnboundEditorContent(path, view, at);
+  const expiredPlan = planBindContentReconcile(
+    yContent,
+    view,
+    false,
+    matchesUnboundEditorContent(path, view, at + 10 * 60_000 + 1)
+  );
+  check("expired unbound stash is ignored", expiredPlan.applied === "view-diff", `applied=${expiredPlan.applied}`);
+  clearUnboundEditorContent(path);
+}
+
+{
   const rich = `${"0123456789abcdef\n".repeat(100)}tail\n`;
   const staleView = `${rich.slice(0, 80)}tail\n`;
   const { text } = makeText(rich);
@@ -109,6 +164,15 @@ console.log("editor binding reconcile\n");
   check("insert over 2048-char boundary makes ytext win",
     overPlan.action === "ytext-wins" && overPlan.applied === "ytext-wins-large-insert" && overPlan.insertedChars === 2049,
     `action=${overPlan.action} applied=${overPlan.applied} inserted=${overPlan.insertedChars}`);
+}
+
+{
+  const yContent = "settled synced content\n";
+  const transientView = `${yContent}typed during a short unbound gap\n`;
+  const settled = planSettledBindContentReconcile(yContent, transientView, yContent);
+  check("view diff settles to equal content before applying",
+    settled.firstPlan.applied === "view-diff" && settled.finalPlan.action === "none",
+    `first=${settled.firstPlan.applied} final=${settled.finalPlan.applied}`);
 }
 
 {

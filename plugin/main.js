@@ -16266,10 +16266,9 @@ function originName2(origin) {
 }
 
 // src/collab/EditorBindReconcile.ts
-var BIND_GUARDRAIL_MIN_DELETE = 1024;
-var BIND_GUARDRAIL_MIN_RATIO = 0.15;
+var BIND_GUARDRAIL_MAX_DELETE = 128;
 var BIND_GUARDRAIL_MAX_INSERT = 2048;
-function planBindContentReconcile(yContent, viewContent, viewLooksPristine = false) {
+function planBindContentReconcile(yContent, viewContent, viewLooksPristine = false, viewMatchesUnboundContent = false) {
   if (yContent === viewContent) return { action: "none", applied: "none", splices: [], deletedChars: 0, insertedChars: 0 };
   const splices = diffRanges(yContent, viewContent);
   const deletedChars = splices.reduce((n, s) => n + s.delCount, 0);
@@ -16277,17 +16276,19 @@ function planBindContentReconcile(yContent, viewContent, viewLooksPristine = fal
   if (viewLooksPristine) {
     return { action: "ytext-wins", applied: "ytext-wins-pristine", splices, deletedChars, insertedChars };
   }
-  const hasLargeDelete = deletedChars > BIND_GUARDRAIL_MIN_DELETE && deletedChars > yContent.length * BIND_GUARDRAIL_MIN_RATIO;
+  if (viewMatchesUnboundContent) {
+    return { action: "ytext-wins", applied: "ytext-wins-stale-buffer", splices, deletedChars, insertedChars };
+  }
   if (insertedChars > BIND_GUARDRAIL_MAX_INSERT) {
     return { action: "ytext-wins", applied: "ytext-wins-large-insert", splices, deletedChars, insertedChars };
   }
-  if (hasLargeDelete) {
+  if (deletedChars > BIND_GUARDRAIL_MAX_DELETE) {
     return { action: "ytext-wins", applied: "ytext-wins-large-delete", splices, deletedChars, insertedChars };
   }
   return { action: "view-diff", applied: "view-diff", splices, deletedChars, insertedChars };
 }
 function shouldRetryBindContentReconcile(plan) {
-  return plan.applied === "ytext-wins-large-delete" || plan.applied === "ytext-wins-large-insert";
+  return plan.action !== "none" && plan.applied !== "ytext-wins-pristine";
 }
 function applyBindContentPlanToYText(ytext, plan) {
   if (plan.action !== "view-diff" || plan.splices.length === 0) return;
@@ -16301,6 +16302,34 @@ function applyBindContentPlanToYText(ytext, plan) {
   const doc2 = ytext.doc;
   if (doc2) doc2.transact(apply, "bind-content-reconcile");
   else apply();
+}
+
+// src/collab/EditorBindStash.ts
+var UNBOUND_EDITOR_CONTENT_TTL_MS = 10 * 6e4;
+var MAX_UNBOUND_EDITOR_CONTENT = 8;
+var unboundEditorContent = /* @__PURE__ */ new Map();
+function pruneUnboundEditorContent(now) {
+  for (const [path, entry] of unboundEditorContent) {
+    if (now - entry.at > UNBOUND_EDITOR_CONTENT_TTL_MS) unboundEditorContent.delete(path);
+  }
+  while (unboundEditorContent.size > MAX_UNBOUND_EDITOR_CONTENT) {
+    const oldestPath = unboundEditorContent.keys().next().value;
+    if (oldestPath == null) return;
+    unboundEditorContent.delete(oldestPath);
+  }
+}
+function stashUnboundEditorContent(path, content, at = Date.now()) {
+  pruneUnboundEditorContent(at);
+  unboundEditorContent.delete(path);
+  unboundEditorContent.set(path, { content, at });
+  pruneUnboundEditorContent(at);
+}
+function matchesUnboundEditorContent(path, content, now = Date.now()) {
+  const entry = unboundEditorContent.get(path);
+  return !!entry && now - entry.at <= UNBOUND_EDITOR_CONTENT_TTL_MS && entry.content === content;
+}
+function clearUnboundEditorContent(path) {
+  unboundEditorContent.delete(path);
 }
 
 // src/collab/EditorBinding.ts
@@ -16326,16 +16355,25 @@ function replaceViewContent(view, content) {
     selection
   });
 }
-var BIND_RECONCILE_SETTLE_MS = 120;
+var BIND_RECONCILE_SETTLE_MS = 250;
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 async function reconcileEditorBeforeBind(view, ytext, path, viewLooksPristine, isStillCurrent) {
-  var _a2, _b2;
   let viewText = view.state.doc.toString();
   let yText = ytext.toString();
   if (viewText === yText) return true;
-  let plan = planBindContentReconcile(yText, viewText, (_a2 = viewLooksPristine == null ? void 0 : viewLooksPristine(viewText)) != null ? _a2 : false);
+  const planForCurrentContent = () => {
+    var _a2;
+    const looksPristine = (_a2 = viewLooksPristine == null ? void 0 : viewLooksPristine(viewText)) != null ? _a2 : false;
+    return planBindContentReconcile(
+      yText,
+      viewText,
+      looksPristine,
+      !looksPristine && !!path && matchesUnboundEditorContent(path, viewText)
+    );
+  };
+  let plan = planForCurrentContent();
   if (shouldRetryBindContentReconcile(plan)) {
     trace("bind", "bind-content-settle-retry", {
       path,
@@ -16351,7 +16389,7 @@ async function reconcileEditorBeforeBind(view, ytext, path, viewLooksPristine, i
     viewText = view.state.doc.toString();
     yText = ytext.toString();
     if (viewText === yText) return true;
-    plan = planBindContentReconcile(yText, viewText, (_b2 = viewLooksPristine == null ? void 0 : viewLooksPristine(viewText)) != null ? _b2 : false);
+    plan = planForCurrentContent();
   }
   trace("bind", "bind-content-mismatch", {
     path,
@@ -16369,8 +16407,7 @@ async function reconcileEditorBeforeBind(view, ytext, path, viewLooksPristine, i
   if (view.state.doc.toString() !== ytext.toString()) replaceViewContent(view, ytext.toString());
   return true;
 }
-function bindEditor(view, ytext, awareness, path, extra = [], viewLooksPristine) {
-  void viewLooksPristine;
+function bindEditor(view, ytext, awareness, path, extra = []) {
   if (view.state.doc.toString() !== ytext.toString()) replaceViewContent(view, ytext.toString());
   view.dispatch({
     effects: collabCompartment.reconfigure([
@@ -16380,6 +16417,7 @@ function bindEditor(view, ytext, awareness, path, extra = [], viewLooksPristine)
       ...extra
     ])
   });
+  if (path) clearUnboundEditorContent(path);
 }
 function unbindEditor(view) {
   view.dispatch({ effects: collabCompartment.reconfigure([]) });
@@ -18103,10 +18141,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     );
     if (!reconciled) return;
     await provider.setEditorBound(true);
-    bindEditor(ev, ytext, awareness, path, extras, (viewText) => {
-      var _a3;
-      return (_a3 = manager == null ? void 0 : manager.hasRecentPluginWrite(path, viewText)) != null ? _a3 : false;
-    });
+    bindEditor(ev, ytext, awareness, path, extras);
     presence == null ? void 0 : presence.start();
     manager == null ? void 0 : manager.refreshPresenceUi();
     this.boundView = ev;
@@ -18204,6 +18239,9 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       hasProvider: !!this.boundProvider
     });
     (_a2 = this.boundPresence) == null ? void 0 : _a2.stop();
+    if (oldPath && this.boundProvider) {
+      stashUnboundEditorContent(oldPath, this.boundProvider.getYText().toString());
+    }
     if (this.boundView) {
       try {
         unbindEditor(this.boundView);

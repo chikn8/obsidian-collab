@@ -1,8 +1,7 @@
 import * as Y from "yjs";
 import { diffRanges, type TextSplice } from "../utils/textDiff";
 
-const BIND_GUARDRAIL_MIN_DELETE = 1024;
-const BIND_GUARDRAIL_MIN_RATIO = 0.15;
+export const BIND_GUARDRAIL_MAX_DELETE = 128;
 export const BIND_GUARDRAIL_MAX_INSERT = 2048;
 
 export type BindContentReconcileAction = "none" | "view-diff" | "ytext-wins";
@@ -10,6 +9,7 @@ export type BindContentReconcileApplied =
   | "none"
   | "view-diff"
   | "ytext-wins-pristine"
+  | "ytext-wins-stale-buffer"
   | "ytext-wins-large-delete"
   | "ytext-wins-large-insert";
 
@@ -24,7 +24,8 @@ export interface BindContentReconcilePlan {
 export function planBindContentReconcile(
   yContent: string,
   viewContent: string,
-  viewLooksPristine = false
+  viewLooksPristine = false,
+  viewMatchesUnboundContent = false
 ): BindContentReconcilePlan {
   if (yContent === viewContent) return { action: "none", applied: "none", splices: [], deletedChars: 0, insertedChars: 0 };
   const splices = diffRanges(yContent, viewContent);
@@ -33,22 +34,21 @@ export function planBindContentReconcile(
   if (viewLooksPristine) {
     return { action: "ytext-wins", applied: "ytext-wins-pristine", splices, deletedChars, insertedChars };
   }
-  const hasLargeDelete =
-    deletedChars > BIND_GUARDRAIL_MIN_DELETE &&
-    deletedChars > yContent.length * BIND_GUARDRAIL_MIN_RATIO;
+  if (viewMatchesUnboundContent) {
+    return { action: "ytext-wins", applied: "ytext-wins-stale-buffer", splices, deletedChars, insertedChars };
+  }
   if (insertedChars > BIND_GUARDRAIL_MAX_INSERT) {
     return { action: "ytext-wins", applied: "ytext-wins-large-insert", splices, deletedChars, insertedChars };
   }
-  if (hasLargeDelete) {
+  if (deletedChars > BIND_GUARDRAIL_MAX_DELETE) {
     return { action: "ytext-wins", applied: "ytext-wins-large-delete", splices, deletedChars, insertedChars };
   }
-  // Bind-time view diffs exist to preserve a human's 1-2s of typed-while-unbound input.
-  // Anything larger looks like Obsidian's foreign pane buffer from another file.
+  // A human's typed-while-unbound window cannot delete more than about a line.
   return { action: "view-diff", applied: "view-diff", splices, deletedChars, insertedChars };
 }
 
 export function shouldRetryBindContentReconcile(plan: BindContentReconcilePlan): boolean {
-  return plan.applied === "ytext-wins-large-delete" || plan.applied === "ytext-wins-large-insert";
+  return plan.action !== "none" && plan.applied !== "ytext-wins-pristine";
 }
 
 export interface SettledBindContentReconcilePlan {

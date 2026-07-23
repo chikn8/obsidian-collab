@@ -6,6 +6,7 @@ import { InstanceWatch } from "./collab/InstanceWatch";
 import { StatusBarWidget } from "./ui/StatusBarWidget";
 import { CollabSettingsTab } from "./ui/SettingsTab";
 import { collabEditorExtension, getEditorView, bindEditor, unbindEditor, readOnlyExtension, currentCollabBindingPath, reconcileEditorBeforeBind } from "./collab/EditorBinding";
+import { stashUnboundEditorContent } from "./collab/EditorBindStash";
 import { PresenceController } from "./collab/Presence";
 import { selfSelectionExtension } from "./collab/SelfSelection";
 import { deviceScopedColor } from "./collab/YjsProvider";
@@ -607,7 +608,7 @@ export default class CollabPlugin extends Plugin {
     if (!reconciled) return;
 
     await provider.setEditorBound(true);
-    bindEditor(ev, ytext, awareness, path, extras, (viewText) => manager?.hasRecentPluginWrite(path, viewText) ?? false);
+    bindEditor(ev, ytext, awareness, path, extras);
     presence?.start();
     manager?.refreshPresenceUi();
 
@@ -713,6 +714,9 @@ export default class CollabPlugin extends Plugin {
       hasProvider: !!this.boundProvider,
     });
     this.boundPresence?.stop();
+    if (oldPath && this.boundProvider) {
+      stashUnboundEditorContent(oldPath, this.boundProvider.getYText().toString());
+    }
     if (this.boundView) {
       try { unbindEditor(this.boundView); } catch { /* view may be gone */ }
     }

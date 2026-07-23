@@ -10300,8 +10300,8 @@ var MuxConnection = class {
     this.ws = null;
     this.notifyClosed();
     if (!this.shouldConnect || this.providers.size === 0) return;
-    const delay = reconnectDelayForAttempt(this.attempts++);
-    this.reconnectTimer = setTimeout(() => this.connect(), delay);
+    const delay2 = reconnectDelayForAttempt(this.attempts++);
+    this.reconnectTimer = setTimeout(() => this.connect(), delay2);
   }
   notifyClosed() {
     this.providers.forEach((set) => set.forEach((p) => {
@@ -14632,7 +14632,7 @@ var SyncManager = class {
     }
     if (this.presenceAnchorRetryTimer || this.presenceAnchorRetryCount >= 10) return;
     const attempt = ++this.presenceAnchorRetryCount;
-    const delay = Math.min(2e3, 250 + attempt * 150);
+    const delay2 = Math.min(2e3, 250 + attempt * 150);
     this.presenceAnchorRetryTimer = setTimeout(() => {
       this.presenceAnchorRetryTimer = null;
       trace("presence", "anchor-retry", {
@@ -14643,7 +14643,7 @@ var SyncManager = class {
       });
       this.lastPresenceSig = "";
       this.debouncedPresence();
-    }, delay);
+    }, delay2);
   }
   clearPresenceAnchorRetry() {
     if (!this.presenceAnchorRetryTimer) return;
@@ -16268,15 +16268,26 @@ function originName2(origin) {
 // src/collab/EditorBindReconcile.ts
 var BIND_GUARDRAIL_MIN_DELETE = 1024;
 var BIND_GUARDRAIL_MIN_RATIO = 0.15;
+var BIND_GUARDRAIL_MAX_INSERT = 2048;
 function planBindContentReconcile(yContent, viewContent, viewLooksPristine = false) {
-  if (yContent === viewContent) return { action: "none", applied: "none", splices: [], deletedChars: 0 };
+  if (yContent === viewContent) return { action: "none", applied: "none", splices: [], deletedChars: 0, insertedChars: 0 };
   const splices = diffRanges(yContent, viewContent);
   const deletedChars = splices.reduce((n, s) => n + s.delCount, 0);
+  const insertedChars = splices.reduce((n, s) => n + s.insert.length, 0);
   if (viewLooksPristine) {
-    return { action: "ytext-wins", applied: "ytext-wins-pristine", splices, deletedChars };
+    return { action: "ytext-wins", applied: "ytext-wins-pristine", splices, deletedChars, insertedChars };
   }
-  const action = deletedChars > BIND_GUARDRAIL_MIN_DELETE && deletedChars > yContent.length * BIND_GUARDRAIL_MIN_RATIO ? "ytext-wins" : "view-diff";
-  return { action, applied: action, splices, deletedChars };
+  const hasLargeDelete = deletedChars > BIND_GUARDRAIL_MIN_DELETE && deletedChars > yContent.length * BIND_GUARDRAIL_MIN_RATIO;
+  if (insertedChars > BIND_GUARDRAIL_MAX_INSERT) {
+    return { action: "ytext-wins", applied: "ytext-wins-large-insert", splices, deletedChars, insertedChars };
+  }
+  if (hasLargeDelete) {
+    return { action: "ytext-wins", applied: "ytext-wins-large-delete", splices, deletedChars, insertedChars };
+  }
+  return { action: "view-diff", applied: "view-diff", splices, deletedChars, insertedChars };
+}
+function shouldRetryBindContentReconcile(plan) {
+  return plan.applied === "ytext-wins-large-delete" || plan.applied === "ytext-wins-large-insert";
 }
 function applyBindContentPlanToYText(ytext, plan) {
   if (plan.action !== "view-diff" || plan.splices.length === 0) return;
@@ -16315,12 +16326,33 @@ function replaceViewContent(view, content) {
     selection
   });
 }
-function reconcileEditorContentBeforeBind(view, ytext, path, viewLooksPristine) {
-  var _a2;
-  const viewText = view.state.doc.toString();
-  const yText = ytext.toString();
-  if (viewText === yText) return;
-  const plan = planBindContentReconcile(yText, viewText, (_a2 = viewLooksPristine == null ? void 0 : viewLooksPristine(viewText)) != null ? _a2 : false);
+var BIND_RECONCILE_SETTLE_MS = 120;
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function reconcileEditorBeforeBind(view, ytext, path, viewLooksPristine, isStillCurrent) {
+  var _a2, _b2;
+  let viewText = view.state.doc.toString();
+  let yText = ytext.toString();
+  if (viewText === yText) return true;
+  let plan = planBindContentReconcile(yText, viewText, (_a2 = viewLooksPristine == null ? void 0 : viewLooksPristine(viewText)) != null ? _a2 : false);
+  if (shouldRetryBindContentReconcile(plan)) {
+    trace("bind", "bind-content-settle-retry", {
+      path,
+      viewLen: viewText.length,
+      yLen: yText.length,
+      applied: plan.applied
+    });
+    await delay(BIND_RECONCILE_SETTLE_MS);
+    if (!view.dom.isConnected || isStillCurrent && !isStillCurrent()) {
+      trace("bind", "bind-content-settle-abort", { path, applied: plan.applied });
+      return false;
+    }
+    viewText = view.state.doc.toString();
+    yText = ytext.toString();
+    if (viewText === yText) return true;
+    plan = planBindContentReconcile(yText, viewText, (_b2 = viewLooksPristine == null ? void 0 : viewLooksPristine(viewText)) != null ? _b2 : false);
+  }
   trace("bind", "bind-content-mismatch", {
     path,
     viewLen: viewText.length,
@@ -16335,9 +16367,11 @@ function reconcileEditorContentBeforeBind(view, ytext, path, viewLooksPristine) 
   if (plan.action === "view-diff") applyBindContentPlanToYText(ytext, plan);
   else replaceViewContent(view, yText);
   if (view.state.doc.toString() !== ytext.toString()) replaceViewContent(view, ytext.toString());
+  return true;
 }
 function bindEditor(view, ytext, awareness, path, extra = [], viewLooksPristine) {
-  reconcileEditorContentBeforeBind(view, ytext, path, viewLooksPristine);
+  void viewLooksPristine;
+  if (view.state.doc.toString() !== ytext.toString()) replaceViewContent(view, ytext.toString());
   view.dispatch({
     effects: collabCompartment.reconfigure([
       collabBindingPath.of(path || ""),
@@ -17989,7 +18023,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     return this.enqueueBindOp(() => this.bindActiveEditorNow(activeFile, attempt));
   }
   async bindActiveEditorNow(activeFile, attempt) {
-    var _a2, _b2, _c, _d;
+    var _a2, _b2, _c, _d, _e, _f, _g, _h;
     if (attempt > 0 && ((_b2 = (_a2 = this.app.workspace.getActiveFile()) == null ? void 0 : _a2.path) != null ? _b2 : null) !== ((_c = activeFile == null ? void 0 : activeFile.path) != null ? _c : null)) {
       return;
     }
@@ -18001,7 +18035,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     if ((this.boundView || this.boundProvider) && (this.boundPath !== path || this.boundView !== ev)) {
       await this.unbindActiveEditorNow("active-leaf-change", path, ev);
     }
-    if (!ev || !path || !activeFile) {
+    if (!view || !ev || !path || !activeFile) {
       if (!ev && path && activeFile && this.managerOwning(path) && attempt < 20) {
         trace("bind", "editor-view-not-ready", { path, attempt });
         setTimeout(() => void this.bindActiveEditor(activeFile, attempt + 1), 300);
@@ -18013,6 +18047,14 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     if (this.boundPath === path && this.boundView === ev && marker !== path) {
       trace("bind", "binding-marker-missing", { path, marker });
       await this.unbindActiveEditorNow("binding-marker-missing", path, ev);
+    }
+    if (((_f = (_e = view.file) == null ? void 0 : _e.path) != null ? _f : null) !== path) {
+      trace("bind", "markdown-view-path-mismatch", {
+        path,
+        markdownPath: (_h = (_g = view.file) == null ? void 0 : _g.path) != null ? _h : null,
+        attempt
+      });
+      return;
     }
     let provider = null;
     for (const m of this.syncManagers.values()) {
@@ -18044,6 +18086,22 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
     }));
     if (presence) extras.push(presence.extension(true));
     if (role !== "editor") extras.push(readOnlyExtension());
+    const isStillCurrent = () => {
+      var _a3, _b3;
+      const currentView = this.app.workspace.getActiveViewOfType(import_obsidian10.MarkdownView);
+      return !!currentView && currentView === view && getEditorView(currentView) === ev && ((_b3 = (_a3 = currentView.file) == null ? void 0 : _a3.path) != null ? _b3 : null) === path;
+    };
+    const reconciled = await reconcileEditorBeforeBind(
+      ev,
+      ytext,
+      path,
+      (viewText) => {
+        var _a3;
+        return (_a3 = manager == null ? void 0 : manager.hasRecentPluginWrite(path, viewText)) != null ? _a3 : false;
+      },
+      isStillCurrent
+    );
+    if (!reconciled) return;
     await provider.setEditorBound(true);
     bindEditor(ev, ytext, awareness, path, extras, (viewText) => {
       var _a3;

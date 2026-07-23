@@ -5,7 +5,7 @@ import { FileProvider } from "./collab/FileProvider";
 import { InstanceWatch } from "./collab/InstanceWatch";
 import { StatusBarWidget } from "./ui/StatusBarWidget";
 import { CollabSettingsTab } from "./ui/SettingsTab";
-import { collabEditorExtension, getEditorView, bindEditor, unbindEditor, readOnlyExtension, currentCollabBindingPath } from "./collab/EditorBinding";
+import { collabEditorExtension, getEditorView, bindEditor, unbindEditor, readOnlyExtension, currentCollabBindingPath, reconcileEditorBeforeBind } from "./collab/EditorBinding";
 import { PresenceController } from "./collab/Presence";
 import { selfSelectionExtension } from "./collab/SelfSelection";
 import { deviceScopedColor } from "./collab/YjsProvider";
@@ -532,7 +532,7 @@ export default class CollabPlugin extends Plugin {
       await this.unbindActiveEditorNow("active-leaf-change", path, ev);
     }
 
-    if (!ev || !path || !activeFile) {
+    if (!view || !ev || !path || !activeFile) {
       if (!ev && path && activeFile && this.managerOwning(path) && attempt < 20) {
         trace("bind", "editor-view-not-ready", { path, attempt });
         setTimeout(() => void this.bindActiveEditor(activeFile, attempt + 1), 300);
@@ -544,6 +544,14 @@ export default class CollabPlugin extends Plugin {
     if (this.boundPath === path && this.boundView === ev && marker !== path) {
       trace("bind", "binding-marker-missing", { path, marker });
       await this.unbindActiveEditorNow("binding-marker-missing", path, ev);
+    }
+    if ((view.file?.path ?? null) !== path) {
+      trace("bind", "markdown-view-path-mismatch", {
+        path,
+        markdownPath: view.file?.path ?? null,
+        attempt,
+      });
+      return;
     }
 
     // Find the provider owning this file
@@ -584,6 +592,19 @@ export default class CollabPlugin extends Plugin {
     }));
     if (presence) extras.push(presence.extension(true));
     if (role !== "editor") extras.push(readOnlyExtension());
+
+    const isStillCurrent = () => {
+      const currentView = this.app.workspace.getActiveViewOfType(MarkdownView);
+      return !!currentView && currentView === view && getEditorView(currentView) === ev && (currentView.file?.path ?? null) === path;
+    };
+    const reconciled = await reconcileEditorBeforeBind(
+      ev,
+      ytext,
+      path,
+      (viewText) => manager?.hasRecentPluginWrite(path, viewText) ?? false,
+      isStillCurrent
+    );
+    if (!reconciled) return;
 
     await provider.setEditorBound(true);
     bindEditor(ev, ytext, awareness, path, extras, (viewText) => manager?.hasRecentPluginWrite(path, viewText) ?? false);

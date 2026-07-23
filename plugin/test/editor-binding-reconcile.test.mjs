@@ -11,6 +11,7 @@
 import * as Y from "yjs";
 import {
   applyBindContentPlanToYText,
+  planSettledBindContentReconcile,
   planBindContentReconcile,
 } from "../src/collab/EditorBindReconcile.ts";
 import { EchoGuard } from "../src/collab/EchoGuard.ts";
@@ -79,7 +80,51 @@ console.log("editor binding reconcile\n");
   const plan = planBindContentReconcile(text.toString(), staleView);
   applyBindContentPlanToYText(text, plan);
   check("mass-deletion guardrail makes ytext win", plan.action === "ytext-wins", `action=${plan.action}`);
+  check("mass-deletion guardrail reports large-delete", plan.applied === "ytext-wins-large-delete", `applied=${plan.applied}`);
   check("guardrail does not delete synced ytext", text.toString() === rich, `len=${text.toString().length}`);
+}
+
+{
+  const yContent = "y".repeat(37);
+  const foreignView = "foreign-buffer\n".repeat(477).slice(0, 6199);
+  const { text } = makeText(yContent);
+  const plan = planBindContentReconcile(text.toString(), foreignView);
+  applyBindContentPlanToYText(text, plan);
+  check("large foreign insertion makes ytext win",
+    plan.action === "ytext-wins" && plan.applied === "ytext-wins-large-insert",
+    `action=${plan.action} applied=${plan.applied} inserted=${plan.insertedChars}`);
+  check("large foreign insertion does not overwrite ytext", text.toString() === yContent,
+    `len=${text.toString().length}`);
+}
+
+{
+  const yContent = "small synced note\n";
+  const under = `${yContent}${"x".repeat(2048)}`;
+  const over = `${yContent}${"x".repeat(2049)}`;
+  const underPlan = planBindContentReconcile(yContent, under);
+  const overPlan = planBindContentReconcile(yContent, over);
+  check("insert at 2048-char boundary is preserved as view-diff",
+    underPlan.action === "view-diff" && underPlan.applied === "view-diff" && underPlan.insertedChars === 2048,
+    `action=${underPlan.action} applied=${underPlan.applied} inserted=${underPlan.insertedChars}`);
+  check("insert over 2048-char boundary makes ytext win",
+    overPlan.action === "ytext-wins" && overPlan.applied === "ytext-wins-large-insert" && overPlan.insertedChars === 2049,
+    `action=${overPlan.action} applied=${overPlan.applied} inserted=${overPlan.insertedChars}`);
+}
+
+{
+  const yContent = "settled synced content\n";
+  const foreignView = "foreign-buffer\n".repeat(300);
+  const settled = planSettledBindContentReconcile(yContent, foreignView, yContent);
+  check("settle retry turns foreign buffer that becomes equal into no-op",
+    settled.firstPlan.applied === "ytext-wins-large-insert" && settled.finalPlan.action === "none",
+    `first=${settled.firstPlan.applied} final=${settled.finalPlan.applied}`);
+
+  const stillForeign = planSettledBindContentReconcile(yContent, foreignView, foreignView);
+  check("settle retry keeps ytext winning when foreign buffer remains",
+    stillForeign.firstPlan.applied === "ytext-wins-large-insert" &&
+      stillForeign.finalPlan.action === "ytext-wins" &&
+      stillForeign.finalPlan.applied === "ytext-wins-large-insert",
+    `first=${stillForeign.firstPlan.applied} final=${stillForeign.finalPlan.applied}`);
 }
 
 {

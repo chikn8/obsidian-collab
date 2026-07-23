@@ -4,7 +4,11 @@ import { yCollab } from "y-codemirror.next";
 import * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 import { cursorAwarenessExtension } from "./CursorAwareness";
-import { applyBindContentPlanToYText, planBindContentReconcile } from "./EditorBindReconcile";
+import {
+  applyBindContentPlanToYText,
+  planBindContentReconcile,
+  shouldRetryBindContentReconcile,
+} from "./EditorBindReconcile";
 import { err, trace } from "../utils/log";
 
 /**
@@ -46,16 +50,41 @@ function replaceViewContent(view: EditorView, content: string): void {
   });
 }
 
-function reconcileEditorContentBeforeBind(
+const BIND_RECONCILE_SETTLE_MS = 120;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function reconcileEditorBeforeBind(
   view: EditorView,
   ytext: Y.Text,
   path?: string,
-  viewLooksPristine?: (viewText: string) => boolean
-): void {
-  const viewText = view.state.doc.toString();
-  const yText = ytext.toString();
-  if (viewText === yText) return;
-  const plan = planBindContentReconcile(yText, viewText, viewLooksPristine?.(viewText) ?? false);
+  viewLooksPristine?: (viewText: string) => boolean,
+  isStillCurrent?: () => boolean
+): Promise<boolean> {
+  let viewText = view.state.doc.toString();
+  let yText = ytext.toString();
+  if (viewText === yText) return true;
+
+  let plan = planBindContentReconcile(yText, viewText, viewLooksPristine?.(viewText) ?? false);
+  if (shouldRetryBindContentReconcile(plan)) {
+    trace("bind", "bind-content-settle-retry", {
+      path,
+      viewLen: viewText.length,
+      yLen: yText.length,
+      applied: plan.applied,
+    });
+    await delay(BIND_RECONCILE_SETTLE_MS);
+    if (!view.dom.isConnected || (isStillCurrent && !isStillCurrent())) {
+      trace("bind", "bind-content-settle-abort", { path, applied: plan.applied });
+      return false;
+    }
+    viewText = view.state.doc.toString();
+    yText = ytext.toString();
+    if (viewText === yText) return true;
+    plan = planBindContentReconcile(yText, viewText, viewLooksPristine?.(viewText) ?? false);
+  }
 
   trace("bind", "bind-content-mismatch", {
     path,
@@ -73,6 +102,7 @@ function reconcileEditorContentBeforeBind(
   else replaceViewContent(view, yText);
 
   if (view.state.doc.toString() !== ytext.toString()) replaceViewContent(view, ytext.toString());
+  return true;
 }
 
 export function bindEditor(
@@ -83,7 +113,8 @@ export function bindEditor(
   extra: Extension[] = [],
   viewLooksPristine?: (viewText: string) => boolean
 ): void {
-  reconcileEditorContentBeforeBind(view, ytext, path, viewLooksPristine);
+  void viewLooksPristine;
+  if (view.state.doc.toString() !== ytext.toString()) replaceViewContent(view, ytext.toString());
   // yCollab handles text sync/undo. Cursor awareness is local so we can keep
   // identity, focus clearing, and diagnostics under our control.
   view.dispatch({

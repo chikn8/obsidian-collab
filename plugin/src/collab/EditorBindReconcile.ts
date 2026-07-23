@@ -3,15 +3,22 @@ import { diffRanges, type TextSplice } from "../utils/textDiff";
 
 const BIND_GUARDRAIL_MIN_DELETE = 1024;
 const BIND_GUARDRAIL_MIN_RATIO = 0.15;
+export const BIND_GUARDRAIL_MAX_INSERT = 2048;
 
 export type BindContentReconcileAction = "none" | "view-diff" | "ytext-wins";
-export type BindContentReconcileApplied = BindContentReconcileAction | "ytext-wins-pristine";
+export type BindContentReconcileApplied =
+  | "none"
+  | "view-diff"
+  | "ytext-wins-pristine"
+  | "ytext-wins-large-delete"
+  | "ytext-wins-large-insert";
 
 export interface BindContentReconcilePlan {
   action: BindContentReconcileAction;
   applied: BindContentReconcileApplied;
   splices: TextSplice[];
   deletedChars: number;
+  insertedChars: number;
 }
 
 export function planBindContentReconcile(
@@ -19,18 +26,48 @@ export function planBindContentReconcile(
   viewContent: string,
   viewLooksPristine = false
 ): BindContentReconcilePlan {
-  if (yContent === viewContent) return { action: "none", applied: "none", splices: [], deletedChars: 0 };
+  if (yContent === viewContent) return { action: "none", applied: "none", splices: [], deletedChars: 0, insertedChars: 0 };
   const splices = diffRanges(yContent, viewContent);
   const deletedChars = splices.reduce((n, s) => n + s.delCount, 0);
+  const insertedChars = splices.reduce((n, s) => n + s.insert.length, 0);
   if (viewLooksPristine) {
-    return { action: "ytext-wins", applied: "ytext-wins-pristine", splices, deletedChars };
+    return { action: "ytext-wins", applied: "ytext-wins-pristine", splices, deletedChars, insertedChars };
   }
-  const action =
+  const hasLargeDelete =
     deletedChars > BIND_GUARDRAIL_MIN_DELETE &&
-    deletedChars > yContent.length * BIND_GUARDRAIL_MIN_RATIO
-      ? "ytext-wins"
-      : "view-diff";
-  return { action, applied: action, splices, deletedChars };
+    deletedChars > yContent.length * BIND_GUARDRAIL_MIN_RATIO;
+  if (insertedChars > BIND_GUARDRAIL_MAX_INSERT) {
+    return { action: "ytext-wins", applied: "ytext-wins-large-insert", splices, deletedChars, insertedChars };
+  }
+  if (hasLargeDelete) {
+    return { action: "ytext-wins", applied: "ytext-wins-large-delete", splices, deletedChars, insertedChars };
+  }
+  // Bind-time view diffs exist to preserve a human's 1-2s of typed-while-unbound input.
+  // Anything larger looks like Obsidian's foreign pane buffer from another file.
+  return { action: "view-diff", applied: "view-diff", splices, deletedChars, insertedChars };
+}
+
+export function shouldRetryBindContentReconcile(plan: BindContentReconcilePlan): boolean {
+  return plan.applied === "ytext-wins-large-delete" || plan.applied === "ytext-wins-large-insert";
+}
+
+export interface SettledBindContentReconcilePlan {
+  firstPlan: BindContentReconcilePlan;
+  finalPlan: BindContentReconcilePlan;
+}
+
+export function planSettledBindContentReconcile(
+  yContent: string,
+  firstViewContent: string,
+  secondViewContent: string,
+  viewLooksPristine = false
+): SettledBindContentReconcilePlan {
+  const firstPlan = planBindContentReconcile(yContent, firstViewContent, viewLooksPristine);
+  if (!shouldRetryBindContentReconcile(firstPlan)) return { firstPlan, finalPlan: firstPlan };
+  return {
+    firstPlan,
+    finalPlan: planBindContentReconcile(yContent, secondViewContent, viewLooksPristine),
+  };
 }
 
 export function applyBindContentPlanToYText(ytext: Y.Text, plan: BindContentReconcilePlan): void {

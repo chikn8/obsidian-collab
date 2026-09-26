@@ -45,7 +45,7 @@ var import_view5 = require("@codemirror/view");
 // src/collab/SyncManager.ts
 var import_obsidian4 = require("obsidian");
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/map.js
+// node_modules/lib0/map.js
 var create = () => /* @__PURE__ */ new Map();
 var copy = (m) => {
   const r = create();
@@ -77,10 +77,10 @@ var any = (m, f) => {
   return false;
 };
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/set.js
+// node_modules/lib0/set.js
 var create2 = () => /* @__PURE__ */ new Set();
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/array.js
+// node_modules/lib0/array.js
 var last = (arr) => arr[arr.length - 1];
 var appendTo = (dest, src) => {
   for (let i = 0; i < src.length; i++) {
@@ -113,7 +113,7 @@ var unfold = (len, f) => {
 };
 var isArray = Array.isArray;
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/observable.js
+// node_modules/lib0/observable.js
 var ObservableV2 = class {
   constructor() {
     this._observers = create();
@@ -235,7 +235,7 @@ var Observable = class {
   }
 };
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/math.js
+// node_modules/lib0/math.js
 var floor = Math.floor;
 var abs = Math.abs;
 var min = (a, b) => a < b ? a : b;
@@ -244,7 +244,7 @@ var isNaN2 = Number.isNaN;
 var pow = Math.pow;
 var isNegativeZero = (n) => n !== 0 ? n < 0 : 1 / n < 0;
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/binary.js
+// node_modules/lib0/binary.js
 var BIT1 = 1;
 var BIT2 = 2;
 var BIT3 = 4;
@@ -286,7 +286,7 @@ var BITS29 = BIT30 - 1;
 var BITS30 = BIT31 - 1;
 var BITS31 = 2147483647;
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/number.js
+// node_modules/lib0/number.js
 var MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 var MIN_SAFE_INTEGER = Number.MIN_SAFE_INTEGER;
 var LOWEST_INT32 = 1 << 31;
@@ -294,7 +294,7 @@ var isInteger = Number.isInteger || ((num) => typeof num === "number" && isFinit
 var isNaN3 = Number.isNaN;
 var parseInt2 = Number.parseInt;
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/string.js
+// node_modules/lib0/string.js
 var fromCharCode = String.fromCharCode;
 var fromCodePoint = String.fromCodePoint;
 var MAX_UTF16_CHARACTER = fromCharCode(65535);
@@ -325,7 +325,7 @@ if (utf8TextDecoder && utf8TextDecoder.decode(new Uint8Array()).length === 1) {
 }
 var repeat = (source, n) => unfold(n, () => source).join("");
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/encoding.js
+// node_modules/lib0/encoding.js
 var Encoder = class {
   constructor() {
     this.cpos = 0;
@@ -632,7 +632,7 @@ var StringEncoder = class {
   }
 };
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/error.js
+// node_modules/lib0/error.js
 var create3 = (s) => new Error(s);
 var methodUnimplemented = () => {
   throw create3("Method unimplemented");
@@ -641,7 +641,7 @@ var unexpectedCase = () => {
   throw create3("Unexpected case");
 };
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/decoding.js
+// node_modules/lib0/decoding.js
 var errorUnexpectedEndOfArray = create3("Unexpected end of array");
 var errorIntegerOutOfRange = create3("Integer out of Range");
 var Decoder = class {
@@ -889,11 +889,11 @@ var StringDecoder = class {
   }
 };
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/webcrypto.js
+// node_modules/lib0/webcrypto.js
 var subtle = crypto.subtle;
 var getRandomValues = crypto.getRandomValues.bind(crypto);
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/random.js
+// node_modules/lib0/random.js
 var uint32 = () => getRandomValues(new Uint32Array(1))[0];
 var uuidv4Template = "10000000-1000-4000-8000" + -1e11;
 var uuidv4 = () => uuidv4Template.replace(
@@ -902,20 +902,20 @@ var uuidv4 = () => uuidv4Template.replace(
   (c) => (c ^ uint32() & 15 >> c / 4).toString(16)
 );
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/time.js
+// node_modules/lib0/time.js
 var getUnixTime = Date.now;
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/promise.js
+// node_modules/lib0/promise.js
 var create4 = (f) => (
   /** @type {Promise<T>} */
   new Promise(f)
 );
 var all = Promise.all.bind(Promise);
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/conditions.js
+// node_modules/lib0/conditions.js
 var undefinedToNull = (v) => v === void 0 ? null : v;
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/storage.js
+// node_modules/lib0/storage.js
 var VarStoragePolyfill = class {
   constructor() {
     this.map = /* @__PURE__ */ new Map();
@@ -955,14 +955,14 @@ var offChange = (eventHandler) => usePolyfill || removeEventListener(
   eventHandler
 );
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/trait/equality.js
+// node_modules/lib0/trait/equality.js
 var EqualityTraitSymbol = Symbol("Equality");
 var equals = (a, b) => {
   var _a2;
   return a === b || !!((_a2 = a == null ? void 0 : a[EqualityTraitSymbol]) == null ? void 0 : _a2.call(a, b)) || false;
 };
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/object.js
+// node_modules/lib0/object.js
 var isObject = (o) => typeof o === "object";
 var assign = Object.assign;
 var keys = Object.keys;
@@ -1006,7 +1006,7 @@ var deepFreeze = (o) => {
   return freeze(o);
 };
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/function.js
+// node_modules/lib0/function.js
 var callAll = (fs, args2, i = 0) => {
   try {
     for (; i < fs.length; i++) {
@@ -1095,7 +1095,7 @@ var equalityDeep = (a, b) => {
 };
 var isOneOf = (value, options) => options.includes(value);
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/environment.js
+// node_modules/lib0/environment.js
 var isNode = typeof process !== "undefined" && process.release && /node|io\.js/.test(process.release.name) && Object.prototype.toString.call(typeof process !== "undefined" ? process : 0) === "[object process]";
 var isBrowser = typeof window !== "undefined" && typeof document !== "undefined" && !isNode;
 var isMac = typeof navigator !== "undefined" ? /Mac/.test(navigator.platform) : false;
@@ -1149,7 +1149,7 @@ var forceColor = isNode && isOneOf(process.env.FORCE_COLOR, ["true", "1", "2"]);
 var supportsColor = forceColor || !hasParam("--no-colors") && // @todo deprecate --no-colors
 !hasConf("no-color") && (!isNode || process.stdout.isTTY) && (!isNode || hasParam("--color") || getVariable("COLORTERM") !== null || (getVariable("TERM") || "").includes("color"));
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/buffer.js
+// node_modules/lib0/buffer.js
 var createUint8ArrayFromLen = (len) => new Uint8Array(len);
 var createUint8ArrayViewFromArrayBuffer = (buffer, byteOffset, length2) => new Uint8Array(buffer, byteOffset, length2);
 var createUint8ArrayFromArrayBuffer = (buffer) => new Uint8Array(buffer);
@@ -1181,7 +1181,7 @@ var copyUint8Array = (uint8Array) => {
   return newBuf;
 };
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/pair.js
+// node_modules/lib0/pair.js
 var Pair = class {
   /**
    * @param {L} left
@@ -1195,7 +1195,7 @@ var Pair = class {
 var create5 = (left, right) => new Pair(left, right);
 var forEach2 = (arr, f) => arr.forEach((p) => f(p.left, p.right));
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/prng.js
+// node_modules/lib0/prng.js
 var bool = (gen) => gen.next() >= 0.5;
 var int53 = (gen, min2, max2) => floor(gen.next() * (max2 + 1 - min2) + min2);
 var int32 = (gen, min2, max2) => floor(gen.next() * (max2 + 1 - min2) + min2);
@@ -1211,7 +1211,7 @@ var word = (gen, minLen = 0, maxLen = 20) => {
 };
 var oneOf = (gen, array) => array[int31(gen, 0, array.length - 1)];
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/schema.js
+// node_modules/lib0/schema.js
 var schemaSymbol = Symbol("0schema");
 var ValidationError = class {
   constructor() {
@@ -1948,7 +1948,7 @@ var random = (gen, schema) => (
   _random($(schema), gen)
 );
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/dom.js
+// node_modules/lib0/dom.js
 var doc = (
   /** @type {Document} */
   typeof document !== "undefined" ? document : {}
@@ -1999,10 +1999,10 @@ var DOCUMENT_TYPE_NODE = doc.DOCUMENT_TYPE_NODE;
 var DOCUMENT_FRAGMENT_NODE = doc.DOCUMENT_FRAGMENT_NODE;
 var $node = $custom((el) => el.nodeType === DOCUMENT_NODE);
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/symbol.js
+// node_modules/lib0/symbol.js
 var create6 = Symbol;
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/logging.common.js
+// node_modules/lib0/logging.common.js
 var BOLD = create6();
 var UNBOLD = create6();
 var BLUE = create6();
@@ -2045,7 +2045,7 @@ var computeNoColorLoggingArgs = (args2) => {
 };
 var lastLoggingTime = getUnixTime();
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/logging.js
+// node_modules/lib0/logging.js
 var _browserStyleMap = {
   [BOLD]: create5("font-weight", "bold"),
   [UNBOLD]: create5("font-weight", "normal"),
@@ -2116,7 +2116,7 @@ var warn = (...args2) => {
 };
 var vconsoles = create2();
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/iterator.js
+// node_modules/lib0/iterator.js
 var createIterator = (next) => ({
   /**
    * @return {IterableIterator<T>}
@@ -2139,7 +2139,7 @@ var iteratorMap = (iterator, fmap) => createIterator(() => {
   return { done, value: done ? void 0 : fmap(value) };
 });
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/yjs/dist/yjs.mjs
+// node_modules/yjs/dist/yjs.mjs
 var DeleteItem = class {
   /**
    * @param {number} clock
@@ -9168,7 +9168,7 @@ if (glo[importIdentifier] === true) {
 }
 glo[importIdentifier] = true;
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/broadcastchannel.js
+// node_modules/lib0/broadcastchannel.js
 var channels = /* @__PURE__ */ new Map();
 var LocalStoragePolyfill = class {
   /**
@@ -9219,7 +9219,7 @@ var publish = (room, data, origin = null) => {
   c.subs.forEach((sub) => sub(data, origin));
 };
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/y-protocols/sync.js
+// node_modules/y-protocols/sync.js
 var messageYjsSyncStep1 = 0;
 var messageYjsSyncStep2 = 1;
 var messageYjsUpdate = 2;
@@ -9267,7 +9267,7 @@ var readSyncMessage = (decoder, encoder, doc2, transactionOrigin, errorHandler) 
   return messageType;
 };
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/y-protocols/auth.js
+// node_modules/y-protocols/auth.js
 var messagePermissionDenied = 0;
 var readAuthMessage = (decoder, y, permissionDeniedHandler2) => {
   switch (readVarUint(decoder)) {
@@ -9276,7 +9276,7 @@ var readAuthMessage = (decoder, y, permissionDeniedHandler2) => {
   }
 };
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/y-protocols/awareness.js
+// node_modules/y-protocols/awareness.js
 var outdatedTimeout = 3e4;
 var Awareness = class extends Observable {
   /**
@@ -9478,10 +9478,10 @@ var applyAwarenessUpdate = (awareness, update, origin) => {
   }
 };
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/url.js
+// node_modules/lib0/url.js
 var encodeQueryParams = (params2) => map2(params2, (val, key) => `${encodeURIComponent(key)}=${encodeURIComponent(val)}`).join("&");
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/y-websocket/src/y-websocket.js
+// node_modules/y-websocket/src/y-websocket.js
 var messageSync = 0;
 var messageQueryAwareness = 3;
 var messageAwareness = 1;
@@ -11021,7 +11021,7 @@ function createProvider(serverUrl, roomName, ydoc, token, userInfo, callbacks, a
 // src/collab/FileProvider.ts
 var import_obsidian2 = require("obsidian");
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/indexeddb.js
+// node_modules/lib0/indexeddb.js
 var rtop = (request) => create4((resolve, reject) => {
   request.onerror = (event) => reject(new Error(event.target.error));
   request.onsuccess = (event) => resolve(event.target.result);
@@ -11078,7 +11078,7 @@ var getStore = (t, store) => t.objectStore(store);
 var createIDBKeyRangeUpperBound = (upper, upperOpen) => IDBKeyRange.upperBound(upper, upperOpen);
 var createIDBKeyRangeLowerBound = (lower2, lowerOpen) => IDBKeyRange.lowerBound(lower2, lowerOpen);
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/y-indexeddb/src/y-indexeddb.js
+// node_modules/y-indexeddb/src/y-indexeddb.js
 var customStoreName = "custom";
 var updatesStoreName = "updates";
 var PREFERRED_TRIM_SIZE = 500;
@@ -15921,11 +15921,11 @@ ${text2}`, 15e3);
 var import_state2 = require("@codemirror/state");
 var import_view2 = require("@codemirror/view");
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/y-codemirror.next/src/index.js
+// node_modules/y-codemirror.next/src/index.js
 var cmView4 = __toESM(require("@codemirror/view"), 1);
 var cmState4 = __toESM(require("@codemirror/state"), 1);
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/y-codemirror.next/src/y-range.js
+// node_modules/y-codemirror.next/src/y-range.js
 var YRange = class _YRange {
   /**
    * @param {Y.RelativePosition} yanchor
@@ -15953,7 +15953,7 @@ var YRange = class _YRange {
   }
 };
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/y-codemirror.next/src/y-sync.js
+// node_modules/y-codemirror.next/src/y-sync.js
 var cmState = __toESM(require("@codemirror/state"), 1);
 var cmView = __toESM(require("@codemirror/view"), 1);
 var YSyncConfig = class {
@@ -16090,7 +16090,7 @@ var YSyncPluginValue = class {
 };
 var ySync = cmView.ViewPlugin.fromClass(YSyncPluginValue);
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/y-codemirror.next/src/y-remote-selections.js
+// node_modules/y-codemirror.next/src/y-remote-selections.js
 var cmView2 = __toESM(require("@codemirror/view"), 1);
 var cmState2 = __toESM(require("@codemirror/state"), 1);
 var yRemoteSelectionsTheme = cmView2.EditorView.baseTheme({
@@ -16317,11 +16317,11 @@ var yRemoteSelections = cmView2.ViewPlugin.fromClass(YRemoteSelectionsPluginValu
   decorations: (v) => v.decorations
 });
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/y-codemirror.next/src/y-undomanager.js
+// node_modules/y-codemirror.next/src/y-undomanager.js
 var cmState3 = __toESM(require("@codemirror/state"), 1);
 var cmView3 = __toESM(require("@codemirror/view"), 1);
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/lib0/mutex.js
+// node_modules/lib0/mutex.js
 var createMutex = () => {
   let token = true;
   return (f, g) => {
@@ -16338,7 +16338,7 @@ var createMutex = () => {
   };
 };
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/y-codemirror.next/src/y-undomanager.js
+// node_modules/y-codemirror.next/src/y-undomanager.js
 var YUndoManagerConfig = class {
   /**
    * @param {Y.UndoManager} undoManager
@@ -16429,7 +16429,7 @@ var yUndoManager = cmView3.ViewPlugin.fromClass(YUndoManagerPluginValue);
 var undo = ({ state, dispatch }) => state.facet(yUndoManagerFacet).undo() || true;
 var redo = ({ state, dispatch }) => state.facet(yUndoManagerFacet).redo() || true;
 
-// ../../../../../obsidian-collab-work/plugin/node_modules/y-codemirror.next/src/index.js
+// node_modules/y-codemirror.next/src/index.js
 var yCollab = (ytext, awareness, { undoManager = new UndoManager(ytext) } = {}) => {
   const ySyncConfig = new YSyncConfig(ytext, awareness);
   const plugins = [

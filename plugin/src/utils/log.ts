@@ -29,7 +29,17 @@ interface DiagnosticsConfig {
 }
 
 const MAX_ROWS = 10000;
-const MAX_TRACE_LINES = 50000;
+// Lines waiting for the next append; overflow is dropped and counted.
+const MAX_TRACE_LINES = 20000;
+// Per (level, ns, event) cap. A reconnect storm used to log ~5,000 rows/s and
+// froze the renderer; suppressed rows are summarised as diag:rate-limited.
+const RATE_LIMIT_WINDOW_MS = 1000;
+const RATE_LIMIT_PER_WINDOW = 50;
+// Trace files are append-only, rotate at MAX_TRACE_FILE_BYTES, and the oldest
+// trace-*.jsonl files are removed once the folder passes MAX_TRACE_DIR_BYTES.
+const TRACE_FLUSH_MS = 1000;
+const MAX_TRACE_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_TRACE_DIR_BYTES = 20 * 1024 * 1024;
 const MAX_TELEMETRY_QUEUE = 50;
 const MAX_STRING = 500;
 const SECRET_KEY_RE = /(secret|password|token|key|code|auth|credential|content|body|text)/i;
@@ -42,6 +52,13 @@ let traceUntil = 0;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let flushChain: Promise<void> = Promise.resolve();
 let lastWritePath = "";
+let tracePart = 0;
+let traceFileBytes = 0;
+let traceFileStarted = false;
+let pruneDone = false;
+let rateLimitedRows = 0;
+const rateWindows = new Map<string, { start: number; count: number; suppressed: number }>();
+const suppressedRows = new WeakSet<LogRow>();
 let contextProvider: (() => Record<string, unknown>) | null = null;
 let seq = 0;
 let droppedRows = 0;
@@ -171,6 +188,12 @@ export function findErrPathArg(args: unknown[], ownsPath: (path: string) => bool
 
 function record(level: Level, ns: string, event: string, fields: Record<string, unknown> = {}): LogRow {
   const now = Date.now();
+  if (rateLimited(`${level}:${ns}:${event}`, now)) {
+    // Cheap placeholder for callers (err() hands it to sinks); not stored.
+    const placeholder: LogRow = { seq, ts: "", t: now, dt: now - sessionStartedAt, sessionId, level, ns, event };
+    suppressedRows.add(placeholder);
+    return placeholder;
+  }
   const row: LogRow = {
     seq: ++seq,
     ts: new Date().toISOString(),
@@ -199,8 +222,35 @@ function record(level: Level, ns: string, event: string, fields: Record<string, 
   return row;
 }
 
+function rateLimited(key: string, now: number): boolean {
+  let w = rateWindows.get(key);
+  if (!w || now - w.start >= RATE_LIMIT_WINDOW_MS) {
+    const suppressed = w?.suppressed ?? 0;
+    w = { start: now, count: 0, suppressed: 0 };
+    rateWindows.set(key, w);
+    if (suppressed > 0) reportSuppressed(key, suppressed);
+  }
+  if (++w.count <= RATE_LIMIT_PER_WINDOW) return false;
+  w.suppressed++;
+  rateLimitedRows++;
+  return true;
+}
+
+function reportSuppressed(key: string, suppressed: number): void {
+  record("info", "diag", "rate-limited", { event: key, suppressed, windowMs: RATE_LIMIT_WINDOW_MS });
+}
+
+/** Summarise windows that ended with suppressed rows and never recurred. */
+function sweepRateWindows(now: number): void {
+  for (const [key, w] of rateWindows) {
+    if (now - w.start < RATE_LIMIT_WINDOW_MS) continue;
+    rateWindows.delete(key);
+    if (w.suppressed > 0) reportSuppressed(key, w.suppressed);
+  }
+}
+
 function enqueueTelemetry(row: LogRow): void {
-  if (!telemetryEnabled || !telemetryUrl || row.level !== "error") return;
+  if (!telemetryEnabled || !telemetryUrl || row.level !== "error" || suppressedRows.has(row)) return;
   if (telemetryQueue.length >= MAX_TELEMETRY_QUEUE) {
     telemetryQueue.shift();
     telemetryDroppedRows++;
@@ -241,19 +291,71 @@ function scheduleFlush(): void {
   flushTimer = setTimeout(() => {
     flushTimer = null;
     flushChain = flushChain.then(flushTraceFile, flushTraceFile);
-  }, 600);
+  }, TRACE_FLUSH_MS);
 }
 
+/** Append only the lines logged since the last flush (the old version
+ *  rewrote the whole buffer, up to ~20 MB, every 600 ms). */
 async function flushTraceFile(): Promise<void> {
   const app = appRef;
+  sweepRateWindows(Date.now());
   if (!app || traceLines.length === 0) return;
-  const path = tracePath();
-  lastWritePath = path;
+  const chunk = traceLines.splice(0).join("\n") + "\n";
+  const adapter = app.vault.adapter as any;
   try {
-    await app.vault.adapter.mkdir(diagnosticDir()).catch(() => {});
-    await app.vault.adapter.write(path, traceLines.join("\n") + "\n");
+    await adapter.mkdir(diagnosticDir()).catch(() => {});
+    if (!pruneDone) {
+      pruneDone = true;
+      await pruneTraceDir(MAX_TRACE_DIR_BYTES - MAX_TRACE_FILE_BYTES);
+    }
+    const path = tracePath();
+    lastWritePath = path;
+    if (!traceFileStarted || typeof adapter.append !== "function") {
+      await adapter.write(path, chunk);
+      traceFileStarted = true;
+      traceFileBytes = chunk.length;
+    } else {
+      await adapter.append(path, chunk);
+      traceFileBytes += chunk.length;
+    }
+    if (traceFileBytes >= MAX_TRACE_FILE_BYTES) {
+      tracePart++;
+      traceFileStarted = false;
+      traceFileBytes = 0;
+      lastWritePath = "";
+      await pruneTraceDir(MAX_TRACE_DIR_BYTES - MAX_TRACE_FILE_BYTES);
+    }
   } catch (e) {
     if (DEBUG) console.warn("[collab:diag] failed to write diagnostic trace", e);
+  }
+}
+
+/** Delete the oldest trace-*.jsonl files until the folder fits the budget.
+ *  Bundles and other files are never touched. */
+async function pruneTraceDir(budgetBytes: number): Promise<void> {
+  const adapter = appRef?.vault.adapter as any;
+  if (!adapter || typeof adapter.list !== "function" || typeof adapter.stat !== "function") return;
+  try {
+    const listed = await adapter.list(diagnosticDir());
+    const traces: { path: string; size: number; mtime: number }[] = [];
+    for (const path of listed?.files ?? []) {
+      if (!/\/trace-[^/]*\.jsonl$/.test(path)) continue;
+      const st = await adapter.stat(path);
+      if (st) traces.push({ path, size: st.size ?? 0, mtime: st.mtime ?? 0 });
+    }
+    let total = traces.reduce((n, t) => n + t.size, 0);
+    traces.sort((a, b) => a.mtime - b.mtime);
+    let removed = 0;
+    for (const t of traces) {
+      if (total <= budgetBytes) break;
+      if (t.path === lastWritePath) continue;
+      await adapter.remove(t.path);
+      total -= t.size;
+      removed++;
+    }
+    if (removed > 0) record("info", "diag", "trace-pruned", { removed, remainingBytes: total, budgetBytes });
+  } catch (e) {
+    if (DEBUG) console.warn("[collab:diag] failed to prune diagnostic traces", e);
   }
 }
 
@@ -278,6 +380,9 @@ function collectContext(): Record<string, unknown> {
     maxTraceLines: MAX_TRACE_LINES,
     droppedRows,
     droppedTraceLines,
+    rateLimitedRows,
+    maxTraceFileBytes: MAX_TRACE_FILE_BYTES,
+    maxTraceDirBytes: MAX_TRACE_DIR_BYTES,
     clientTelemetryEnabled: telemetryEnabled,
     clientTelemetryQueued: telemetryQueue.length,
     clientTelemetryDroppedRows: telemetryDroppedRows,
@@ -360,7 +465,9 @@ function diagnosticDir(): string {
 }
 
 function tracePath(): string {
-  return lastWritePath || `${diagnosticDir()}/trace-${sessionId.slice(0, 8)}.jsonl`;
+  if (lastWritePath) return lastWritePath;
+  const part = tracePart > 0 ? `-${tracePart}` : "";
+  return `${diagnosticDir()}/trace-${sessionId.slice(0, 8)}${part}.jsonl`;
 }
 
 function stamp(): string {

@@ -226,22 +226,27 @@ export class SyncManager {
     fn();
   }
 
-  /** Force-reconnect every socket for this share (manifest + files). */
-  reconnect(): boolean {
+  /** Recover every socket for this share (manifest + files). Mux rooms share
+   *  one throttled connection, so this is one attempt per share, not per room. */
+  reconnect(reason = "manual", force = false): boolean {
     let ok = true;
     const mp = this.manifestProvider;
     if (mp) {
       try {
-        mp.wsUnsuccessfulReconnects = 0;
-        mp.disconnect();
-        mp.connect();
+        if (typeof mp.requestReconnect === "function") {
+          mp.requestReconnect(reason, force);
+        } else if (force || !mp.wsconnected) {
+          mp.wsUnsuccessfulReconnects = 0;
+          mp.disconnect();
+          mp.connect();
+        }
       } catch (e) {
         ok = false;
         trace("ws", "manifest-reconnect-failed", { shareId: this.histShareId, error: e });
       }
     }
     for (const [, fp] of this.fileProviders) {
-      if (!fp.reconnect()) ok = false;
+      if (!fp.reconnect(reason, force)) ok = false;
     }
     return ok;
   }

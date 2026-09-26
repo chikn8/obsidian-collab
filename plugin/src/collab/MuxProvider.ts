@@ -9,10 +9,20 @@ const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
 const MESSAGE_MUX = 6;
 const MESSAGE_MUX_LEAVE = 7;
-const MUX_RECONNECT_BASE_MS = 500;
-const MUX_RECONNECT_MAX_MS = 10_000;
-const MUX_RECONNECT_MIN_MS = 250;
-const MUX_RECONNECT_JITTER_RATIO = 0.4;
+// Reconnect backoff is per shared socket, so a server outage is one retry
+// loop for the whole share, not one per room. Attempts only reset after a
+// room actually syncs (an accept-then-close server must still back off).
+const MUX_RECONNECT_BASE_MS = 1_000;
+const MUX_RECONNECT_MAX_MS = 60_000;
+const MUX_RECONNECT_MIN_MS = 500;
+const MUX_RECONNECT_JITTER_RATIO = 0.3;
+// wake/online/visibility pokes: at most one immediate attempt per window.
+const MUX_POKE_MIN_INTERVAL_MS = 5_000;
+// An OPEN socket after sleep can be dead; a poke probes it and drops it if
+// the server does not answer in time.
+const MUX_PROBE_TIMEOUT_MS = 10_000;
+// Status fan-out to rooms is leading-edge throttled and deduped per socket.
+const MUX_STATUS_FLUSH_MS = 250;
 
 type Listener = (...args: any[]) => void;
 
@@ -51,12 +61,22 @@ function toBytes(data: ArrayBuffer | Uint8Array): Uint8Array {
   return data instanceof Uint8Array ? data : new Uint8Array(data);
 }
 
+type MuxStatus = "connecting" | "connected" | "disconnected";
+
 class MuxConnection {
   private ws: WebSocket | null = null;
+  private openedWs: WebSocket | null = null;
   private providers = new Map<string, Set<MuxProvider>>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private attempts = 0;
   private shouldConnect = true;
+  private lastMessageAt = 0;
+  private lastPokeAt = 0;
+  private probeTimer: ReturnType<typeof setTimeout> | null = null;
+  private errorReported = false;
+  private deliveredStatus: MuxStatus | null = null;
+  private pendingStatus: MuxStatus | null = null;
+  private statusTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private args: MuxParams) {
     this.connect();
@@ -96,10 +116,7 @@ class MuxConnection {
     }
     if (this.providers.size === 0) {
       this.shouldConnect = false;
-      if (this.reconnectTimer) {
-        clearTimeout(this.reconnectTimer);
-        this.reconnectTimer = null;
-      }
+      this.clearTimers();
       this.ws?.close();
       connections.delete(muxKey(this.args));
     }
@@ -112,44 +129,75 @@ class MuxConnection {
       this.reconnectTimer = null;
     }
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
-    this.providers.forEach((set) => set.forEach((p) => p.emitStatus("connecting")));
+    trace("ws", "mux-connect", { shareId: this.args.shareId, attempt: this.attempts });
+    // Retries during an outage stay "disconnected" to the rooms: announcing
+    // every attempt was O(rooms) status events per tick.
+    if (this.attempts === 0) this.setStatus("connecting");
     const ws = new WebSocket(muxUrl(this.args));
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     ws.onopen = () => {
       if (this.ws !== ws) return;
-      this.attempts = 0;
+      this.openedWs = ws;
+      this.lastMessageAt = Date.now();
       this.providers.forEach((set) => set.forEach((p) => {
         p.setConnected(true);
-        p.emitStatus("connected");
         p.onSocketOpen();
       }));
+      this.setStatus("connected");
     };
     ws.onclose = () => this.handleClosed(ws);
     ws.onerror = () => {
       if (this.ws !== ws) return;
-      this.providers.forEach((set) => set.forEach((p) => p.emit("connection-error")));
+      this.reportError();
     };
     ws.onmessage = (event) => {
       if (this.ws !== ws) return;
+      this.lastMessageAt = Date.now();
+      this.clearProbe();
       this.handleMessage(event.data);
     };
   }
 
   disconnect(): void {
     this.shouldConnect = false;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    this.clearTimers();
     const ws = this.ws;
     if (!ws) return;
     // Drop the socket and notify providers NOW. A reconnect cycle (disconnect
     // then connect) swaps this.ws before the async close event fires, so the
     // ws-swap guard in handleClosed would otherwise swallow the transition.
     this.ws = null;
+    this.openedWs = null;
     ws.close();
     this.notifyClosed();
+    this.setStatus("disconnected", true);
+  }
+
+  /**
+   * Wake/online/visibility hint. O(1) and never a burst: at most one immediate
+   * attempt per MUX_POKE_MIN_INTERVAL_MS (unless forced by the user). An open
+   * socket gets a liveness probe instead of a teardown; a socket waiting in
+   * backoff gets one early attempt, and if that fails the backoff continues.
+   */
+  poke(reason: string, force = false): void {
+    const now = Date.now();
+    if (!force && now - this.lastPokeAt < MUX_POKE_MIN_INTERVAL_MS) return;
+    this.lastPokeAt = now;
+    const ws = this.ws;
+    if (ws && ws.readyState === WebSocket.CONNECTING) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      this.probe(ws, reason);
+      return;
+    }
+    trace("ws", "mux-poke-connect", { shareId: this.args.shareId, reason, attempt: this.attempts });
+    this.connect();
+  }
+
+  /** A room finished a sync round-trip: the server is healthy again. */
+  markSynced(): void {
+    this.attempts = 0;
+    this.errorReported = false;
   }
 
   send(roomName: string, inner: Uint8Array): void {
@@ -169,12 +217,43 @@ class MuxConnection {
     this.ws.send(encoding.toUint8Array(encoder));
   }
 
+  private probe(ws: WebSocket, reason: string): void {
+    if (this.probeTimer) return;
+    const provider = this.primaryProvider();
+    if (!provider) return;
+    const sentAt = Date.now();
+    provider.probeLiveness();
+    this.probeTimer = setTimeout(() => {
+      this.probeTimer = null;
+      if (this.ws !== ws || this.lastMessageAt >= sentAt) return;
+      trace("ws", "mux-probe-timeout", { shareId: this.args.shareId, reason, silentMs: Date.now() - this.lastMessageAt });
+      // The socket looks open but is dead (typical after sleep): drop it and
+      // let the normal backoff loop take over.
+      this.ws = null;
+      try { ws.close(); } catch { /* already closing */ }
+      this.afterClose(ws);
+    }, MUX_PROBE_TIMEOUT_MS);
+  }
+
   private handleClosed(ws: WebSocket): void {
     if (this.ws !== ws) return;
     this.ws = null;
-    this.notifyClosed();
+    this.afterClose(ws);
+  }
+
+  private afterClose(ws: WebSocket): void {
+    this.clearProbe();
+    // Only a socket that actually opened changes room state; a failed retry
+    // leaves every room already disconnected, so there is nothing to fan out.
+    if (this.openedWs === ws) {
+      this.openedWs = null;
+      this.notifyClosed();
+    }
+    this.setStatus("disconnected");
     if (!this.shouldConnect || this.providers.size === 0) return;
-    const delay = reconnectDelayForAttempt(this.attempts++);
+    const attempt = this.attempts++;
+    const delay = reconnectDelayForAttempt(attempt);
+    trace("ws", "mux-retry-scheduled", { shareId: this.args.shareId, attempt, delayMs: delay });
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 
@@ -183,8 +262,70 @@ class MuxConnection {
       p.setConnected(false);
       p.setSynced(false);
       p.clearRemoteAwareness();
-      p.emitStatus("disconnected");
     }));
+  }
+
+  /** The socket is shared, so one error report per outage, not one per room. */
+  private reportError(): void {
+    trace("ws", "mux-socket-error", { shareId: this.args.shareId, attempt: this.attempts });
+    if (this.errorReported) return;
+    this.errorReported = true;
+    this.primaryProvider()?.emit("connection-error");
+  }
+
+  private primaryProvider(): MuxProvider | null {
+    let first: MuxProvider | null = null;
+    for (const [roomName, set] of this.providers) {
+      const p = set.values().next().value as MuxProvider | undefined;
+      if (!p) continue;
+      if (roomName.endsWith(":__manifest__")) return p;
+      first ??= p;
+    }
+    return first;
+  }
+
+  /** Coalesce status fan-out: at most one O(rooms) delivery per window, and
+   *  none when the settled status did not change. */
+  private setStatus(status: MuxStatus, immediate = false): void {
+    this.pendingStatus = status;
+    if (immediate) {
+      this.flushStatus();
+      return;
+    }
+    if (this.statusTimer) return;
+    this.statusTimer = setTimeout(() => this.flushStatus(), MUX_STATUS_FLUSH_MS);
+  }
+
+  private flushStatus(): void {
+    if (this.statusTimer) {
+      clearTimeout(this.statusTimer);
+      this.statusTimer = null;
+    }
+    const status = this.pendingStatus;
+    this.pendingStatus = null;
+    if (!status || status === this.deliveredStatus) return;
+    this.deliveredStatus = status;
+    trace("ws", "mux-status", { shareId: this.args.shareId, status, rooms: this.providers.size, attempt: this.attempts });
+    this.providers.forEach((set) => set.forEach((p) => p.emitStatus(status)));
+  }
+
+  private clearProbe(): void {
+    if (this.probeTimer) {
+      clearTimeout(this.probeTimer);
+      this.probeTimer = null;
+    }
+  }
+
+  private clearTimers(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.statusTimer) {
+      clearTimeout(this.statusTimer);
+      this.statusTimer = null;
+    }
+    this.clearProbe();
   }
 
   private handleMessage(raw: any): void {
@@ -308,6 +449,7 @@ export class MuxProvider {
   }
 
   setSynced(synced: boolean): void {
+    if (synced) this.conn.markSynced();
     if (this.synced === synced) return;
     this.synced = synced;
     this.emit("sync", synced);
@@ -332,6 +474,17 @@ export class MuxProvider {
 
   disconnect(): void {
     this.conn.disconnect();
+  }
+
+  /** Ask the shared socket to recover (wake/online/visibility/manual). Cheap
+   *  to call for every room: the connection throttles and dedupes. */
+  requestReconnect(reason: string, force = false): void {
+    this.conn.poke(reason, force);
+  }
+
+  /** Liveness probe: the server answers sync step 1 with step 2. */
+  probeLiveness(): void {
+    this.sendSyncStep1();
   }
 
   destroy(): void {

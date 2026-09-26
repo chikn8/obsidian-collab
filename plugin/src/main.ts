@@ -192,6 +192,7 @@ export default class CollabPlugin extends Plugin {
       }
     });
     this.registerDomEvent(window, "focus", () => this.startBindWatchdog("window-focus", 5000));
+    this.registerDomEvent(window, "online", () => this.reconnectAll("online"));
     this.registerDomEvent(window, "pagehide", () => void this.flushActiveEditorForLifecycle("pagehide"));
     this.registerDomEvent(window, "beforeunload", () => void this.flushActiveEditorForLifecycle("beforeunload"));
 
@@ -248,7 +249,7 @@ export default class CollabPlugin extends Plugin {
       callback: () => {
         let failed = 0;
         for (const m of this.syncManagers.values()) {
-          if (!m.reconnect()) failed++;
+          if (!m.reconnect("manual", true)) failed++;
         }
         new Notice(failed > 0 ? `Reconnect requested; ${failed} share(s) reported an immediate failure.` : "Reconnecting…");
         log("reconnect", "manual reconnect of", this.syncManagers.size, "shares");
@@ -744,7 +745,7 @@ export default class CollabPlugin extends Plugin {
   private reconnectAll(reason: string): void {
     let failed = 0;
     this.eachManager((m) => {
-      if (!m.reconnect()) failed++;
+      if (!m.reconnect(reason)) failed++;
     });
     trace("reconnect", "all-managers", { reason, managers: this.syncManagers.size, failed });
   }

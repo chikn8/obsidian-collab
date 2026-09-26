@@ -144,11 +144,18 @@ export class FileProvider {
   private onPending?: () => void;
   private onReady?: () => void;
 
-  /** Force a reconnect of this file's socket (used by "Reconnect all"). */
-  reconnect(): boolean {
+  /** Recover this file's socket (used by "Reconnect all"). Mux rooms share
+   *  one socket, so they only poke it; tearing it down per room made every
+   *  wake O(rooms^2) status events. Legacy sockets that are up are left alone. */
+  reconnect(reason = "manual", force = false): boolean {
     const p = this.provider;
     if (!p) return true;
     try {
+      if (typeof p.requestReconnect === "function") {
+        p.requestReconnect(reason, force);
+        return true;
+      }
+      if (p.wsconnected && !force) return true;
       p.wsUnsuccessfulReconnects = 0;
       p.disconnect();
       p.connect();

@@ -9873,7 +9873,12 @@ async function readLegacyPluginData(app) {
 
 // src/utils/log.ts
 var MAX_ROWS = 1e4;
-var MAX_TRACE_LINES = 5e4;
+var MAX_TRACE_LINES = 2e4;
+var RATE_LIMIT_WINDOW_MS = 1e3;
+var RATE_LIMIT_PER_WINDOW = 50;
+var TRACE_FLUSH_MS = 1e3;
+var MAX_TRACE_FILE_BYTES = 5 * 1024 * 1024;
+var MAX_TRACE_DIR_BYTES = 20 * 1024 * 1024;
 var MAX_TELEMETRY_QUEUE = 50;
 var MAX_STRING = 500;
 var SECRET_KEY_RE = /(secret|password|token|key|code|auth|credential|content|body|text)/i;
@@ -9885,6 +9890,13 @@ var traceUntil = 0;
 var flushTimer = null;
 var flushChain = Promise.resolve();
 var lastWritePath = "";
+var tracePart = 0;
+var traceFileBytes = 0;
+var traceFileStarted = false;
+var pruneDone = false;
+var rateLimitedRows = 0;
+var rateWindows = /* @__PURE__ */ new Map();
+var suppressedRows = /* @__PURE__ */ new WeakSet();
 var contextProvider = null;
 var seq = 0;
 var droppedRows = 0;
@@ -9983,6 +9995,11 @@ function findErrPathArg(args2, ownsPath) {
 }
 function record(level, ns, event, fields = {}) {
   const now = Date.now();
+  if (rateLimited(`${level}:${ns}:${event}`, now)) {
+    const placeholder = { seq, ts: "", t: now, dt: now - sessionStartedAt, sessionId, level, ns, event };
+    suppressedRows.add(placeholder);
+    return placeholder;
+  }
   const row = {
     seq: ++seq,
     ts: (/* @__PURE__ */ new Date()).toISOString(),
@@ -10009,8 +10026,32 @@ function record(level, ns, event, fields = {}) {
   }
   return row;
 }
+function rateLimited(key, now) {
+  var _a2;
+  let w = rateWindows.get(key);
+  if (!w || now - w.start >= RATE_LIMIT_WINDOW_MS) {
+    const suppressed = (_a2 = w == null ? void 0 : w.suppressed) != null ? _a2 : 0;
+    w = { start: now, count: 0, suppressed: 0 };
+    rateWindows.set(key, w);
+    if (suppressed > 0) reportSuppressed(key, suppressed);
+  }
+  if (++w.count <= RATE_LIMIT_PER_WINDOW) return false;
+  w.suppressed++;
+  rateLimitedRows++;
+  return true;
+}
+function reportSuppressed(key, suppressed) {
+  record("info", "diag", "rate-limited", { event: key, suppressed, windowMs: RATE_LIMIT_WINDOW_MS });
+}
+function sweepRateWindows(now) {
+  for (const [key, w] of rateWindows) {
+    if (now - w.start < RATE_LIMIT_WINDOW_MS) continue;
+    rateWindows.delete(key);
+    if (w.suppressed > 0) reportSuppressed(key, w.suppressed);
+  }
+}
 function enqueueTelemetry(row) {
-  if (!telemetryEnabled || !telemetryUrl || row.level !== "error") return;
+  if (!telemetryEnabled || !telemetryUrl || row.level !== "error" || suppressedRows.has(row)) return;
   if (telemetryQueue.length >= MAX_TELEMETRY_QUEUE) {
     telemetryQueue.shift();
     telemetryDroppedRows++;
@@ -10048,19 +10089,67 @@ function scheduleFlush() {
   flushTimer = setTimeout(() => {
     flushTimer = null;
     flushChain = flushChain.then(flushTraceFile, flushTraceFile);
-  }, 600);
+  }, TRACE_FLUSH_MS);
 }
 async function flushTraceFile() {
   const app = appRef;
+  sweepRateWindows(Date.now());
   if (!app || traceLines.length === 0) return;
-  const path = tracePath();
-  lastWritePath = path;
+  const chunk = traceLines.splice(0).join("\n") + "\n";
+  const adapter = app.vault.adapter;
   try {
-    await app.vault.adapter.mkdir(diagnosticDir()).catch(() => {
+    await adapter.mkdir(diagnosticDir()).catch(() => {
     });
-    await app.vault.adapter.write(path, traceLines.join("\n") + "\n");
+    if (!pruneDone) {
+      pruneDone = true;
+      await pruneTraceDir(MAX_TRACE_DIR_BYTES - MAX_TRACE_FILE_BYTES);
+    }
+    const path = tracePath();
+    lastWritePath = path;
+    if (!traceFileStarted || typeof adapter.append !== "function") {
+      await adapter.write(path, chunk);
+      traceFileStarted = true;
+      traceFileBytes = chunk.length;
+    } else {
+      await adapter.append(path, chunk);
+      traceFileBytes += chunk.length;
+    }
+    if (traceFileBytes >= MAX_TRACE_FILE_BYTES) {
+      tracePart++;
+      traceFileStarted = false;
+      traceFileBytes = 0;
+      lastWritePath = "";
+      await pruneTraceDir(MAX_TRACE_DIR_BYTES - MAX_TRACE_FILE_BYTES);
+    }
   } catch (e) {
     if (DEBUG) console.warn("[collab:diag] failed to write diagnostic trace", e);
+  }
+}
+async function pruneTraceDir(budgetBytes) {
+  var _a2, _b2, _c;
+  const adapter = appRef == null ? void 0 : appRef.vault.adapter;
+  if (!adapter || typeof adapter.list !== "function" || typeof adapter.stat !== "function") return;
+  try {
+    const listed = await adapter.list(diagnosticDir());
+    const traces = [];
+    for (const path of (_a2 = listed == null ? void 0 : listed.files) != null ? _a2 : []) {
+      if (!/\/trace-[^/]*\.jsonl$/.test(path)) continue;
+      const st = await adapter.stat(path);
+      if (st) traces.push({ path, size: (_b2 = st.size) != null ? _b2 : 0, mtime: (_c = st.mtime) != null ? _c : 0 });
+    }
+    let total = traces.reduce((n, t) => n + t.size, 0);
+    traces.sort((a, b) => a.mtime - b.mtime);
+    let removed = 0;
+    for (const t of traces) {
+      if (total <= budgetBytes) break;
+      if (t.path === lastWritePath) continue;
+      await adapter.remove(t.path);
+      total -= t.size;
+      removed++;
+    }
+    if (removed > 0) record("info", "diag", "trace-pruned", { removed, remainingBytes: total, budgetBytes });
+  } catch (e) {
+    if (DEBUG) console.warn("[collab:diag] failed to prune diagnostic traces", e);
   }
 }
 function sanitizeRecord(fields) {
@@ -10083,6 +10172,9 @@ function collectContext() {
     maxTraceLines: MAX_TRACE_LINES,
     droppedRows,
     droppedTraceLines,
+    rateLimitedRows,
+    maxTraceFileBytes: MAX_TRACE_FILE_BYTES,
+    maxTraceDirBytes: MAX_TRACE_DIR_BYTES,
     clientTelemetryEnabled: telemetryEnabled,
     clientTelemetryQueued: telemetryQueue.length,
     clientTelemetryDroppedRows: telemetryDroppedRows,
@@ -10153,7 +10245,9 @@ function diagnosticDir() {
   return appRef ? pluginDataPath(appRef, "diagnostics") : ".obsidian/plugins/live-collab/diagnostics";
 }
 function tracePath() {
-  return lastWritePath || `${diagnosticDir()}/trace-${sessionId.slice(0, 8)}.jsonl`;
+  if (lastWritePath) return lastWritePath;
+  const part = tracePart > 0 ? `-${tracePart}` : "";
+  return `${diagnosticDir()}/trace-${sessionId.slice(0, 8)}${part}.jsonl`;
 }
 function stamp() {
   return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
@@ -10164,10 +10258,13 @@ var MESSAGE_SYNC = 0;
 var MESSAGE_AWARENESS = 1;
 var MESSAGE_MUX = 6;
 var MESSAGE_MUX_LEAVE = 7;
-var MUX_RECONNECT_BASE_MS = 500;
-var MUX_RECONNECT_MAX_MS = 1e4;
-var MUX_RECONNECT_MIN_MS = 250;
-var MUX_RECONNECT_JITTER_RATIO = 0.4;
+var MUX_RECONNECT_BASE_MS = 1e3;
+var MUX_RECONNECT_MAX_MS = 6e4;
+var MUX_RECONNECT_MIN_MS = 500;
+var MUX_RECONNECT_JITTER_RATIO = 0.3;
+var MUX_POKE_MIN_INTERVAL_MS = 5e3;
+var MUX_PROBE_TIMEOUT_MS = 1e4;
+var MUX_STATUS_FLUSH_MS = 250;
 var connections = /* @__PURE__ */ new Map();
 function paramsKey(params2) {
   return Object.entries(params2).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
@@ -10192,10 +10289,18 @@ var MuxConnection = class {
   constructor(args2) {
     this.args = args2;
     this.ws = null;
+    this.openedWs = null;
     this.providers = /* @__PURE__ */ new Map();
     this.reconnectTimer = null;
     this.attempts = 0;
     this.shouldConnect = true;
+    this.lastMessageAt = 0;
+    this.lastPokeAt = 0;
+    this.probeTimer = null;
+    this.errorReported = false;
+    this.deliveredStatus = null;
+    this.pendingStatus = null;
+    this.statusTimer = null;
     this.connect();
   }
   get connected() {
@@ -10230,10 +10335,7 @@ var MuxConnection = class {
     }
     if (this.providers.size === 0) {
       this.shouldConnect = false;
-      if (this.reconnectTimer) {
-        clearTimeout(this.reconnectTimer);
-        this.reconnectTimer = null;
-      }
+      this.clearTimers();
       (_a2 = this.ws) == null ? void 0 : _a2.close();
       connections.delete(muxKey(this.args));
     }
@@ -10245,40 +10347,67 @@ var MuxConnection = class {
       this.reconnectTimer = null;
     }
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
-    this.providers.forEach((set) => set.forEach((p) => p.emitStatus("connecting")));
+    trace("ws", "mux-connect", { shareId: this.args.shareId, attempt: this.attempts });
+    if (this.attempts === 0) this.setStatus("connecting");
     const ws = new WebSocket(muxUrl(this.args));
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     ws.onopen = () => {
       if (this.ws !== ws) return;
-      this.attempts = 0;
+      this.openedWs = ws;
+      this.lastMessageAt = Date.now();
       this.providers.forEach((set) => set.forEach((p) => {
         p.setConnected(true);
-        p.emitStatus("connected");
         p.onSocketOpen();
       }));
+      this.setStatus("connected");
     };
     ws.onclose = () => this.handleClosed(ws);
     ws.onerror = () => {
       if (this.ws !== ws) return;
-      this.providers.forEach((set) => set.forEach((p) => p.emit("connection-error")));
+      this.reportError();
     };
     ws.onmessage = (event) => {
       if (this.ws !== ws) return;
+      this.lastMessageAt = Date.now();
+      this.clearProbe();
       this.handleMessage(event.data);
     };
   }
   disconnect() {
     this.shouldConnect = false;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    this.clearTimers();
     const ws = this.ws;
     if (!ws) return;
     this.ws = null;
+    this.openedWs = null;
     ws.close();
     this.notifyClosed();
+    this.setStatus("disconnected", true);
+  }
+  /**
+   * Wake/online/visibility hint. O(1) and never a burst: at most one immediate
+   * attempt per MUX_POKE_MIN_INTERVAL_MS (unless forced by the user). An open
+   * socket gets a liveness probe instead of a teardown; a socket waiting in
+   * backoff gets one early attempt, and if that fails the backoff continues.
+   */
+  poke(reason, force = false) {
+    const now = Date.now();
+    if (!force && now - this.lastPokeAt < MUX_POKE_MIN_INTERVAL_MS) return;
+    this.lastPokeAt = now;
+    const ws = this.ws;
+    if (ws && ws.readyState === WebSocket.CONNECTING) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      this.probe(ws, reason);
+      return;
+    }
+    trace("ws", "mux-poke-connect", { shareId: this.args.shareId, reason, attempt: this.attempts });
+    this.connect();
+  }
+  /** A room finished a sync round-trip: the server is healthy again. */
+  markSynced() {
+    this.attempts = 0;
+    this.errorReported = false;
   }
   send(roomName, inner) {
     if (!this.connected || !this.ws) return;
@@ -10295,12 +10424,40 @@ var MuxConnection = class {
     writeVarString(encoder, roomName);
     this.ws.send(toUint8Array(encoder));
   }
+  probe(ws, reason) {
+    if (this.probeTimer) return;
+    const provider = this.primaryProvider();
+    if (!provider) return;
+    const sentAt = Date.now();
+    provider.probeLiveness();
+    this.probeTimer = setTimeout(() => {
+      this.probeTimer = null;
+      if (this.ws !== ws || this.lastMessageAt >= sentAt) return;
+      trace("ws", "mux-probe-timeout", { shareId: this.args.shareId, reason, silentMs: Date.now() - this.lastMessageAt });
+      this.ws = null;
+      try {
+        ws.close();
+      } catch (e) {
+      }
+      this.afterClose(ws);
+    }, MUX_PROBE_TIMEOUT_MS);
+  }
   handleClosed(ws) {
     if (this.ws !== ws) return;
     this.ws = null;
-    this.notifyClosed();
+    this.afterClose(ws);
+  }
+  afterClose(ws) {
+    this.clearProbe();
+    if (this.openedWs === ws) {
+      this.openedWs = null;
+      this.notifyClosed();
+    }
+    this.setStatus("disconnected");
     if (!this.shouldConnect || this.providers.size === 0) return;
-    const delay2 = reconnectDelayForAttempt(this.attempts++);
+    const attempt = this.attempts++;
+    const delay2 = reconnectDelayForAttempt(attempt);
+    trace("ws", "mux-retry-scheduled", { shareId: this.args.shareId, attempt, delayMs: delay2 });
     this.reconnectTimer = setTimeout(() => this.connect(), delay2);
   }
   notifyClosed() {
@@ -10308,8 +10465,65 @@ var MuxConnection = class {
       p.setConnected(false);
       p.setSynced(false);
       p.clearRemoteAwareness();
-      p.emitStatus("disconnected");
     }));
+  }
+  /** The socket is shared, so one error report per outage, not one per room. */
+  reportError() {
+    var _a2;
+    trace("ws", "mux-socket-error", { shareId: this.args.shareId, attempt: this.attempts });
+    if (this.errorReported) return;
+    this.errorReported = true;
+    (_a2 = this.primaryProvider()) == null ? void 0 : _a2.emit("connection-error");
+  }
+  primaryProvider() {
+    let first = null;
+    for (const [roomName, set] of this.providers) {
+      const p = set.values().next().value;
+      if (!p) continue;
+      if (roomName.endsWith(":__manifest__")) return p;
+      first != null ? first : first = p;
+    }
+    return first;
+  }
+  /** Coalesce status fan-out: at most one O(rooms) delivery per window, and
+   *  none when the settled status did not change. */
+  setStatus(status, immediate = false) {
+    this.pendingStatus = status;
+    if (immediate) {
+      this.flushStatus();
+      return;
+    }
+    if (this.statusTimer) return;
+    this.statusTimer = setTimeout(() => this.flushStatus(), MUX_STATUS_FLUSH_MS);
+  }
+  flushStatus() {
+    if (this.statusTimer) {
+      clearTimeout(this.statusTimer);
+      this.statusTimer = null;
+    }
+    const status = this.pendingStatus;
+    this.pendingStatus = null;
+    if (!status || status === this.deliveredStatus) return;
+    this.deliveredStatus = status;
+    trace("ws", "mux-status", { shareId: this.args.shareId, status, rooms: this.providers.size, attempt: this.attempts });
+    this.providers.forEach((set) => set.forEach((p) => p.emitStatus(status)));
+  }
+  clearProbe() {
+    if (this.probeTimer) {
+      clearTimeout(this.probeTimer);
+      this.probeTimer = null;
+    }
+  }
+  clearTimers() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.statusTimer) {
+      clearTimeout(this.statusTimer);
+      this.statusTimer = null;
+    }
+    this.clearProbe();
   }
   handleMessage(raw) {
     const bytes = raw instanceof ArrayBuffer ? new Uint8Array(raw) : toBytes(raw);
@@ -10406,6 +10620,7 @@ var MuxProvider = class {
     this.wsconnected = connected;
   }
   setSynced(synced) {
+    if (synced) this.conn.markSynced();
     if (this.synced === synced) return;
     this.synced = synced;
     this.emit("sync", synced);
@@ -10425,6 +10640,15 @@ var MuxProvider = class {
   }
   disconnect() {
     this.conn.disconnect();
+  }
+  /** Ask the shared socket to recover (wake/online/visibility/manual). Cheap
+   *  to call for every room: the connection throttles and dedupes. */
+  requestReconnect(reason, force = false) {
+    this.conn.poke(reason, force);
+  }
+  /** Liveness probe: the server answers sync step 1 with step 2. */
+  probeLiveness() {
+    this.sendSyncStep1();
   }
   destroy() {
     this.ydoc.off("update", this.updateHandler);
@@ -11397,11 +11621,18 @@ var FileProvider = class _FileProvider {
   pendingOffline() {
     return this.pending;
   }
-  /** Force a reconnect of this file's socket (used by "Reconnect all"). */
-  reconnect() {
+  /** Recover this file's socket (used by "Reconnect all"). Mux rooms share
+   *  one socket, so they only poke it; tearing it down per room made every
+   *  wake O(rooms^2) status events. Legacy sockets that are up are left alone. */
+  reconnect(reason = "manual", force = false) {
     const p = this.provider;
     if (!p) return true;
     try {
+      if (typeof p.requestReconnect === "function") {
+        p.requestReconnect(reason, force);
+        return true;
+      }
+      if (p.wsconnected && !force) return true;
       p.wsUnsuccessfulReconnects = 0;
       p.disconnect();
       p.connect();
@@ -13087,22 +13318,27 @@ var SyncManager = class {
     }
     fn();
   }
-  /** Force-reconnect every socket for this share (manifest + files). */
-  reconnect() {
+  /** Recover every socket for this share (manifest + files). Mux rooms share
+   *  one throttled connection, so this is one attempt per share, not per room. */
+  reconnect(reason = "manual", force = false) {
     let ok = true;
     const mp = this.manifestProvider;
     if (mp) {
       try {
-        mp.wsUnsuccessfulReconnects = 0;
-        mp.disconnect();
-        mp.connect();
+        if (typeof mp.requestReconnect === "function") {
+          mp.requestReconnect(reason, force);
+        } else if (force || !mp.wsconnected) {
+          mp.wsUnsuccessfulReconnects = 0;
+          mp.disconnect();
+          mp.connect();
+        }
       } catch (e) {
         ok = false;
         trace("ws", "manifest-reconnect-failed", { shareId: this.histShareId, error: e });
       }
     }
     for (const [, fp] of this.fileProviders) {
-      if (!fp.reconnect()) ok = false;
+      if (!fp.reconnect(reason, force)) ok = false;
     }
     return ok;
   }
@@ -17779,6 +18015,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       }
     });
     this.registerDomEvent(window, "focus", () => this.startBindWatchdog("window-focus", 5e3));
+    this.registerDomEvent(window, "online", () => this.reconnectAll("online"));
     this.registerDomEvent(window, "pagehide", () => void this.flushActiveEditorForLifecycle("pagehide"));
     this.registerDomEvent(window, "beforeunload", () => void this.flushActiveEditorForLifecycle("beforeunload"));
     this.registerEvent(
@@ -17826,7 +18063,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
       callback: () => {
         let failed = 0;
         for (const m of this.syncManagers.values()) {
-          if (!m.reconnect()) failed++;
+          if (!m.reconnect("manual", true)) failed++;
         }
         new import_obsidian10.Notice(failed > 0 ? `Reconnect requested; ${failed} share(s) reported an immediate failure.` : "Reconnecting\u2026");
         log("reconnect", "manual reconnect of", this.syncManagers.size, "shares");
@@ -18270,7 +18507,7 @@ var CollabPlugin = class extends import_obsidian10.Plugin {
   reconnectAll(reason) {
     let failed = 0;
     this.eachManager((m) => {
-      if (!m.reconnect()) failed++;
+      if (!m.reconnect(reason)) failed++;
     });
     trace("reconnect", "all-managers", { reason, managers: this.syncManagers.size, failed });
   }

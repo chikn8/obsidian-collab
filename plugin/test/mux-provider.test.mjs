@@ -221,10 +221,10 @@ function setText(doc, value) {
 
 console.log("mux provider\n");
 
-check("reconnect delay jitters first retry within bounds",
-  reconnectDelayForAttempt(0, () => 0) === 300 && reconnectDelayForAttempt(0, () => 1) === 700);
-check("reconnect delay caps high attempts",
-  reconnectDelayForAttempt(20, () => 1) === 10000 && reconnectDelayForAttempt(20, () => 0) === 6000);
+const firstRetry = [0, 0.5, 1].map((r) => reconnectDelayForAttempt(0, () => r));
+check("first retry waits at least ~0.5s (no tight loop)", firstRetry.every((d) => d >= 500 && d <= 2000), JSON.stringify(firstRetry));
+const deepRetry = [0, 0.5, 1].map((r) => reconnectDelayForAttempt(20, () => r));
+check("backoff grows to tens of seconds and stays capped", deepRetry.every((d) => d >= 30000 && d <= 60000), JSON.stringify(deepRetry));
 
 const shareId = "mux-test";
 const roomA = `@${shareId}:file:a.md`;
@@ -333,13 +333,15 @@ try {
     sibStatuses.includes("disconnected") && sibSyncs.includes(false) && providers[3].wsconnected === false);
   providers[2].connect();
   await waitFor(
-    () => providers[2].wsconnected && providers[3].wsconnected && cycleSyncs.includes(true) && sibSyncs.includes(true),
+    () => providers[2].wsconnected && providers[3].wsconnected && cycleSyncs.includes(true) && sibSyncs.includes(true) &&
+      cycleStatuses.at(-1) === "connected" && sibStatuses.at(-1) === "connected",
     1000,
     `mux reconnect cycle ${JSON.stringify({ cycleStatuses, cycleSyncs, sibStatuses, sibSyncs })}`
   );
-  check("both rooms get disconnected→connecting→connected on reconnect",
-    cycleStatuses.join(",").includes("disconnected,connecting,connected") &&
-      sibStatuses.join(",").includes("disconnected,connecting,connected"),
+  // Status fan-out is coalesced, so a fast reconnect may skip "connecting".
+  check("both rooms go disconnected then connected on reconnect",
+    /^disconnected,(connecting,)?connected$/.test(cycleStatuses.join(",")) &&
+      /^disconnected,(connecting,)?connected$/.test(sibStatuses.join(",")),
     JSON.stringify({ cycleStatuses, sibStatuses }));
   check("reconnect cycles exactly one physical socket",
     FakeWebSocket.created.length === socketsBeforeCycle + 1,

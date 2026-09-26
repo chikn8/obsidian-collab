@@ -13,7 +13,11 @@ function hub(room) {
   return h;
 }
 export const __createdProviders = [];
-export function __resetHubs() { hubs.clear(); __createdProviders.length = 0; }
+const lateJoins = new Map(); // roomName -> ms: report synced EMPTY, deliver room state later
+export function __resetHubs() { hubs.clear(); __createdProviders.length = 0; lateJoins.clear(); }
+/** Next connect() to `room` reports synced before the room state arrives (the
+ *  stale-empty-step-2 signature seen in production), then joins after `ms`. */
+export function __setLateJoin(room, ms) { lateJoins.set(room, ms); }
 
 let nextClientId = 1;
 
@@ -61,6 +65,26 @@ export class WebsocketProvider {
 
   connect() {
     if (this.wsconnected) return;
+    const late = lateJoins.get(this.room);
+    if (late != null) {
+      lateJoins.delete(this.room);
+      Promise.resolve().then(() => {
+        this._emit("status", { status: "connected" });
+        this.synced = true;
+        this._emit("sync", true);
+      });
+      setTimeout(() => this._join(), late);
+      return;
+    }
+    this._join();
+    // status/sync fire async like the real provider
+    Promise.resolve().then(() => {
+      this._emit("status", { status: "connected" });
+      this.synced = true;
+      this._emit("sync", true);
+    });
+  }
+  _join() {
     const h = hub(this.room);
     // Adopt current room state, then publish ours so peers converge.
     Y.applyUpdate(this.doc, Y.encodeStateAsUpdate(h.doc), "hub");
@@ -70,12 +94,6 @@ export class WebsocketProvider {
     h.conns.add(this);
     this.wsconnected = true;
     this.doc.on("update", this._onDocUpdate);
-    // status/sync fire async like the real provider
-    Promise.resolve().then(() => {
-      this._emit("status", { status: "connected" });
-      this.synced = true;
-      this._emit("sync", true);
-    });
   }
   disconnect() {
     if (!this.wsconnected) return;

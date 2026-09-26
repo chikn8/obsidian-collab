@@ -149,6 +149,8 @@ class FakeMuxHub {
 
   send(client, roomName, inner) {
     if (client.readyState !== FakeWebSocket.OPEN) return;
+    // Server latency: hold replies in order until the test releases them.
+    if (this.hold) { this.held.push([client, roomName, inner]); return; }
     stats.sent++;
     const outer = encoding.createEncoder();
     encoding.writeVarUint(outer, MESSAGE_MUX);
@@ -310,6 +312,40 @@ try {
   check("late provider syncs existing room content", lateDoc.getText("codemirror").toString() === "room A reply");
   late.destroy();
   lateDoc.destroy();
+
+  // ── stale step 2 must not sync a replacement provider (2026-09-25 dup) ──
+  // A provider is replaced in the same room (fileId flip, restart) while the
+  // reply to its last step 1 is still in flight. That reply is an EMPTY diff
+  // (the old doc was current). Routed to the new empty provider it used to
+  // mark it synced with nothing, and FileProvider seeded the disk file as a
+  // second history: every such replace doubled the note.
+  {
+    const hub = hubFor(FakeWebSocket.created[0].url);
+    const oldDoc = new Y.Doc();
+    const oldP = new MuxProvider({ serverUrl, shareId, roomName: roomA, ydoc: oldDoc, params: paramsA });
+    const oldSyncs = [];
+    oldP.on("sync", (s) => oldSyncs.push(s));
+    await waitFor(() => oldSyncs.includes(true) && oldDoc.getText("codemirror").toString() === "room A reply", 1000, "old provider synced");
+    hub.hold = true; hub.held = [];
+    oldP.probeLiveness(); // step 1 in flight; its reply will be an empty diff
+    oldP.destroy(); oldDoc.destroy();
+    const newDoc = new Y.Doc();
+    const newP = new MuxProvider({ serverUrl, shareId, roomName: roomA, ydoc: newDoc, params: paramsA });
+    const newSyncs = [];
+    newP.on("sync", (s) => newSyncs.push(s));
+    const held = hub.held; hub.hold = false; hub.held = [];
+    check("two step 2 replies are in flight (old + new provider)", held.length === 2, `held=${held.length}`);
+    const [first, ...rest] = held;
+    hub.send(...first); // the stale reply to the destroyed provider's step 1
+    await sleep(20);
+    check("stale empty step 2 does not mark the replacement provider synced",
+      !newSyncs.includes(true), JSON.stringify({ newSyncs, text: newDoc.getText("codemirror").toString() }));
+    for (const m of rest) hub.send(...m);
+    await waitFor(() => newSyncs.includes(true), 1000, "replacement provider synced");
+    check("replacement provider syncs only with the room content",
+      newDoc.getText("codemirror").toString() === "room A reply", newDoc.getText("codemirror").toString());
+    newP.destroy(); newDoc.destroy();
+  }
 
   // ── reconnect cycle (disconnect + connect, as FileProvider.reconnect does) ──
   const cycleStatuses = [];

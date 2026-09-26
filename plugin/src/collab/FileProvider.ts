@@ -23,7 +23,25 @@ function backupExtension(fullPath: string): string {
 }
 
 const STALE_DISK_GUARDRAIL_MIN_DELETE = 1024;
+// After seeding a room we believed empty, watch this long for the server's own
+// history of the same note to show up (a stale/empty sync reply). Seen: 5 s.
+const SEED_ROLLBACK_WINDOW_MS = 120_000;
+const SEED_ROLLBACK_MIN_OVERLAP = 0.6;
 const STALE_DISK_GUARDRAIL_MIN_RATIO = 0.15;
+
+/** Share of `a`'s non-blank lines (by count) that also appear in `b`. */
+function lineOverlap(a: string, b: string): number {
+  const lines = a.split("\n").filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return a.trim() === b.trim() ? 1 : 0;
+  const pool = new Map<string, number>();
+  for (const l of b.split("\n")) if (l.trim()) pool.set(l, (pool.get(l) ?? 0) + 1);
+  let hit = 0;
+  for (const l of lines) {
+    const n = pool.get(l) ?? 0;
+    if (n > 0) { hit++; pool.set(l, n - 1); }
+  }
+  return hit / lines.length;
+}
 
 function offlineConflictStamp(date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -102,6 +120,17 @@ export class FileProvider {
   private writeQueue: Promise<void> = Promise.resolve();
   private writeSeq = 0;
   private pendingLocalContent: string | null = null;
+  /** Set while a disk seed may still turn out to be a second copy of a room
+   *  whose server history arrives late; undoes exactly the seed's ops. */
+  private seedGuard: {
+    undo: Y.UndoManager;
+    content: string;
+    clientId: number;
+    clockStart: number;
+    clockEnd: number;
+    at: number;
+    localEdits: boolean;
+  } | null = null;
   private token: string;
   private authParams: Record<string, string>;
 
@@ -387,9 +416,26 @@ export class FileProvider {
       // duplicate that happens when a joining client with empty IDB
       // inserts its local copy before receiving the server state.
       if (mergedContent.length === 0 && latestDiskContent.length > 0) {
+        // "Synced and empty" is not proof the server room is empty (a stale
+        // step 2, a room still loading). Track the seed so that if the room's
+        // real history arrives later, the seed can be taken back out instead
+        // of leaving two copies of the note on every peer.
+        const undo = new Y.UndoManager(this.ytext, { trackedOrigins: new Set(["seed"]), captureTimeout: 0 });
+        const clientId = this.ydoc.clientID;
+        const clockStart = Y.getState(this.ydoc.store, clientId);
         this.ydoc.transact(() => {
           this.ytext.insert(0, latestDiskContent);
         }, "seed");
+        this.seedGuard = {
+          undo,
+          content: latestDiskContent,
+          clientId,
+          clockStart,
+          clockEnd: Y.getState(this.ydoc.store, clientId),
+          at: Date.now(),
+          localEdits: false,
+        };
+        trace("file", "seeded", { path: this.filePath, room: this.roomName, len: latestDiskContent.length });
         mergedContent = latestDiskContent;
       } else if (latestDiskContent !== startupDiskContent) {
         // A vault modify arrived while the provider was still bootstrapping.
@@ -500,6 +546,9 @@ export class FileProvider {
           len: this.ytext.length,
         });
         this.onLocalEdit?.();
+        if (this.seedGuard && transaction.origin !== "seed" && !(transaction.origin instanceof Y.UndoManager)) {
+          this.seedGuard.localEdits = true;
+        }
         // Edited while the socket is down → it'll sync on reconnect. Surface it.
         if (!this.connected && transaction.origin !== "seed") {
           this.pending++;
@@ -515,6 +564,7 @@ export class FileProvider {
         }
         return;
       }
+      if (this.seedGuard) this.checkSeedDuplicate();
       if (this.writing) {
         this.needsWriteAfterCurrent = true;
         trace("file", "remote-transaction-deferred-during-write", {
@@ -538,6 +588,80 @@ export class FileProvider {
       this.writeToFile(false, "remote-transaction");
     };
     this.ytext.observe(this.observer);
+  }
+
+  /** Text of the doc excluding the items our own disk seed inserted. */
+  private textWithoutSeed(): string {
+    const g = this.seedGuard!;
+    let out = "";
+    let item: any = (this.ytext as any)._start;
+    while (item) {
+      if (!item.deleted && item.countable && typeof item.content?.str === "string") {
+        const id = item.id;
+        const fromSeed = id.client === g.clientId && id.clock >= g.clockStart && id.clock < g.clockEnd;
+        if (!fromSeed) out += item.content.str;
+      }
+      item = item.right;
+    }
+    return out;
+  }
+
+  /**
+   * A remote transaction landed after we seeded the room from disk. If what
+   * the remote brought is another copy of the seeded note (the server had the
+   * note all along and our "empty" sync was stale), undo exactly the seed ops:
+   * one copy stays, on every peer. Anything else (different content, or the
+   * user already typed into the seed) is left merged: no silent loss.
+   */
+  private checkSeedDuplicate(): void {
+    const g = this.seedGuard;
+    if (!g) return;
+    if (Date.now() - g.at > SEED_ROLLBACK_WINDOW_MS) {
+      this.clearSeedGuard();
+      return;
+    }
+    const remote = this.textWithoutSeed();
+    if (remote.length === 0) return; // peers only edited our seed: a genuinely new room
+    const overlap = lineOverlap(g.content, remote);
+    if (g.localEdits || overlap < SEED_ROLLBACK_MIN_OVERLAP) {
+      err("file", "seeded note merged with late server content", {
+        path: this.filePath,
+        room: this.roomName,
+        seedLen: g.content.length,
+        remoteLen: remote.length,
+        overlap: Math.round(overlap * 100) / 100,
+        localEdits: g.localEdits,
+      });
+      this.clearSeedGuard();
+      return;
+    }
+    const seedContent = g.content;
+    this.clearSeedGuard(false);
+    // Observers must not start transactions mid-dispatch; roll back right after.
+    queueMicrotask(() => {
+      if (this.destroyed) { g.undo.destroy(); return; }
+      const before = this.ytext.length;
+      g.undo.undo();
+      g.undo.destroy();
+      trace("file", "seed-rolled-back", {
+        path: this.filePath,
+        room: this.roomName,
+        seedLen: seedContent.length,
+        before,
+        after: this.ytext.length,
+        overlap: Math.round(overlap * 100) / 100,
+      });
+      log("file", "late server history matched the disk seed; removed the duplicate copy", this.filePath);
+      if (this.ytext.toString() !== seedContent) {
+        this.saveSnapshot(seedContent).catch((e) => log("file", "seed rollback snapshot failed", e));
+      }
+      if (!this.editorBound) void this.writeToFile(false, "seed-rolled-back");
+    });
+  }
+
+  private clearSeedGuard(destroyUndo = true): void {
+    if (this.seedGuard && destroyUndo) this.seedGuard.undo.destroy();
+    this.seedGuard = null;
   }
 
   /** Write ytext content to vault file (if different) */

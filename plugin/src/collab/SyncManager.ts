@@ -61,6 +61,9 @@ function sleepMs(ms: number): Promise<void> {
  * are handled by yCollab (see EditorBinding); this class owns the folder
  * manifest, per-file providers, and the file-explorer presence avatars.
  */
+/** ctime slack when deciding a create is older than the tombstone at its path. */
+const STALE_CREATE_GRACE_MS = 2000;
+
 export class SyncManager {
   private app: App;
   private settings: CollabPluginSettings;
@@ -95,6 +98,14 @@ export class SyncManager {
   // windows (mobile / slow disk safe). See EchoGuard.ts.
   private echo = new EchoGuard();
   private processingManifest = false;
+  // False until the first startup reconcile against the synced manifest has
+  // run. Vault "create" events before then (Obsidian fires one per existing
+  // file while loading the vault) are queued in pendingLocalCreates, never
+  // published: publishing them against an empty local manifest minted fresh
+  // fileIds for every file and overwrote tombstones share-wide (2026-09-25:
+  // 277 of 296 entries rewritten, moved/deleted folders resurrected).
+  private manifestReconciled = false;
+  private pendingLocalCreates: Set<string> = new Set();
   // Remote manifest events arriving during the startup reconcile are DEFERRED
   // (not dropped) and replayed once the reconcile finishes; handleManifestChange
   // re-reads the live entry per key, so replaying a stale event is idempotent.
@@ -517,6 +528,8 @@ export class SyncManager {
       // finally: an error mid-reconcile must never leave processingManifest
       // stuck true — that would silently drop every future manifest event.
       this.processingManifest = false;
+      this.manifestReconciled = true;
+      this.drainPendingLocalCreates();
       const deferred = this.pendingManifestChanges.splice(0);
       for (const changes of deferred) {
         this.enqueueManifestOp(() => this.handleManifestChange(changes), "deferred-manifest-change");
@@ -528,6 +541,19 @@ export class SyncManager {
           keys: deferred.reduce((sum, changes) => sum + changes.length, 0),
         });
       }
+    }
+  }
+
+  /** Replay vault creates that arrived before/during the startup reconcile. */
+  private drainPendingLocalCreates(): void {
+    const paths = Array.from(this.pendingLocalCreates);
+    this.pendingLocalCreates.clear();
+    for (const path of paths) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (file instanceof TFile) this.onFileCreate(file);
+    }
+    if (paths.length) {
+      trace("manifest", "deferred-creates-drained", { shareId: this.histShareId, creates: paths.length });
     }
   }
 
@@ -735,11 +761,14 @@ export class SyncManager {
         // same-path create, or a path reused after deletion). Drop the stale
         // local doc so we adopt the new file's room cleanly instead of merging
         // two unrelated histories into one.
+        // Rooms are keyed by PATH, not fileId: the "new identity" syncs through
+        // the very same room, so wiping the local doc separates nothing. It
+        // only threw away this device's CRDT base and restarted the provider
+        // empty, which is what re-seeded (doubled) notes on every fileId flip.
+        // Deletes already destroy the provider, so a reused path starts clean.
         const knownId = this.fileIds.get(relPath);
         if (entry.fileId && knownId && knownId !== entry.fileId) {
-          const stale = this.fileProviders.get(relPath);
-          if (stale) { await stale.destroyAndClearData(); this.fileProviders.delete(relPath); }
-          log("delete", "fileId changed at", relPath, "- adopting new identity");
+          log("delete", "fileId changed at", relPath, "- adopting new identity (same room, local doc kept)");
         }
         if (entry.fileId) this.fileIds.set(relPath, entry.fileId);
 
@@ -1326,6 +1355,42 @@ export class SyncManager {
 
     const relPath = this.toRelativePath(file.path);
     if (!this.safeManifestRelPath(relPath, "local create")) return;
+    if (!this.manifestReconciled || this.processingManifest) {
+      this.pendingLocalCreates.add(file.path);
+      trace("vault", "create-deferred", { shareId: this.histShareId, relPath, cause: "manifest-not-reconciled" });
+      return;
+    }
+    const known = this.manifestMap?.get(relPath) as ManifestEntry | undefined;
+    if (known?.exists) {
+      // Already a live synced file (vault-load event, or a create we raced):
+      // not a new file. Rewriting the entry would mint a create mutation over
+      // the real one. Just make sure it has a provider.
+      if (known.fileId) this.fileIds.set(relPath, known.fileId);
+      trace("vault", "create-skipped", { shareId: this.histShareId, path: file.path, cause: "already-live" });
+      if (!isSyncableBinaryPath(relPath) && !this.fileProviders.has(relPath)) {
+        void this.createFileProvider(relPath, file.path);
+      }
+      return;
+    }
+    if (known && !known.exists) {
+      // A tombstoned path. A file born before the delete/move is a stale copy
+      // resurfacing (vault indexed late, another sync tool, a peer's disk), not
+      // a new note: publishing it would undo the delete/move for everyone.
+      // Leave it for the startup reconcile's tombstone handling.
+      const deletedAt = known.deletedAt || known.lastModified || 0;
+      const bornAt = file.stat?.ctime || file.stat?.mtime || 0;
+      if (bornAt && deletedAt && bornAt <= deletedAt + STALE_CREATE_GRACE_MS) {
+        trace("vault", "create-skipped", {
+          shareId: this.histShareId,
+          path: file.path,
+          cause: "older-than-tombstone",
+          bornAt,
+          deletedAt,
+          renamedTo: known.renamedTo,
+        });
+        return;
+      }
+    }
     trace("vault", "local-create", { shareId: this.histShareId, relPath, path: file.path });
 
     if (isSyncableBinaryPath(relPath)) {

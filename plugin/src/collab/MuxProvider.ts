@@ -77,6 +77,14 @@ class MuxConnection {
   private deliveredStatus: MuxStatus | null = null;
   private pendingStatus: MuxStatus | null = null;
   private statusTimer: ReturnType<typeof setTimeout> | null = null;
+  // Per-room sync step 1 sent / step 2 received on the CURRENT socket. The
+  // server answers each step 1 with exactly one step 2, in order, so a provider
+  // is synced only once the reply to its own step 1 is in. Without this, a
+  // step 2 still in flight for a provider that was just replaced (same room,
+  // new empty doc) marks the new provider synced with an empty doc, and the
+  // FileProvider then seeds the whole disk file as a second history.
+  private step1Sent = new Map<string, number>();
+  private step2Received = new Map<string, number>();
 
   constructor(private args: MuxParams) {
     this.connect();
@@ -140,6 +148,8 @@ class MuxConnection {
       if (this.ws !== ws) return;
       this.openedWs = ws;
       this.lastMessageAt = Date.now();
+      this.step1Sent.clear();
+      this.step2Received.clear();
       this.providers.forEach((set) => set.forEach((p) => {
         p.setConnected(true);
         p.onSocketOpen();
@@ -200,13 +210,27 @@ class MuxConnection {
     this.errorReported = false;
   }
 
-  send(roomName: string, inner: Uint8Array): void {
-    if (!this.connected || !this.ws) return;
+  /** Send a sync step 1 for a room; returns its sequence number on this
+   *  socket, or null if the socket is not open (nothing was sent). */
+  sendStep1(roomName: string, inner: Uint8Array): number | null {
+    if (!this.send(roomName, inner)) return null;
+    const seq = (this.step1Sent.get(roomName) ?? 0) + 1;
+    this.step1Sent.set(roomName, seq);
+    return seq;
+  }
+
+  step2Count(roomName: string): number {
+    return this.step2Received.get(roomName) ?? 0;
+  }
+
+  send(roomName: string, inner: Uint8Array): boolean {
+    if (!this.connected || !this.ws) return false;
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MESSAGE_MUX);
     encoding.writeVarString(encoder, roomName);
     encoding.writeVarUint8Array(encoder, inner);
     this.ws.send(encoding.toUint8Array(encoder));
+    return true;
   }
 
   leave(roomName: string): void {
@@ -335,9 +359,21 @@ class MuxConnection {
     if (outerType !== MESSAGE_MUX) return;
     const roomName = decoding.readVarString(decoder);
     const inner = decoding.readVarUint8Array(decoder);
+    if (isSyncStep2(inner)) {
+      this.step2Received.set(roomName, (this.step2Received.get(roomName) ?? 0) + 1);
+    }
     const set = this.providers.get(roomName);
     if (!set) return;
     for (const provider of set) provider.receive(inner);
+  }
+}
+
+function isSyncStep2(inner: Uint8Array): boolean {
+  try {
+    const decoder = decoding.createDecoder(inner);
+    return decoding.readVarUint(decoder) === MESSAGE_SYNC && decoding.readVarUint(decoder) === 1;
+  } catch {
+    return false;
   }
 }
 
@@ -358,6 +394,8 @@ export class MuxProvider {
   private listeners = new Map<string, Set<Listener>>();
   private conn: MuxConnection;
   private synced = false;
+  /** Sequence of this provider's latest step 1 on the current socket. */
+  private awaitingStep2 = 0;
   private updateHandler: (update: Uint8Array, origin: any) => void;
   private awarenessHandler: (
     { added, updated, removed }: { added: number[]; updated: number[]; removed: number[] },
@@ -505,7 +543,8 @@ export class MuxProvider {
       encoding.writeVarUint(encoder, MESSAGE_SYNC);
       syncProtocol.readSyncMessage(decoder, encoder, this.ydoc, this);
       if (encoding.length(encoder) > 1) this.send(encoding.toUint8Array(encoder));
-      if (subtype === 1) this.setSynced(true);
+      // Only the reply to OUR latest step 1 proves we hold the server's state.
+      if (subtype === 1 && this.conn.step2Count(this.roomName) >= this.awaitingStep2) this.setSynced(true);
     } else if (messageType === MESSAGE_AWARENESS) {
       const update = decoding.readVarUint8Array(decoder);
       trace("awareness", "mux-receive", {
@@ -521,7 +560,8 @@ export class MuxProvider {
     const encoder = encoding.createEncoder();
     encoding.writeVarUint(encoder, MESSAGE_SYNC);
     syncProtocol.writeSyncStep1(encoder, this.ydoc);
-    this.send(encoding.toUint8Array(encoder));
+    const seq = this.conn.sendStep1(this.roomName, encoding.toUint8Array(encoder));
+    if (seq != null) this.awaitingStep2 = seq;
   }
 
   private flushLocalAwareness(): void {

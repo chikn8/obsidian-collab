@@ -12,7 +12,7 @@ import { FileProvider } from "../src/collab/FileProvider";
 import { EchoGuard } from "../src/collab/EchoGuard";
 import { App } from "obsidian";
 import { __resetIdb } from "y-indexeddb";
-import { __createdProviders, __resetHubs } from "y-websocket";
+import { __createdProviders, __resetHubs, __setLateJoin } from "y-websocket";
 import { getRecentDiagnostics } from "../src/utils/log";
 
 let failures = 0;
@@ -405,6 +405,46 @@ console.log("Missing fingerprint + small offline edit still reconciles");
   } finally {
     delete globalThis.window;
   }
+}
+
+// ── 9. Server history arriving after an empty sync must not double the note ────
+// Production 2026-09-25 (trace d831233a): a provider with an empty IndexedDB got
+// "synced" with an empty doc, seeded the 129,248-char disk file as a new
+// history, then the server's own history of the same text arrived 5 s later
+// and the note became 258,496 chars on every peer. Repeated, notes hit 256x.
+console.log("Late server history after an empty sync does not double the note");
+{
+  __resetIdb(); __resetHubs();
+  const room = "@test:file:late-join";
+  const body = richLines("late");
+  const A = await makeClient("A", room, "note.md", body);
+  await sleep(900);
+  __setLateJoin(room, 1500);
+  __resetIdb(); // the fake IDB is per room name, shared by A and B: B is a fresh device
+  const B = await makeClient("B", room, "note.md", body);
+  await sleep(2600);
+  check("B's disk is a single copy", B.disk() === body, `B len=${B.disk().length} body=${body.length}`);
+  check("A's doc is a single copy", A.fp.getYText().toString() === body, `A len=${A.fp.getYText().length}`);
+  check("A's disk is a single copy", A.disk() === body, `A disk len=${A.disk().length}`);
+  A.fp.destroy(); B.fp.destroy();
+}
+
+console.log("Late server content that differs is kept alongside the seed (no silent loss)");
+{
+  __resetIdb(); __resetHubs();
+  const room = "@test:file:late-join-different";
+  const remote = "totally different server note\n";
+  const local = richLines("local");
+  const A = await makeClient("A", room, "note.md", remote);
+  await sleep(900);
+  __setLateJoin(room, 1500);
+  __resetIdb(); // the fake IDB is per room name, shared by A and B: B is a fresh device
+  const B = await makeClient("B", room, "note.md", local);
+  await sleep(2600);
+  const merged = B.fp.getYText().toString();
+  check("remote content survives", merged.includes(remote), `len=${merged.length}`);
+  check("local seed survives", merged.includes(local), `len=${merged.length}`);
+  A.fp.destroy(); B.fp.destroy();
 }
 
 console.log("");

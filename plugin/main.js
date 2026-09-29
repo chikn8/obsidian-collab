@@ -10259,6 +10259,7 @@ var MESSAGE_AWARENESS = 1;
 var MESSAGE_MUX = 6;
 var MESSAGE_MUX_LEAVE = 7;
 var MUX_RECONNECT_BASE_MS = 1e3;
+var MUX_STABLE_MS = 3e4;
 var MUX_RECONNECT_MAX_MS = 6e4;
 var MUX_RECONNECT_MIN_MS = 500;
 var MUX_RECONNECT_JITTER_RATIO = 0.3;
@@ -10290,6 +10291,7 @@ var MuxConnection = class {
     this.args = args2;
     this.ws = null;
     this.openedWs = null;
+    this.openedAt = 0;
     this.providers = /* @__PURE__ */ new Map();
     this.reconnectTimer = null;
     this.attempts = 0;
@@ -10363,6 +10365,7 @@ var MuxConnection = class {
     ws.onopen = () => {
       if (this.ws !== ws) return;
       this.openedWs = ws;
+      this.openedAt = Date.now();
       this.lastMessageAt = Date.now();
       this.step1Sent.clear();
       this.step2Received.clear();
@@ -10413,11 +10416,6 @@ var MuxConnection = class {
     }
     trace("ws", "mux-poke-connect", { shareId: this.args.shareId, reason, attempt: this.attempts });
     this.connect();
-  }
-  /** A room finished a sync round-trip: the server is healthy again. */
-  markSynced() {
-    this.attempts = 0;
-    this.errorReported = false;
   }
   /** Send a sync step 1 for a room; returns its sequence number on this
    *  socket, or null if the socket is not open (nothing was sent). */
@@ -10476,6 +10474,10 @@ var MuxConnection = class {
     if (this.openedWs === ws) {
       this.openedWs = null;
       this.notifyClosed();
+      if (Date.now() - this.openedAt >= MUX_STABLE_MS) {
+        this.attempts = 0;
+        this.errorReported = false;
+      }
     }
     this.setStatus("disconnected");
     if (!this.shouldConnect || this.providers.size === 0) return;
@@ -10658,7 +10660,6 @@ var MuxProvider = class {
     this.wsconnected = connected;
   }
   setSynced(synced) {
-    if (synced) this.conn.markSynced();
     if (this.synced === synced) return;
     this.synced = synced;
     this.emit("sync", synced);

@@ -12,6 +12,7 @@ export const METRIC_NAMES = [
   "client_errors",
   "client_log_rate_limited",
   "mux_room_rejections",
+  "mux_connects_throttled",
 ] as const;
 
 export type MetricName = typeof METRIC_NAMES[number];

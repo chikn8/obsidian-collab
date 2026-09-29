@@ -388,6 +388,45 @@ class MuxClient {
   }
 }
 
+async function readAuditRows(persistDir) {
+  const raw = await fs.readFile(path.join(persistDir, "audit.jsonl"), "utf-8").catch(() => "");
+  return raw.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+}
+
+// Audit rows are appended asynchronously; poll until `ready(rows)` holds, then
+// return whatever is there so a failing check still shows the real rows.
+async function auditRowsFor(persistDir, shareId, ready, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  let rows = [];
+  while (Date.now() < deadline) {
+    rows = (await readAuditRows(persistDir)).filter((r) => r.shareId === shareId);
+    if (ready(rows)) return rows;
+    await sleep(100);
+  }
+  return rows;
+}
+
+async function muxUpgradeStatus(wsBase, shareId, params) {
+  return new Promise((resolve) => {
+    const url = new URL(`${wsBase}/${encodeURIComponent(`@${shareId}:__mux__`)}`);
+    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
+    const ws = new WebSocket(url);
+    let settled = false;
+    const done = (status) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (status === 101) ws.close();
+      else try { ws.terminate(); } catch {}
+      resolve(status);
+    };
+    const timer = setTimeout(() => done(0), 4000);
+    ws.on("open", () => done(101));
+    ws.on("unexpected-response", (_req, res) => done(res.statusCode));
+    ws.on("error", () => done(-1));
+  });
+}
+
 async function expectWsRejected(wsBase, room, params) {
   return new Promise((resolve) => {
     const url = new URL(`${wsBase}/${encodeURIComponent(room)}`);
@@ -595,6 +634,71 @@ try {
       body: JSON.stringify(body),
     });
     check("clientlog rejects bad auth", rejected.status === 401, `status=${rejected.status}`);
+  }
+
+  console.log("A full-share mux connect (300 rooms) stays open and audits one line each way");
+  {
+    // Live incident 2026-09-29: a 269-room share sent ~670 frames on connect,
+    // hit the 600-frame bucket, closed 4408 and reconnected every ~1 s, writing
+    // a ws.join + ws.leave audit line per room per cycle.
+    const shareId = "e2e-mux-big";
+    const rooms = Array.from({ length: 300 }, (_, i) => roomName(shareId, `big/note-${i}.md`));
+    const params = authParams("editor", 1, shareId);
+    const client = new MuxClient(server.wsBase, shareId, rooms, params);
+    await client.ready;
+    for (const [room, awareness] of client.awareness) {
+      awareness.setLocalState({ user: { name: "big", room } });
+    }
+    const closedEarly = await Promise.race([client.closed, sleep(2000).then(() => null)]);
+    check("300-room mux socket is not closed by the rate limit", closedEarly === null, `close=${closedEarly?.code}`);
+    client.ws.close();
+    await Promise.race([client.closed, sleep(2000)]);
+    const rows = await auditRowsFor(persistDir, shareId, (rs) => rs.some((r) => r.event === "mux.leave"));
+    const count = (event) => rows.filter((r) => r.event === event).length;
+    check("mux connect writes one mux.join and no per-room ws.join", count("mux.join") === 1 && count("ws.join") === 0,
+      `mux.join=${count("mux.join")} ws.join=${count("ws.join")}`);
+    const leave = rows.find((r) => r.event === "mux.leave");
+    check("mux close writes one mux.leave with the room count and no per-room ws.leave",
+      count("mux.leave") === 1 && leave?.rooms === 300 && count("ws.leave") === 0,
+      `mux.leave=${count("mux.leave")} rooms=${leave?.rooms} ws.leave=${count("ws.leave")}`);
+    for (const doc of client.docs.values()) doc.destroy();
+  }
+
+  console.log("Single-room sockets keep per-room audit lines");
+  {
+    const shareId = "e2e-audit-single";
+    const room = roomName(shareId, "single.md");
+    // The server may still be closing the 300 rooms above; wait for a real
+    // relay round trip so both sockets have joined before closing.
+    const client = new SyncClient(server.wsBase, room, authParams("editor", 1, shareId));
+    const peer = new SyncClient(server.wsBase, room, authParams("editor", 1, shareId));
+    await Promise.all([client.ready, peer.ready]);
+    client.setText("joined");
+    await peer.waitForText("joined", 10000);
+    await client.close();
+    await peer.close();
+    const rows = await auditRowsFor(persistDir, shareId, (rs) => rs.some((r) => r.event === "ws.leave"));
+    check("single-room socket audits ws.join and ws.leave",
+      rows.some((r) => r.event === "ws.join") && rows.some((r) => r.event === "ws.leave"),
+      JSON.stringify(rows.map((r) => r.event)));
+  }
+
+  console.log("A device in a mux reconnect loop gets 429 without locking out other devices");
+  {
+    const shareId = "e2e-mux-throttle";
+    const params = authParams("editor", 1, shareId);
+    const statuses = [];
+    for (let i = 0; i < 30; i++) statuses.push(await muxUpgradeStatus(server.wsBase, shareId, params));
+    const accepted = statuses.filter((s) => s === 101).length;
+    const throttled = statuses.filter((s) => s === 429).length;
+    check("looping device is throttled with 429", throttled > 0 && accepted < 30, `statuses=${statuses.join(",")}`);
+    check("looping device still got its first connects", statuses.slice(0, 10).every((s) => s === 101), `statuses=${statuses.join(",")}`);
+    const other = await muxUpgradeStatus(server.wsBase, shareId, authParams("editor", 1, shareId));
+    check("another device on the same share still connects", other === 101, `status=${other}`);
+    await auditRowsFor(persistDir, shareId, (rs) => rs.some((r) => r.event === "mux.throttled"), 2000);
+    await sleep(500);
+    const rows = (await readAuditRows(persistDir)).filter((r) => r.shareId === shareId && r.event === "mux.throttled");
+    check("throttling audits once per window, not once per rejection", rows.length === 1, `rows=${rows.length}`);
   }
 
   console.log("Multiplexed clients sync multiple rooms over one socket each");

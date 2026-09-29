@@ -33,6 +33,11 @@ const BLOCKED_FILE_SEGMENTS = (process.env.SYNC_BLOCKED_FILE_SEGMENTS || "node_m
 // ── Abuse caps (one authed client must not be able to OOM/bloat the box) ──────
 const MAX_MSGS_PER_SEC = 250;            // sustained inbound rate per connection
 const RATE_BURST = 600;                  // bucket capacity (covers a big paste)
+// A mux socket carries every room of a share: on connect it sends a sync step 1,
+// an awareness update, and often a step 2 per room. 600 frames closed every
+// connect to a 269-room share with 4408 (reconnect loop, 2026-09-29), so the
+// mux bucket is sized for ~3 frames x ~2600 rooms. Sustained rate is unchanged.
+const MUX_RATE_BURST = Math.max(RATE_BURST, Number(process.env.MUX_RATE_BURST) || 8000);
 const RATE_LIMIT_CLOSE_CODE = 4408;
 const RATE_LIMIT_LOG_SAMPLE = Number(process.env.RATE_LIMIT_LOG_SAMPLE || 5000);
 const BLOCKED_ROOM_LOG_SAMPLE = Number(process.env.BLOCKED_ROOM_LOG_SAMPLE || 5000);
@@ -126,19 +131,31 @@ function rawDataToUint8Array(data: RawData): Uint8Array {
 function allowMessage(conn: any): boolean {
   const now = Date.now();
   let b = conn._bucket;
-  if (!b) { b = conn._bucket = { tokens: RATE_BURST, ts: now }; }
+  const burst = conn.collabMux ? MUX_RATE_BURST : RATE_BURST;
+  if (!b) { b = conn._bucket = { tokens: burst, ts: now }; }
   const elapsed = (now - b.ts) / 1000;
   b.ts = now;
-  b.tokens = Math.min(RATE_BURST, b.tokens + elapsed * MAX_MSGS_PER_SEC);
+  b.tokens = Math.min(burst, b.tokens + elapsed * MAX_MSGS_PER_SEC);
   if (b.tokens < 1) return false;
   b.tokens -= 1;
   return true;
 }
 
 function closeRateLimitedConnection(conn: WebSocket, event: string, fields: Record<string, unknown>): void {
+  // Frames already in flight keep arriving until the close lands; count and
+  // log the close once per connection so the cause is visible, not sampled away.
+  if ((conn as any).collabRateLimited) return;
+  (conn as any).collabRateLimited = true;
   incMetric("rate_limited");
-  if (++rateLimitedCount % RATE_LIMIT_LOG_SAMPLE === 1) {
-    logEvent("warn", event, { ...fields, count: rateLimitedCount });
+  rateLimitedCount++;
+  if ((conn as any).collabMux || rateLimitedCount % RATE_LIMIT_LOG_SAMPLE === 1) {
+    logEvent("warn", event, {
+      ...fields,
+      uid: (conn as any).collabIdentity?.uid,
+      deviceId: (conn as any).collabIdentity?.deviceId,
+      rooms: connRoomCount(conn),
+      count: rateLimitedCount,
+    });
   }
   if (conn.readyState === WebSocket.OPEN || conn.readyState === WebSocket.CONNECTING) {
     conn.close(RATE_LIMIT_CLOSE_CODE, "Rate limit exceeded");
@@ -583,7 +600,10 @@ async function joinRoom(conn: WebSocket, req: IncomingMessage, roomName: string,
     stateBytes: stateBytes(doc),
     mux: !!(conn as any).collabMux,
   });
-  void auditEvent("ws.join", {
+  // Mux sockets audit once per connection (mux.join / mux.leave with the room
+  // count); per-room lines for a 269-room share were ~1 GB/h in a reconnect loop.
+  if ((conn as any).collabMux) (conn as any).collabRoomsJoined = ((conn as any).collabRoomsJoined || 0) + 1;
+  else void auditEvent("ws.join", {
     room: roomName,
     ...roomInfo(roomName),
     connId: (conn as any).collabConnId,
@@ -1006,7 +1026,7 @@ function leaveRoom(conn: WebSocket, roomName: string, reason: string): boolean {
     conns: doc.conns.size,
     reason,
   });
-  void auditEvent("ws.leave", {
+  if (!(conn as any).collabMux) void auditEvent("ws.leave", {
     room: roomName,
     ...roomInfo(roomName),
     connId: (conn as any).collabConnId,
@@ -1048,7 +1068,7 @@ function closeConn(conn: WebSocket): void {
       connId: (conn as any).collabConnId,
       conns: doc.conns.size,
     });
-    void auditEvent("ws.leave", {
+    if (!(conn as any).collabMux) void auditEvent("ws.leave", {
       room: roomName,
       ...roomInfo(roomName),
       connId: (conn as any).collabConnId,
@@ -1176,12 +1196,17 @@ export async function setupMuxConnection(
     deviceId: (conn as any).collabIdentity?.deviceId,
     remote: req.socket.remoteAddress || "",
   });
+  const connectedAt = Date.now();
   void auditEvent("mux.join", {
     connId: (conn as any).collabConnId,
     shareId: (conn as any).collabShareId || undefined,
     role: (conn as any).collabRole || "editor",
     uid: (conn as any).collabIdentity?.uid,
     name: (conn as any).collabIdentity?.name,
+    device: (conn as any).collabIdentity?.device,
+    deviceId: (conn as any).collabIdentity?.deviceId,
+    epoch: (conn as any).collabEpoch ?? 0,
+    inviteId: (conn as any).collabInviteId || undefined,
     remote: req.socket.remoteAddress || "",
   });
 
@@ -1279,7 +1304,8 @@ export async function setupMuxConnection(
     })();
   });
 
-  conn.on("close", () => {
+  conn.on("close", (code: number, reasonBuf: Buffer) => {
+    const closeReason = reasonBuf?.toString() || undefined;
     logEvent("info", "mux.disconnect", {
       connId: (conn as any).collabConnId,
       shareId: (conn as any).collabShareId || undefined,
@@ -1289,6 +1315,20 @@ export async function setupMuxConnection(
       device: (conn as any).collabIdentity?.device,
       deviceId: (conn as any).collabIdentity?.deviceId,
       rooms: connRoomCount(conn),
+      code,
+      closeReason,
+    });
+    void auditEvent("mux.leave", {
+      connId: (conn as any).collabConnId,
+      shareId: (conn as any).collabShareId || undefined,
+      uid: (conn as any).collabIdentity?.uid,
+      name: (conn as any).collabIdentity?.name,
+      device: (conn as any).collabIdentity?.device,
+      deviceId: (conn as any).collabIdentity?.deviceId,
+      rooms: (conn as any).collabRoomsJoined || 0,
+      durationMs: Date.now() - connectedAt,
+      code,
+      closeReason,
     });
     activeMuxConnections.delete(conn);
     closeConn(conn);

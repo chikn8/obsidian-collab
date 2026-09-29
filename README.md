@@ -186,6 +186,10 @@ Settings → Real-Time Collaboration:
 | `SHARE_OWNER_SECRET` | = `ADMIN_SECRET` | Derives per-share owner keys for link minting/revocation |
 | `*_PREVIOUS` secret vars | — | Temporary comma-separated rotation grace vars for `SERVER_SECRET`, `AUTH_TOKEN`, `ADMIN_SECRET`, `SHARE_MINT_TOKEN`, and `SHARE_OWNER_SECRET` |
 | `AUDIT_LOG_PATH` | `$PERSIST_DIR/audit.jsonl` | Append-only JSONL audit log for share/link/revoke/join/security events |
+| `AUDIT_LOG_MAX_BYTES` | `67108864` | Rotate the audit log past this size to `audit.jsonl.<UTC stamp>.gz` (mux sockets audit one `mux.join`/`mux.leave` each, not one line per room) |
+| `AUDIT_LOG_ROTATE_COUNT` / `AUDIT_LOG_TOTAL_MAX_BYTES` | `8` / `536870912` | Rotated audit parts to keep, and their total size cap (oldest pruned first) |
+| `MUX_RATE_BURST` | `8000` | Inbound frame burst for a mux socket (a full-share connect sends ~3 frames per room) |
+| `MUX_CONNECTS_PER_MINUTE` | `20` | Mux connects per device and share per minute before the upgrade gets `429` |
 | `REQUIRE_AUTH` | `true` if `NODE_ENV=production` | Refuse to start without strong secrets |
 | `MIN_SECRET_LENGTH` | `16` | Minimum secret length enforced when `REQUIRE_AUTH` |
 | `DISABLE_LEGACY_ROOMS` | `false` | Reject un-namespaced rooms entirely (no `AUTH_TOKEN` needed) |

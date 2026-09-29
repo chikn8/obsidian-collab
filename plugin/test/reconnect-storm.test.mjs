@@ -11,6 +11,8 @@
  * Scenarios
  *   A. healthy server, Elijah alt-tabs 5 times (visibility-visible each time)
  *   B. server dies, alt-tab/wake events during a 60 s outage, server returns
+ *   E. server accepts, syncs the first rooms, then closes 4408 ~380 ms after
+ *      open (the 2026-09-29 mux rate-limit loop, 269 rooms, ~1 reconnect/s)
  *
  * With STORM_ASSERT=1 it asserts the post-fix bounds; the "before" run only
  * reports numbers.
@@ -72,7 +74,7 @@ async function advance(ms) {
 // ── fake sync server + WebSocket ─────────────────────────────────────────
 const MESSAGE_SYNC = 0;
 const MESSAGE_MUX = 6;
-const server = { up: true, docs: new Map(), open: new Set() };
+const server = { up: true, docs: new Map(), open: new Set(), closeAfterOpenMs: 0 };
 const counters = { sockets: 0 };
 
 function serverDoc(room) {
@@ -102,6 +104,14 @@ class FakeWebSocket {
       this.readyState = FakeWebSocket.OPEN;
       server.open.add(this);
       this.onopen?.({});
+      if (server.closeAfterOpenMs) {
+        setTimeout(() => {
+          if (this.readyState !== FakeWebSocket.OPEN) return;
+          this.readyState = FakeWebSocket.CLOSED;
+          server.open.delete(this);
+          this.onclose?.({ code: 4408 });
+        }, server.closeAfterOpenMs);
+      }
     }, 20);
   }
   send(data) {
@@ -306,6 +316,26 @@ while (now - dPoke < 120_000) {
 }
 const D = delta(d0, snapshot(), { longestTaskMs: Math.round(busy.longest), recoveredAfterAltTabMs: dRecovered });
 
+// ── E: accept, sync some rooms, close 4408 after ~380 ms, for 60 s ──────
+await advance(40_000);
+const e0 = snapshot();
+server.closeAfterOpenMs = 380;
+for (const ws of [...server.open]) {
+  ws.readyState = FakeWebSocket.CLOSED;
+  server.open.delete(ws);
+  timed(() => ws.onclose?.({ code: 4408 }));
+}
+await advance(60_000);
+const eLoop = delta(e0, snapshot());
+server.closeAfterOpenMs = 0;
+let eRecovered = null;
+const eEnd = now;
+while (now - eEnd < 120_000) {
+  await advance(500);
+  if (allConnected()) { eRecovered = now - eEnd; break; }
+}
+const E = { ...eLoop, recoveredWithoutUserMs: eRecovered };
+
 // diagnostics footprint
 await advance(2000);
 let traceBytesOnDisk = 0;
@@ -313,7 +343,7 @@ for (const [p, body] of diagFiles) if (/\/trace-[^/]*\.jsonl$/.test(p)) traceByt
 
 console.log = origConsole.log;
 console.error = origConsole.error;
-const result = { rooms: N, setupOk, A_healthyAltTabs: A, B_outage60s: B, C_normalSync: C, D_outageThenAltTab: D, traceMBOnDisk: +(traceBytesOnDisk / 1e6).toFixed(2) };
+const result = { rooms: N, setupOk, A_healthyAltTabs: A, B_outage60s: B, C_normalSync: C, D_outageThenAltTab: D, E_acceptThenClose: E, traceMBOnDisk: +(traceBytesOnDisk / 1e6).toFixed(2) };
 out(`STORM_RESULT ${JSON.stringify(result)}`);
 
 if (process.env.STORM_ASSERT === "1") {
@@ -336,6 +366,9 @@ if (process.env.STORM_ASSERT === "1") {
   check("C: live file edit syncs", C.fileEditReachedServer);
   check("C: manifest edit syncs", C.manifestEditReachedServer);
   check("D: alt-tab after the server returns reconnects within 1 s", D.recoveredAfterAltTabMs !== null && D.recoveredAfterAltTabMs <= 1000, JSON.stringify(D));
+  check("E: accept-sync-then-close backs off (<= 12 sockets in 60 s)", E.socketsOpened <= 12, JSON.stringify(E));
+  check("E: one connection error per loop, not one per cycle", E.consoleErrors <= 2, JSON.stringify(E));
+  check("E: recovers on its own once the server keeps the socket (<= 65 s)", E.recoveredWithoutUserMs !== null && E.recoveredWithoutUserMs <= 65_000, JSON.stringify(E));
   check("diagnostics stay under 20 MB", traceBytesOnDisk <= 20 * 1024 * 1024);
   out("");
   if (failures > 0) { out(`FAILED — ${failures} assertion(s) failed`); process.exit(1); }

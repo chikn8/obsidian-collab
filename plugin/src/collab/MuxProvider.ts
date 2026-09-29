@@ -10,9 +10,12 @@ const MESSAGE_AWARENESS = 1;
 const MESSAGE_MUX = 6;
 const MESSAGE_MUX_LEAVE = 7;
 // Reconnect backoff is per shared socket, so a server outage is one retry
-// loop for the whole share, not one per room. Attempts only reset after a
-// room actually syncs (an accept-then-close server must still back off).
+// loop for the whole share, not one per room. Attempts only reset once a
+// socket has stayed open MUX_STABLE_MS: resetting when a room synced let a
+// server that accepted, synced the first rooms, then closed (4408 rate limit,
+// 2026-09-29) pull every client into a ~1 s reconnect loop.
 const MUX_RECONNECT_BASE_MS = 1_000;
+const MUX_STABLE_MS = 30_000;
 const MUX_RECONNECT_MAX_MS = 60_000;
 const MUX_RECONNECT_MIN_MS = 500;
 const MUX_RECONNECT_JITTER_RATIO = 0.3;
@@ -66,6 +69,7 @@ type MuxStatus = "connecting" | "connected" | "disconnected";
 class MuxConnection {
   private ws: WebSocket | null = null;
   private openedWs: WebSocket | null = null;
+  private openedAt = 0;
   private providers = new Map<string, Set<MuxProvider>>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private attempts = 0;
@@ -147,6 +151,7 @@ class MuxConnection {
     ws.onopen = () => {
       if (this.ws !== ws) return;
       this.openedWs = ws;
+      this.openedAt = Date.now();
       this.lastMessageAt = Date.now();
       this.step1Sent.clear();
       this.step2Received.clear();
@@ -202,12 +207,6 @@ class MuxConnection {
     }
     trace("ws", "mux-poke-connect", { shareId: this.args.shareId, reason, attempt: this.attempts });
     this.connect();
-  }
-
-  /** A room finished a sync round-trip: the server is healthy again. */
-  markSynced(): void {
-    this.attempts = 0;
-    this.errorReported = false;
   }
 
   /** Send a sync step 1 for a room; returns its sequence number on this
@@ -272,6 +271,10 @@ class MuxConnection {
     if (this.openedWs === ws) {
       this.openedWs = null;
       this.notifyClosed();
+      if (Date.now() - this.openedAt >= MUX_STABLE_MS) {
+        this.attempts = 0;
+        this.errorReported = false;
+      }
     }
     this.setStatus("disconnected");
     if (!this.shouldConnect || this.providers.size === 0) return;
@@ -487,7 +490,6 @@ export class MuxProvider {
   }
 
   setSynced(synced: boolean): void {
-    if (synced) this.conn.markSynced();
     if (this.synced === synced) return;
     this.synced = synced;
     this.emit("sync", synced);

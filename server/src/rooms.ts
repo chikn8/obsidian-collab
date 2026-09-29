@@ -1315,7 +1315,8 @@ export async function setupMuxConnection(
       device: (conn as any).collabIdentity?.device,
       deviceId: (conn as any).collabIdentity?.deviceId,
       rooms: connRoomCount(conn),
-      code,
+      // logging.ts redacts any key containing "code"; the audit row keeps `code`.
+      closeStatus: code,
       closeReason,
     });
     void auditEvent("mux.leave", {

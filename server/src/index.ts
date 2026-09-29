@@ -29,6 +29,7 @@ import { getLogDrainHealth, logEvent, readLogDrainTail } from "./logging.js";
 import { incMetric } from "./metrics.js";
 import { collectServerHealth } from "./health.js";
 import { startHealthMonitor, stopHealthMonitor } from "./healthMonitor.js";
+import { ConnectThrottle } from "./connectThrottle.js";
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = parseInt(process.env.PORT || "8080", 10);
@@ -566,6 +567,10 @@ const server = http.createServer(async (req, res) => {
 // update that bloats the volume/git history or OOMs the box.
 const MAX_PAYLOAD = Number(process.env.WS_MAX_PAYLOAD || 2 * 1024 * 1024);
 const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD });
+// Reconnect-loop guard: more than this many mux sockets per device and share in
+// a minute get 429 (see connectThrottle.ts). Normal backoff stays far below it.
+const MUX_CONNECTS_PER_MINUTE = Math.max(5, Number(process.env.MUX_CONNECTS_PER_MINUTE) || 20);
+const muxConnectThrottle = new ConnectThrottle(MUX_CONNECTS_PER_MINUTE, 60_000);
 
 server.on("upgrade", async (request, socket, head) => {
   const url = new URL(request.url || "/", `http://${request.headers.host}`);
@@ -619,6 +624,28 @@ server.on("upgrade", async (request, socket, head) => {
     socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
     socket.destroy();
     return;
+  }
+
+  if (muxRoom) {
+    const deviceKey = url.searchParams.get("deviceId") || identity.identityUid || request.socket.remoteAddress || "";
+    const decision = muxConnectThrottle.check(`${shareId}|${deviceKey}`);
+    if (!decision.allowed) {
+      incMetric("mux_connects_throttled");
+      if (decision.firstRejection) {
+        logEvent("warn", "mux.throttled", { shareId, deviceId: deviceKey, retryAfterSec: decision.retryAfterSec });
+        void auditEvent("mux.throttled", {
+          shareId,
+          deviceId: deviceKey,
+          uid: identity.identityUid,
+          limit: MUX_CONNECTS_PER_MINUTE,
+          retryAfterSec: decision.retryAfterSec,
+          remote: request.socket.remoteAddress || "",
+        });
+      }
+      socket.write(`HTTP/1.1 429 Too Many Requests\r\nRetry-After: ${decision.retryAfterSec}\r\nConnection: close\r\n\r\n`);
+      socket.destroy();
+      return;
+    }
   }
 
   // Carry the granted role to the connection setup (for write enforcement).
